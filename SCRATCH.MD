@@ -35,7 +35,9 @@
 
 ### Active working tree
 
-- Branch: `codex/public-main`, tracking GitHub `navjack/FairyWriter` `main`.
+- Branch: `agent/add-showcase-video`, published as draft PR #1 against GitHub
+  `navjack/FairyWriter` `main`. Local `codex/public-main` tracks the public
+  default branch.
 - The local branch retains the full private development history. That history
   contains old packaged applications and must not be pushed. Public GitHub
   `main` was created as a new root from the sanitized source tree, leaving all

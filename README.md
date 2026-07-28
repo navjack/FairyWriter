@@ -13,6 +13,14 @@ No commercial ROM or copyrighted game data is included. The 32 KiB FairyWriter
 cartridge is generated from source during every build and embedded in the
 application.
 
+## Showcase
+
+[![FairyWriter editing a document in its cartridge-owned 256x224 interface](docs/media/fairywriter-showcase.png)](docs/media/fairywriter-showcase.webm)
+
+Click the image to watch the one-minute, no-audio
+[VP9 WebM showcase](docs/media/fairywriter-showcase.webm) of the editor in use
+and its cartridge menu.
+
 ## What works today
 
 - cartridge-owned editor, menus, file browser, help, caret, selection, toolbar,

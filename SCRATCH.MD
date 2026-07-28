@@ -40,8 +40,10 @@
   contains old packaged applications and must not be pushed. Public GitHub
   `main` was created as a new root from the sanitized source tree, leaving all
   private local history and branches intact.
-- Local captures, documents, packaged applications, and the ignored
-  `FairyWriter/` artifact directory remain untracked and untouched.
+- Local documents, packaged applications, and the ignored `FairyWriter/`
+  artifact directory remain untracked and untouched. The user-authorized VP9
+  demo was copied to `docs/media/fairywriter-showcase.webm` with a poster frame
+  for the public README; its ignored root original remains untouched.
 - The former private ODT fixture has been removed from the publishable source.
   `tools/public-test-fixture` now generates a deterministic substantial ODT for
   the same production import/edit/round-trip test.
@@ -93,12 +95,13 @@ Platform packaging may differ; product behavior and ownership may not.
   reader/edit/save/reopen coverage without publishing that content.
 
 Current automated evidence: the sanitized public tree passes Gitleaks with no
-findings and contains no loose ROMs, documents, captures, packages, or files
-over 5 MiB. A fresh public dependency bootstrap is idempotent. macOS ROM
-generator tests, the focused XBAND regression, and production `ctest` **7/7**
-pass against that dependency. GitHub Actions run `30408040731` independently
-passed the Linux Qt 6.8.3 container build, production **7/7**, AppImage version,
-X11, Wayland, and ROM/scratch audits. Earlier signed artifact hashes:
+findings and contains no loose ROMs, private documents, packages, or files over
+5 MiB. The one public capture is an explicitly authorized, silent VP9 showcase.
+A fresh public dependency bootstrap is idempotent. macOS ROM generator tests,
+the focused XBAND regression, and production `ctest` **7/7** pass against that
+dependency. GitHub Actions run `30408040731` independently passed the Linux Qt
+6.8.3 container build, production **7/7**, AppImage version, X11, Wayland, and
+ROM/scratch audits. Earlier signed artifact hashes:
 
 - macOS DMG:
   `181279b216cd28a710394c2e7a1ebccee04b74d55c913b8c94c9035fa2e70a2c`
@@ -112,7 +115,7 @@ input-capturing GUI unattended to close that gap.
 Next concrete action: run the Windows builder and first-launch checks on Windows
 x64, then perform the complete human keyboard/mouse/recovery acceptance
 checklist on actual target systems. Keep public `main` free of private history,
-ROMs, documents, captures, and packaged applications.
+ROMs, documents, unauthorized captures, and packaged applications.
 
 ### Completed in the latest pass (blue document surface)
 

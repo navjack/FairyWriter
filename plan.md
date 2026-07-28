@@ -68,8 +68,9 @@ is part of the public source baseline.
    ODT: edit across wraps, move vertically, drag/click the scrollbar,
    open/close Help, save, close with unsaved work, restore recovery, and confirm
    default logging is absent.
-6. Publish the sanitized source baseline and public-development materials to
-   `navjack/FairyWriter`.
+6. ~~Publish the sanitized source baseline and public-development materials to
+   `navjack/FairyWriter`.~~ Complete with a clean public root and a green Linux
+   production workflow.
 
 ## Non-negotiable automated gates
 

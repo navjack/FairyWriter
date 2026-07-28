@@ -35,11 +35,11 @@
 
 ### Active working tree
 
-- Branch: `landmark1-viewport-wireformat`.
+- Branch: `codex/public-main`, tracking GitHub `navjack/FairyWriter` `main`.
 - The local branch retains the full private development history. That history
   contains old packaged applications and must not be pushed. Public GitHub
-  `main` will be created as a new root commit from the sanitized source tree,
-  leaving all local history and branches intact.
+  `main` was created as a new root from the sanitized source tree, leaving all
+  private local history and branches intact.
 - Local captures, documents, packaged applications, and the ignored
   `FairyWriter/` artifact directory remain untracked and untouched.
 - The former private ODT fixture has been removed from the publishable source.
@@ -48,7 +48,7 @@
 - A pinned `snesrecomp` bootstrap plus checked-in XBAND keyboard/Super NES
   Mouse patch replaces the previous dependency on a neighboring dirty checkout.
 - Public-facing README, architecture/build/contribution/security/license
-  indexes, GitHub templates, and Linux CI are in progress in this working tree.
+  indexes, GitHub templates, and Linux CI are published.
 - `build-arm64` is the one active native build directory.
 - `build-arm64/FairyWriter.app` is the freshly built production app. The
   top-level `FairyWriter.app` has been synchronized from it after the complete
@@ -92,11 +92,13 @@ Platform packaging may differ; product behavior and ownership may not.
   contained private writing; the generated public ODT now preserves the real
   reader/edit/save/reopen coverage without publishing that content.
 
-Current automated evidence: macOS ROM generator green, focused XBAND green,
-production `ctest` **7/7**, direct SNES help/ODT coverage green, build bundle
-strict signing green, and a mounted/audited arm64 DMG green. Linux Qt 6.8.3
-container production `ctest` **7/7**, version, X11, Wayland, and ROM/scratch
-checks are green. Artifact hashes:
+Current automated evidence: the sanitized public tree passes Gitleaks with no
+findings and contains no loose ROMs, documents, captures, packages, or files
+over 5 MiB. A fresh public dependency bootstrap is idempotent. macOS ROM
+generator tests, the focused XBAND regression, and production `ctest` **7/7**
+pass against that dependency. GitHub Actions run `30408040731` independently
+passed the Linux Qt 6.8.3 container build, production **7/7**, AppImage version,
+X11, Wayland, and ROM/scratch audits. Earlier signed artifact hashes:
 
 - macOS DMG:
   `181279b216cd28a710394c2e7a1ebccee04b74d55c913b8c94c9035fa2e70a2c`
@@ -107,11 +109,10 @@ Still manual/unproved: Windows build and first run, macOS Intel, and the full
 real-fixture mouse/keyboard/recovery pass on each platform. Do not launch the
 input-capturing GUI unattended to close that gap.
 
-Next concrete action: validate the dependency bootstrap from a fresh directory,
-run the complete macOS production gate and secret/content audits, create a clean
-public root commit, and push it as `navjack/FairyWriter` `main`. After
-publication, run the Windows builder and the human acceptance checklist on
-actual target systems.
+Next concrete action: run the Windows builder and first-launch checks on Windows
+x64, then perform the complete human keyboard/mouse/recovery acceptance
+checklist on actual target systems. Keep public `main` free of private history,
+ROMs, documents, captures, and packaged applications.
 
 ### Completed in the latest pass (blue document surface)
 

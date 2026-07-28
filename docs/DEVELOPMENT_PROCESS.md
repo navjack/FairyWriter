@@ -183,10 +183,10 @@ The resulting public baseline:
 - passed fresh-clone macOS and GitHub/Linux production gates;
 - passed a complete public-history secret and artifact audit.
 
-The VP9 showcase linked from the README was subsequently included with Jack's
-explicit authorization. It contains no audio or private desktop/document
-content and is accompanied by a poster frame for browsers that do not inline
-WebM playback.
+The H.264 MP4 showcase embedded in the README was subsequently included with
+Jack's explicit authorization. It contains no audio or private
+desktop/document content. The same MP4 is retained in `docs/media/` as a
+repository-owned fallback for the GitHub-hosted inline player.
 
 ## Attribution and responsibility
 

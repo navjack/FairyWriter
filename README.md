@@ -15,11 +15,11 @@ application.
 
 ## Showcase
 
-[![FairyWriter editing a document in its cartridge-owned 256x224 interface](docs/media/fairywriter-showcase.png)](docs/media/fairywriter-showcase.webm)
+https://github.com/user-attachments/assets/a06ba6ba-a1b1-4a51-b539-9e3d4f51a4fd
 
-Click the image to watch the one-minute, no-audio
-[VP9 WebM showcase](docs/media/fairywriter-showcase.webm) of the editor in use
-and its cartridge menu.
+This one-minute, no-audio H.264 MP4 shows the editor in use and its cartridge
+menu. If the inline player is unavailable, [download the showcase
+video](docs/media/fairywriter-showcase.mp4).
 
 ## What works today
 

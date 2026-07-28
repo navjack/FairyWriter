@@ -35,7 +35,7 @@
 
 ### Active working tree
 
-- Branch: `agent/add-showcase-video`, published as draft PR #1 against GitHub
+- Branch: `agent/add-showcase-video`, published as PR #1 against GitHub
   `navjack/FairyWriter` `main`. Local `codex/public-main` tracks the public
   default branch.
 - The local branch retains the full private development history. That history
@@ -43,9 +43,12 @@
   `main` was created as a new root from the sanitized source tree, leaving all
   private local history and branches intact.
 - Local documents, packaged applications, and the ignored `FairyWriter/`
-  artifact directory remain untracked and untouched. The user-authorized VP9
-  demo was copied to `docs/media/fairywriter-showcase.webm` with a poster frame
-  for the public README; its ignored root original remains untouched.
+  artifact directory remain untracked and untouched. The user-authorized demo
+  was converted to a repository-owned H.264 MP4 at
+  `docs/media/fairywriter-showcase.mp4`; its ignored root original remains
+  untouched. GitHub user attachment
+  `a06ba6ba-a1b1-4a51-b539-9e3d4f51a4fd` supplies the inline README player
+  because ordinary repository video links do not render as players.
 - The former private ODT fixture has been removed from the publishable source.
   `tools/public-test-fixture` now generates a deterministic substantial ODT for
   the same production import/edit/round-trip test.
@@ -101,12 +104,16 @@ Platform packaging may differ; product behavior and ownership may not.
 
 Current automated evidence: the sanitized public tree passes Gitleaks with no
 findings and contains no loose ROMs, private documents, packages, or files over
-5 MiB. The one public capture is an explicitly authorized, silent VP9 showcase.
-A fresh public dependency bootstrap is idempotent. macOS ROM generator tests,
-the focused XBAND regression, and production `ctest` **7/7** pass against that
-dependency. GitHub Actions run `30408040731` independently passed the Linux Qt
-6.8.3 container build, production **7/7**, AppImage version, X11, Wayland, and
-ROM/scratch audits. Earlier signed artifact hashes:
+5 MiB. The one public capture is an explicitly authorized, silent H.264 MP4;
+its SHA-256 is
+`1e7f9af86167cdce30afc5a7a023ab250f5c3ef9092f5b6286e60990b31f0024`.
+GitHub's Markdown renderer produces a real controlled video element for its
+user-attachment URL. A fresh public dependency bootstrap is idempotent. macOS
+ROM generator tests, the focused XBAND regression, and production `ctest`
+**7/7** pass against that dependency. GitHub Actions run `30408040731`
+independently passed the Linux Qt 6.8.3 container build, production **7/7**,
+AppImage version, X11, Wayland, and ROM/scratch audits. Earlier signed artifact
+hashes:
 
 - macOS DMG:
   `181279b216cd28a710394c2e7a1ebccee04b74d55c913b8c94c9035fa2e70a2c`

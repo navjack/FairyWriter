@@ -1,0 +1,44 @@
+# Local operating-system metadata
+.DS_Store
+**/.DS_Store
+
+# SCRATCH.MD is deliberate durable working memory and must remain visible to
+# agents and Git status. Do not add it to the ignored-output list.
+
+# Build and packaging output
+/build*/
+/release*/
+/AppDir/
+/Data/
+/FairyWriter/
+/fairywriter-demo.webm
+/mariastory.odt
+/third_party/snesrecomp/
+*.app/
+FairyWriter.app.*
+*.dmg
+*.AppImage
+*.appimage
+*.tar.gz
+*.sfc
+*.smc
+*.srm
+
+# Personal-use visual references that are not cleared for publication.
+/ideas/
+
+# IDE and compiler byproducts
+.cache/
+.vscode/
+.idea/
+compile_commands.json
+*.o
+*.obj
+*.a
+*.dylib
+*.so
+*.dll
+*.exe
+*.user
+*.swp
+*~

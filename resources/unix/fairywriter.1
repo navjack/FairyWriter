@@ -1,0 +1,44 @@
+.TH FAIRYWRITER 1 "July 2026" "FairyWriter 0.1.0" "General Commands Manual"
+
+.SH "NAME"
+fairywriter \- source-generated SNES cartridge word processor
+
+.SH "SYNOPSIS"
+.B fairywriter
+[options]
+.RI [ files ]
+
+.SH "DESCRIPTION"
+FairyWriter runs a source-generated SNES word-processor cartridge inside a
+native host. The cartridge owns the fixed 256x224 interface while the host owns
+documents, files, recovery, and operating-system integration.
+
+.SH "OPTIONS"
+.TP
+.BR \-h ", " \-\-help
+Displays help on commandline options.
+.TP
+.B \-\-help-all
+Displays help including Qt specific options.
+.TP
+.BR \-v ", " \-\-version
+Displays version information.
+.TP
+.I files
+Files to open in current session.
+
+.SH "SEE ALSO"
+.BR qt6options (7)
+
+.SH "REPORTING BUGS"
+Report bugs at <https://github.com/navjack/FairyWriter/issues>.
+
+.SH "COPYRIGHT"
+Copyright \(co 2008-2026 Graeme Gott and FairyWriter contributors
+.PP
+Free use of this software is granted under the terms of the GNU General Public
+License version 3 or later. There is NO WARRANTY, to the extent permitted by
+law.
+
+.SH "AUTHORS"
+FairyWriter contributors. Derived from FocusWriter by Graeme Gott.

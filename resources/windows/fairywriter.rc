@@ -1,0 +1,4 @@
+#include <windows.h>
+
+#define IDI_FAIRYWRITER 101
+IDI_FAIRYWRITER ICON "fairywriter.ico"

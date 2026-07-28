@@ -1,0 +1,130 @@
+# Credits
+
+FairyWriter is developed by Jack Mangano and other FairyWriter contributors.
+It is derived from FocusWriter 1.9.0 by Graeme Gott. The substantial upstream
+document-format, persistence, and desktop foundations remain credited and
+licensed under GPL-3.0-or-later.
+
+## FocusWriter developers
+
+- Graeme Gott
+
+
+## FocusWriter translations
+Arabic:
+* Qattef
+
+Catalan:
+* Joan Queralt Gil
+
+Chinese (China):
+* Dianjin Wang
+* Jiajun Liu
+* 勇 郭
+
+Czech:
+* Pavel Fric
+* Ladislav Thon
+
+Danish:
+* Morten Juhl-Johansen Zölde-Fejér
+
+Dutch:
+* Robert Borst
+
+Esperanto:
+* Synteq
+
+Finnish:
+* Aarni
+* Lasse Liehu
+
+French:
+* Guillaume Gay
+* Jérôme Borme
+
+German:
+* Dennis Peteranderl
+* Eduard Bruckner
+
+Greek:
+* Γιάννης Ανθυμίδης
+* Epameinondas Soufleros
+
+Hebrew:
+* Jacob Paikin
+
+Hungarian:
+* Zoltán Adamek
+
+Italian:
+* Andrea Bergamasco
+
+Indonesian:
+* Eka Y Saputra
+
+Japanese:
+* Kyo Nagashima
+
+Korean:
+* Hwang In Tak
+
+Lithuanian:
+* Moo
+
+Polish:
+* Jakub Kowalski
+
+Portuguese:
+* Jérôme Borme
+
+Portuguese (Brazil):
+* Enrico Nicoletto
+* Márcio Massula Jr.
+
+Romanian:
+* Jaff (Oprea Nicolae)
+
+Russian:
+* Danila Evstifeyev
+* Dmitriy Kodanev
+* Сергей Миронов
+
+Serbian:
+* miroslav
+
+Slovak:
+* Jan Gallik
+
+Spanish:
+* Adolfo Jayme Barrientos
+* Freddy Sequera
+* Luis Osa
+* Verónica Jiménez
+
+Spanish (Mexico):
+* Israel Buitrón
+
+Swedish:
+* Daniel Nylander
+* Påvel Nicklasson
+
+Turkish:
+* Cüneyt Oktay
+* Ülgen
+
+Ukrainian:
+* Sergiy Gavrylov
+
+Vietnamese:
+* Anh Phan (vi)
+
+
+## Icons
+* Oxygen, https://techbase.kde.org/Projects/Oxygen
+
+
+## Libraries
+* Qt, https://www.qt.io/
+* hunspell, http://hunspell.sourceforge.net/
+* SDL_mixer, http://www.libsdl.org/projects/SDL_mixer/

@@ -1,0 +1,718 @@
+# FocusWriter upstream changelog
+
+This is the historical changelog inherited from FocusWriter 1.9.0. It is kept
+for attribution and source-history context; it is not the FairyWriter release
+log.
+
+1.9.0
+-----
+* FIXED: Did not play sound effects for smart quotes.
+* Added keyboard shortcuts for headings.
+* Clears headings when pressing enter.
+* Replaced shadowed variable names.
+* Switched to KDSingleApplication.
+* Updated link to translations.
+* Translation updates: Swedish.
+
+1.8.13
+------
+* FIXED: Crash when dragging justified text
+
+1.8.12
+------
+* FIXED: Compile error with QString::arg overload for char32_t
+* FIXED: Conflict when creating default symbol shortcuts
+* FIXED: Columns in symbols dialog were very wide
+* Translation updates: Swedish
+
+1.8.11
+------
+* FIXED: Find button was not default in find dialog.
+
+1.8.10
+------
+* Added support for DICPATH to find dictionaries.
+* Improved code for building translations.
+* Updated Unicode symbols database.
+* Updated Windows dictionaries.
+* Translation updates: Slovenian.
+
+1.8.9
+-----
+* FIXED: Slow loading of themes.
+* FIXED: Font did not update in theme preview.
+* FIXED: Alert expander invisible with monochrome icon themes.
+* FIXED: Incorrect icons in monochrome icon themes.
+* Translation updates: Estonian, Marathi.
+
+1.8.8
+-----
+* FIXED: Broken backgrounds in Windows dark theme.
+* FIXED: Extra newline when copying RTF.
+* Added Windows support for copying RTF.
+
+1.8.7
+-----
+* FIXED: Did not keep line spacing when pasting plain text.
+* Replaced deprecated code.
+* Translation updates: Swedish.
+
+1.8.6
+-----
+* FIXED: Always incremented number for imported themes.
+* FIXED: Unable to update contents of theme background image.
+* FIXED: Modifying themes sometimes removed backgrounds.
+* FIXED: Decompression failed in Haiku.
+* Added shortcuts for selecting by paragraph.
+* Replaced deprecated code.
+* Updated Unicode symbols database.
+* Updated Windows dictionaries.
+* Translation updates: Portuguese, Portuguese (Brazil), Swedish.
+
+1.8.5
+-----
+* FIXED: Unable to paste HTML into web browser.
+* Translation updates: Russian, Turkish, Ukrainian.
+
+1.8.4
+-----
+* FIXED: Did not ignore user input when force processing events.
+* FIXED: Did not compile on macOS.
+* FIXED: Did not compile on OS/2.
+* Disabled typewriter sounds on OS/2.
+* Replaced deprecated code.
+
+1.8.3
+-----
+* FIXED: Did not play sound effect when pressing enter.
+* FIXED: Played sound effect when opening files.
+* FIXED: Missing version number.
+* Translation updates: Dutch.
+
+1.8.2
+-----
+* FIXED: Could not change language in portable mode.
+* FIXED: Crashed during paste from context menu.
+* FIXED: First line indent was lost on empty paragraphs.
+* Always write RTF as Latin1.
+* Replaced ICU with iconv.
+* Improved Linux deployment.
+* Translation updates: German, Korean, Portuguese (Brazil), Russian, Swedish.
+
+1.8.1
+-----
+* Always write plain text as UTF-8.
+* Always write RTF as codepage 1252.
+* Replaced QTextCodec with ICU.
+* Translation updates: Estonian, German.
+
+1.8.0
+-----
+* FIXED: Lines were randomly duplicated in ODT.
+* FIXED: Did not read text from lists in ODT.
+* FIXED: Formatting was lost when restoring untitled documents from cache.
+* FIXED: Loading headings caused document to shift vertically.
+* FIXED: Timers did not show countdown in tooltip.
+* FIXED: Sometimes could not remove dictionaries.
+* Only restore changed files from cache.
+* Refactored code.
+* Removed XPM icon.
+* Switched to Qt 6.
+* Updated Unicode symbols database.
+* Updated Windows dictionaries.
+* Translation updates: Armenian, Bosnian, Czech, Dutch, French, Georgian, Italian, Lithuanian, Norwegian Bokmål, Norwegian Bokmål (Norway), Portuguese, Romanian, Swedish, Turkish, Ukrainian.
+
+1.7.6
+-----
+* FIXED: Did not load locales with underscores.
+* FIXED: Compile failure due to missing header.
+* Translation updates: Slovenian, Swedish, Turkish.
+
+1.7.5
+-----
+* Updated Windows dictionaries.
+* Updated Windows deployment.
+* Translation updates: Ukrainian.
+
+1.7.4
+-----
+* FIXED: Broken emergency cache in Windows.
+* FIXED: Daily progress did not show star background with some themes.
+* Replaced deprecated code.
+* Translation updates: Catalan, Swedish.
+
+1.7.3
+-----
+* FIXED: Was not loading KDE icon theme.
+* FIXED: Headings menu was incorrectly shown in German.
+* Replaced deprecated code.
+* Translation updates: Friulian, German, Korean.
+
+1.7.2
+-----
+* FIXED: Minimum sizes for page counts were too high.
+* FIXED: Window icon didn't work in Wayland.
+* Require Qt 5.9.
+* Improved loading locales.
+* Translation updates: Friulian, Korean.
+
+1.7.1
+-----
+* FIXED: Did not launch when incorrect lock file was found.
+
+1.7.0
+-----
+* FIXED: Daily progress percentages were not locale aware.
+* FIXED: Scene list text was incorrect with Qt 5.12
+* Show current streak for previous day.
+* Improved detection of running instance.
+* Updated included hunspell.
+* Updated dictionaries.
+* Translation updates: Czech, Dutch, Hungarian.
+
+1.6.16
+------
+* FIXED: Could not always save to remote drives.
+* FIXED: Could not browse shortcuts in Windows file dialogs.
+
+1.6.15
+------
+* FIXED: Automatic high dpi support.
+* Translation updates: Galician, Spanish.
+
+1.6.14
+------
+* FIXED: Regression where emergency cache didn't run.
+* Renamed NEWS to ChangeLog.
+* Translation updates: Bosnian.
+
+1.6.13
+------
+* Updated dictionaries.
+* Updated Unicode symbols database.
+* Replaced deprecated code.
+* Extra warnings only shown in debug build.
+* Improved Linux deployment.
+* Improved macOS deployment.
+* Improved Windows deployment.
+* Translation updates: Dutch, French, Portuguese.
+
+1.6.12
+------
+* Ignore empty cache files.
+* Remove auto save.
+* Translation updates: Slovenian.
+
+1.6.11
+------
+* FIXED: File monitoring prevented saving in Windows.
+* Translation updates: Danish, Slovenian.
+
+1.6.10
+-----
+* Default to Flat ODT for cache files.
+* Reduce time between cache writes to 5 minutes.
+* FIXED: Fade effect broke alerts.
+* FIXED: Fade effect hid text on load screen.
+* Translation updates: Greek.
+
+1.6.9
+-----
+* Updated dictionaries.
+* FIXED: Could not save to network devices.
+* Translation updates: Igbo, Slovenian.
+
+1.6.8
+-----
+* FIXED: Could not compile with Qt 5.10.
+* FIXED: Did not handle ODT line position with two values.
+* Translation updates: German, Indonesian.
+
+1.6.7
+-----
+* Updated dictionaries.
+* FIXED: HiDPI blurred text backgrounds were scaled.
+* FIXED: Window margin was always the size of the scrollbar.
+* FIXED: Always indented first line when printing.
+
+1.6.6
+-----
+* FIXED: Did not always install translations in Linux.
+* FIXED: Unneccessary compiler warning about switch fallthrough.
+* FIXED: Did not show headings when automatic spellchecking was disabled.
+* FIXED: Foreground incorrectly placed when load stretched themes.
+* Translation updates: Czech, Armenian.
+
+1.6.5
+-----
+* FIXED: Data loss when program crashed.
+* Updated included hunspell.
+* Updated dictionaries.
+* Translation updates: Greek, Swedish.
+
+1.6.4
+-----
+* Updated AppData installation directory.
+* FIXED: HiDPI blurred text backgrounds were offset and scaled.
+* FIXED: HiDPI backgrounds were not centered properly.
+* FIXED: HiDPI centered backgrounds were also scaled.
+* Translation updates: Chinese (Taiwan), Finnish, German, Indonesian.
+
+1.6.3
+-----
+* Updated included hunspell.
+* FIXED: Line spacing was ignored when pasting in new documents.
+* FIXED: Pasting text always made document rich text.
+* FIXED: Possible delay on start when creating non-native printer.
+* Translation updates: Chinese (China), Japanese, Korean, Lithuanian, Polish, Russian, Ukrainian.
+
+1.6.2
+-----
+* Generate binary translations at build time.
+* FIXED: Focused text did not handle first-line indent.
+* FIXED: Was not properly loading Qt translations.
+* Translation updates: Armenian, Dutch, Italian, Lithuanian, Portuguese (Brazil), Romanian, Swedish, Ukrainian.
+
+1.6.1
+-----
+* FIXED: Incorrectly handled non-heading text in OOXML.
+* FIXED: Misspelled words did not follow heading style.
+* FIXED: Did not always close OOXML paragraph properties correctly.
+* FIXED: Did not correctly store RTL in OOXML.
+* FIXED: Reported conflicts for empty shortcuts.
+* FIXED: Switched to incorrect tab to show conflicting shortcuts.
+* Translation updates: German, Romanian.
+
+1.6.0
+-----
+* Added always showing interface.
+* Added headings.
+* Added new default themes.
+* Added removing user-installed dictionaries.
+* Added shortcut for typographical apostrophe.
+* Added support for ODT Flat XML files.
+* Added support for high DPI displays.
+* Switched to QSoundEffect.
+* Updated dictionaries.
+* FIXED: Daily progress did not reset when run longer than a day.
+* FIXED: Printer margins were too big.
+* FIXED: Was replacing session files with command-line files.
+* FIXED: Did not add new default symbol shortcuts.
+* Translation updates: Arabic, Armenian, Catalan, Chinese (China), Dutch, English (United Kingdom), French, German, Hebrew, Hungarian, Italian, Lithuanian, Polish, Portuguese (Brazil), Romanian, Russian, Slovak, Spanish, Spanish (Mexico), Turkish, Vietnamese.
+
+1.5.7
+-----
+* Switched to cross-compiled builds for Windows.
+* FIXED: Did not play sounds for key presses with Alt modifier.
+* FIXED: Could not change shortcut to disable focused text.
+
+1.5.6
+-----
+* Updated included hunspell.
+* FIXED: Did not remember some default formats.
+* FIXED: Replace all did not update spellchecking.
+* FIXED: Themes still did not always forget changes.
+* Translation updates: Afrikaans (South Africa), Danish, Esperanto, Hebrew, Lithuanian, Spanish.
+
+1.5.5
+-----
+* Added support for pasting RTF in Windows.
+* Switched back to dynamic builds for Windows.
+* Updated dictionaries.
+* FIXED: Themes did not always forget changes.
+* FIXED: Treated every paragraph as a scene when divider is empty.
+* FIXED: Switched tabs during autosave.
+* FIXED: Allowed pasting and saving invalid null character.
+* Translation updates: Catalan, Esperanto, Lithuanian, Portuguese (Brazil).
+
+1.5.4.1
+-------
+* FIXED: Compile failure with Qt 5.5.
+
+1.5.4
+-----
+* Relax version check of ZIP to handle broken ZIP files.
+* Remove deprecated code for unsupported Mac OS X versions.
+* Switch to static builds for Windows.
+* FIXED: Broken shortcut for disabling focused text in Windows.
+* FIXED: Word count did not handle dashes correctly.
+* FIXED: Did not use correct line endings in Windows.
+* FIXED: Incorrectly sized icon for daily progress.
+* FIXED: Crash when importing themes.
+* Translation updates: Esperanto, German, Greek, Indonesian, Italian, Lithuanian, Polish, Portuguese, Portuguese (Brazil), Russian, Turkish, Ukrainian.
+
+1.5.3
+-----
+* FIXED: Find did not take smart quotes into account.
+* FIXED: Style hierarchy was not always loaded in ODT
+* FIXED: Ignored text sections in ODT files.
+* FIXED: Was not reading styles for OOXML files.
+* Translation updates: Hebrew, Portuguese (Brazil), Swedish.
+
+1.5.2
+-----
+* FIXED: Regression with RtfWriter encoding characters in Windows.
+* FIXED: Windows installer did not install shortcut for all users.
+* FIXED: Finnish spellchecking did not work in Windows.
+* FIXED: Incorrect handling of mimetypes in copy-paste.
+* FIXED: Keywords in .desktop file should be separated by semicolons.
+* Translation updates: French, Hebrew, Korean, Polish, Portuguese (Brazil).
+
+1.5.1
+-----
+* Added keywords to .desktop file.
+* FIXED: Spelling underline was broken.
+* FIXED: Incorrect MIME type for Office Open XML.
+* FIXED: Incorrect version number string.
+* FIXED: Compile issues with Qt 4.6.
+* FIXED: Regression with sound effects on Windows.
+* FIXED: Regression with default cursor width on Windows.
+* FIXED: Regression where menubar was not shown in Ubuntu.
+* Translation updates: Spanish (Mexico), Korean, Swedish
+
+1.5.0
+-----
+* Added daily progress dialog.
+* Added default themes.
+* Added blurring behind text area.
+* Added drop shadow behind text area.
+* Added duplicating themes.
+* Added keyboard shortcuts to move between paragraphs.
+* Added option to disable byte order mark.
+* Added basic support for Office Open XML files.
+* Added Windows installer.
+* Include dictionaries on Windows.
+* Improved theme dialog.
+* Improved background color when loading theme.
+* Stopped clearing document cache across runs.
+* Synchronized location for open and save dialogs.
+* Switched to hunspell.
+* Switched to QtZip.
+* Refactored daily progress.
+* Refactored document cache.
+* Refactored spell checking code.
+* Translation updates: Armenian, Czech, Dutch, Greek, Finnish, Hebrew, Hungarian, Japanese, Romanian, Serbian, Turkish, Chinese (China)
+
+1.4.6
+-----
+* FIXED: Formatting was lost when saving pasted text in new document.
+* FIXED: Could not change built-in Qt textedit shortcuts.
+* FIXED: Session names did not trim whitespace.
+* FIXED: Theme names did not trim whitespace.
+* FIXED: Did not respect default cursor width.
+* FIXED: Session names could not contain periods.
+* FIXED: Theme names could not contain periods.
+* FIXED: Long session names made session menu unworkable.
+* Translation updates: Armenian, Hebrew.
+
+1.4.5
+-----
+* FIXED: Infinite loop during replace all with regular expressions.
+* FIXED: Regular expression replaces did not ignore whole words option.
+* FIXED: Interpreted images in RTF files as text.
+* FIXED: Context menu key did not show spelling menu.
+* FIXED: Could delete all themes.
+* FIXED: Did not recreate default theme until program restart.
+* FIXED: Created a new tab for corrupted documents.
+* FIXED: Reloading a modified file did not reduce daily goal progress.
+* FIXED: Unable to overwrite current document.
+* FIXED: Discarding a modified file did not reduce daily goal progress.
+* FIXED: Locale dialog always prompted users of System Language to restart.
+* FIXED: Symbols dialog had help titlebar icon.
+* FIXED: Second instance would not open relative paths.
+* FIXED: Closing last empty document increased untitled count.
+* FIXED: Regular expression searches did not ignore whole words option.
+* FIXED: Paragraphs not always focused properly when merged.
+* FIXED: Selected session was incorrect when switching sessions was canceled.
+* FIXED: Could open unsupported multimedia files.
+* FIXED: Hyphenated lines were not focused properly.
+* Translation updates: Arabic, Chinese (China), Czech, English (United Kingdom), Finnish, Greek, Hungarian, Korean, Indonesian, Serbian, Vietnamese.
+
+1.4.4
+-----
+* FIXED: Crashed when opening font dropdown in theme dialog.
+* FIXED: Did not always ignore changes made by program.
+* FIXED: Smart quotes were incorrect after opening punctuation.
+* Translation updates: German, Greek, Hebrew, Indonesian, Russian, Turkish.
+
+1.4.3
+-----
+* FIXED: Unsaved new files were not restored from cache.
+
+1.4.2
+-----
+* Added support for Qt 5.
+* FIXED: Did not play key press sound for non-Latin languages.
+* FIXED: Crash when ignoring words in spelling dialog.
+* FIXED: Could not end italics before smart quote.
+* Translation updates: Catalan, Hebrew, Italian, Turkish.
+
+1.4.1
+-----
+* FIXED: High CPU use in Ubuntu 10.04.
+* FIXED: Crashed when typing circumflex with focused text.
+* FIXED: Showing scene list moved cursor to start of document.
+* FIXED: Played sounds constantly in Ubuntu 10.04.
+* FIXED: Could drag scenes in Read-Only files.
+* FIXED: Could insert symbols in Read-Only files.
+* FIXED: Could paste unformatted in Read-Only files.
+* FIXED: Could check spelling of Read-Only files.
+* FIXED: Cleared keyboard shortcuts not saved.
+* FIXED: Cannot add new keyboard shortcuts with the Shift key.
+* Translation updates: Chinese (China), Czech, Greek, Hebrew, Romanian, Swedish, Spanish.
+
+1.4.0
+-----
+* Added scene list sidebar.
+* Added focusing text.
+* Added line spacing in themes.
+* Added symbols dialog.
+* Added monitoring files for changes.
+* Added editable keyboard shorcuts.
+* Allow changing formats in save dialogs.
+* Switched to enchant for spell checking.
+* Check spelling in background.
+* Removed included dictionaries.
+* FIXED: Could not save to WebDAV.
+* FIXED: Insert key did not switch to overwrite mode.
+* FIXED: Hiding toolbar did not shrink header.
+* FIXED: Regression - SDL_mixer was not loaded in Debian.
+* FIXED: Could save over files open on other tabs.
+* FIXED: Switching themes still wasn't properly focusing text.
+* FIXED: Theme previews did not scale tiled or centered images.
+* FIXED: Warned user twice about every malformed file.
+* FIXED: Could not interact with dialogs during load.
+* FIXED: Did not check spelling of pasted paragraphs.
+* FIXED: Regression - Windows did not load SDL.
+* FIXED: Regression - fallback icons were not used.
+* FIXED: File rename did not change formats.
+* FIXED: Default shortcuts conflicted on the Mac.
+* FIXED: Restoring from cache treated all files as plain text.
+* FIXED: Filenames were incorrect after undo and redo.
+* FIXED: Formatting of first paragraph was lost on reload.
+* FIXED: Switching themes wasn't properly focusing text.
+* FIXED: Text brought onto current line was not focused.
+* FIXED: Replace all could not be reverted with a single undo.
+* Translation updates: Chinese (China), Czech, Danish, Dutch, Finnish, French, German, Greek, Hungarian, Italian, Japanese, Polish, Portuguese, Portuguese (Brazil), Russian, Slovak, Spanish, Spanish (Mexico), Swedish, Ukrainian.
+
+1.3.6
+-----
+* FIXED: Saved cache files more frequently than necessary.
+* FIXED: Displayed paths did not use native separators.
+* FIXED: Crashed when loading empty RTF files.
+* FIXED: Emergency cache files could have broken names.
+* FIXED: Was not loading data from emergency cache files.
+* FIXED: Emergency cache was not working for rich text.
+* FIXED: Data was not always written to disk.
+* FIXED: Was adding spaces before pasted rich text.
+* FIXED: Inserting text resets alignment.
+* Translation updates: Danish, Spanish.
+
+1.3.5.2
+-------
+* FIXED: Did not handle loading menu icons correctly.
+* Translation updates: Dutch, Finnish, Greek, Hungarian, Spanish.
+
+1.3.5.1
+-------
+* Added scalable icon.
+* FIXED: Did not correctly handle multi-byte characters in RTF.
+* FIXED: Interface was incorrectly hidden while fullscreen.
+* Translation updates: Dutch, German.
+
+1.3.5
+-----
+* Compress exported themes.
+* FIXED: ODT block settings were not respected.
+* FIXED: RTF block settings were not respected.
+* FIXED: Sometimes did not display opened documents immediately.
+* Translation updates: Czech, German, Italian, Polish.
+
+1.3.4.1
+-------
+* FIXED: Missing Qt translations on the Mac.
+
+1.3.4
+-----
+* Added support for copying RTF.
+* Added basic ODT support
+* FIXED: Regression - changing dictionary required restart.
+* FIXED: Always vertically center did not work with new documents.
+* FIXED: Printed spellchecking highlights.
+* FIXED: Did not load file stats when loading file.
+* FIXED: Font names were sometimes inserted at head of document.
+* FIXED: Crashed when typing after alert for no sound effects.
+* Translation updates: Czech, Finnish, French, German, Greek, Italian, Polish, Portuguese (Brazil), Russian, Spanish, Spanish (Mexico), Swedish, Ukrainian.
+
+1.3.3
+-----
+* Added emergency file cache.
+* Replaced icon and load image.
+* Improved Mac integration.
+* Switched to SDL_mixer instead of libao.
+* FIXED: Timers action didn't always use theme icon.
+* FIXED: Did not follow toolbar style by default.
+* FIXED: Did not raise to front in GNOME2.
+* FIXED: Cancelling adding a theme did not work.
+* FIXED: Font size always show decimal.
+* FIXED: Incorrectly handled paragraph end in RTF.
+* FIXED: Played sound effects when text was removed.
+* FIXED: Could not type in timer time edit.
+* FIXED: Incorrect background color for preferences tabs.
+* FIXED: Document details were visible through load screen.
+* FIXED: Load screen text was not always monospaced.
+* FIXED: Replacing quotes with LaTex quotes did not update all quotes.
+* FIXED: Could not scroll over background in Qt/Cocoa.
+* FIXED: Regression where text did not fill text area.
+* FIXED: Scrollbar did not disappear when mousing into header.
+* FIXED: Could not interact with tabs in Qt/Cocoa.
+* FIXED: Masked scrollbars still showed a pixel.
+* FIXED: SDL_mixer was not loaded in most Linux distros.
+* FIXED: Documents were visible when resizing window.
+* FIXED: No sound on characters inserted with "compose" key.
+* FIXED: Large documents were not centered.
+* FIXED: Documents were sometimes displayed truncated.
+* FIXED: Could not access menubar while fullscreen in Unity.
+* FIXED: Could not leave fullscreen in Unity.
+* FIXED: Closing the color picker does not return focus to theme dialogs.
+* FIXED: Wasn't switching to already opened document.
+* FIXED: Dropping files on main window pasted URLs in KDE.
+* FIXED: Qt translations were not deployed on the Mac.
+* FIXED: Word count issue with Persian/Farsi.
+* FIXED: Forgot new documents saved when closed.
+* Translation updates: Czech, French, German, Polish, Portuguese, Portuguese (Brazil), Russian, Spanish, Spanish (Mexico).
+
+1.3.2.1
+-------
+* FIXED: Crashed when typing.
+* Translation updates: Spanish (Mexico).
+
+1.3.2
+-----
+* Added rounded corners to themes.
+* FIXED: Ubuntu panels appeared when find dialog was shown.
+* FIXED: Jumped while selecting text and scrolling.
+* FIXED: Statistics and centering were broken for large documents.
+* FIXED: Was recentering when backspacing at end of document.
+* FIXED: Header stayed visible when menus closed.
+* FIXED: Could not select text where header is shown.
+* FIXED: Header wasn't shown when menus were shown by keyboard shortcuts.
+* FIXED: Toolbar outline stayed visible when it was expanded.
+* FIXED: Automatic spellchecking highlighted current word.
+* FIXED: Did not inform user when archives have no dictionaries.
+* FIXED: Brazilian Portuguese translation could not open all files.
+* FIXED: Portuguese translation had incorrect file extension.
+* FIXED: Could not scroll over padding.
+* FIXED: Could not add words with smart quotes to personal dictionary.
+* FIXED: Could add word to personal dictionary multiple times.
+* FIXED: Played typewriter sounds for non-printing keys.
+* FIXED: Did not center for themes with padding.
+* Translation updates: Czech, French, Polish, Portuguese, Portuguese (Brazil), Spanish.
+
+1.3.1
+-----
+* Added typewriter sound effects.
+* FIXED: Sometimes segfaulted when scrolling.
+* FIXED: The C locale was assumed to be UTF-8.
+* FIXED: New documents were always centered.
+* FIXED: Replace required clicking twice.
+* FIXED: Text indents were different sizes.
+* FIXED: Did not handle opening Read-Only files.
+* FIXED: Did not prompt when there was an error saving files.
+* FIXED: Closed even when unable to save files.
+* FIXED: Preferences dialog was too big for small screens.
+* FIXED: Save As completed even if saving failed.
+* FIXED: Crashed if preview image was not created.
+* FIXED: Font size was not always listed.
+* FIXED: Panels were visible when mouse was over padding.
+* FIXED: Informed user of Read-Only status of already open files.
+* FIXED: Could not switch to rich text.
+* FIXED: Could not update smart quotes for plain text files.
+* Translation updates: French, Polish, Portuguese, Portuguese (Brazil), Spanish.
+
+1.3.0
+-----
+* Added text formatting.
+* Added smart quotes.
+* Added session management.
+* Added timers and alarms.
+* Added importing and exporting themes.
+* Added selected text statistics.
+* Added dictionaries for supported languages.
+* FIXED: Tab focus incorrect in some dialogs.
+* FIXED: Text direction broken with Qt 4.7.
+* FIXED: Default theme font incorrect.
+* FIXED: Created empty tabs for unreadable files.
+* FIXED: Warned about losing formatting of empty files.
+* FIXED: Could not open symlinked files.
+* FIXED: Could always change background image.
+* FIXED: Could open empty recent timers menu.
+* FIXED: Window background visible during resize.
+* FIXED: Window could be made smaller than theme.
+* FIXED: Default session was ignored.
+* FIXED: File name not updated in interface when changed.
+* FIXED: Allowed opening the same document twice.
+* FIXED: Save dialog permanently stealing mouse focus.
+* Translation updates: French, Portuguese.
+
+1.2.2
+-----
+* Added portability support.
+* Switched to native file dialogs.
+* Updated keyboard shortcuts.
+* Updated included libraries.
+* Translation updates: French, Portuguese.
+
+1.2.1
+-----
+* Added changing text area's horizontal position.
+* Added disabling antialiasing.
+* FIXED: Scrolling to top didn't work properly in Linux.
+* FIXED: Scrollbar wasn't tracking properly.
+* FIXED: Highlight was removed when right-clicking.
+* FIXED: Only focused document was centered on launch.
+* FIXED: Program would crash if dictionary couldn't be found.
+* FIXED: Prompted user about replacing a removed dictionary.
+* FIXED: Dictionary added most recently was not selected.
+* FIXED: Dictionaries couldn't be used immediately.
+* FIXED: Dictionary was assumed to use UTF-8 encoding.
+* FIXED: Mouse cursor sometimes disappeared when opening files.
+* FIXED: Interface was not hidden when mouse left window.
+* FIXED: Margins were not correct when using Qt 4.6.0.
+* FIXED: Clock did not respect user's locale.
+* FIXED: Time daily goal increased when preferences changed.
+* Translation updates: French, Portuguese.
+
+1.2.0
+-----
+* Added spell checking.
+* Added document tabs.
+* Added menubar.
+* Added toolbar customization.
+* Added document statistics.
+* Added second wordcount algorithm.
+* Added option to use block cursor.
+* Improved file saving.
+* FIXED: Infinite loop when replacing all instances of a word.
+* FIXED: Changing all misspelled words didn't start at beginning.
+* FIXED: Changing themes increased progress on daily goals.
+* FIXED: Newly created themes were not loaded.
+* FIXED: Not properly centering opened documents.
+
+1.1.2
+-----
+* Use UTF-8 character encoding for files.
+
+1.1.1
+-----
+* FIXED: Was always launching with time based goals.
+
+1.1.0
+-----
+* Added daily goals.
+* Added support for themes.
+* Added find and replace.
+* Changed default centering.
+* FIXED: Crash when first sentence was deleted.
+* FIXED: Image selection dialog not showing last visited path.
+* FIXED: Highlighted text using page alpha.

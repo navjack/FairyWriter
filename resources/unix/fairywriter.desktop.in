@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=FairyWriter
+GenericName=Cartridge Word Processor
+Comment=Write through a source-generated SNES cartridge
+Icon=fairywriter
+TryExec=fairywriter
+Exec=fairywriter %F
+Terminal=false
+MimeType=application/rtf;application/vnd.oasis.opendocument.text;application/vnd.oasis.opendocument.text-flat-xml;application/vnd.openxmlformats-officedocument.wordprocessingml.document;text/plain;text/rtf;
+Categories=Qt;Office;WordProcessor;
+Keywords=editor;wordprocessor;SNES;cartridge;retro;focused;writing;
+SingleMainWindow=true

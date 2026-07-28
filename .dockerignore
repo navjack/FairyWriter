@@ -1,0 +1,14 @@
+.git
+.DS_Store
+**/.DS_Store
+build*
+release*
+SCRATCH.MD
+ideas
+Data
+third_party/snesrecomp
+fonts/filgaia
+fonts/smw2_yoshis_island
+*.dmg
+*.AppImage
+*.appimage

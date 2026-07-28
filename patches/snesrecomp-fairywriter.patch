@@ -1,0 +1,330 @@
+diff --git a/runner/src/snes/snes.c b/runner/src/snes/snes.c
+index 24dca7c..e0a2633 100644
+--- a/runner/src/snes/snes.c
++++ b/runner/src/snes/snes.c
+@@ -22,6 +22,45 @@
+ int snes_frame_counter;
+ static const double apuCyclesPerMaster = (32040 * 32) / (1364 * 262 * 60.0);
+ 
++static int16_t mouse_add_clamped(int16_t value, int8_t delta) {
++  int16_t result = (int16_t)(value + delta);
++  if (result > 127) return 127;
++  if (result < -127) return -127;
++  return result;
++}
++
++static uint8_t mouse_sign_magnitude(int16_t value) {
++  if (value < 0) return (uint8_t)(0x80 | (uint8_t)-value);
++  return (uint8_t)value;
++}
++
++static void snes_mouse_reset(SnesMouse *mouse) {
++  memset(mouse, 0, sizeof(*mouse));
++}
++
++static void snes_mouse_latch(SnesMouse *mouse, bool strobe) {
++  /* The report is captured on the high-to-low latch transition. The 32 bits
++   * are: zero, button/signature/sensitivity, signed Y, signed X. */
++  if (mouse->strobe && !strobe) {
++    const uint8_t buttons = (uint8_t)(0x01 | (mouse->left ? 0x40 : 0) |
++                                      (mouse->right ? 0x80 : 0));
++    mouse->report = ((uint32_t)buttons << 16) |
++                    ((uint32_t)mouse_sign_magnitude(mouse->dy) << 8) |
++                    mouse_sign_magnitude(mouse->dx);
++    mouse->dx = 0;
++    mouse->dy = 0;
++    mouse->bit = 0;
++  }
++  mouse->strobe = strobe;
++}
++
++static uint8_t snes_mouse_read_port(SnesMouse *mouse) {
++  if (mouse->bit >= 32) return 1;
++  const uint8_t value = (uint8_t)((mouse->report >> (31 - mouse->bit)) & 1u);
++  mouse->bit++;
++  return value;
++}
++
+ uint8_t snes_readReg(Snes* snes, uint16_t adr);
+ void snes_writeReg(Snes* snes, uint16_t adr, uint8_t val);
+ 
+@@ -46,6 +85,8 @@ Snes* snes_init(uint8_t *ram) {
+   snes->cart = cart_init(snes);
+   snes->input1_currentState = 0;
+   snes->input2_currentState = 0;
++  xband_keyboard_reset(&snes->xbandKeyboard);
++  snes_mouse_reset(&snes->mouse);
+   return snes;
+ }
+ 
+@@ -95,6 +136,8 @@ void snes_reset(Snes* snes, bool hard) {
+   snes->autoJoyRead = false;
+   snes->autoJoyTimer = 0;
+   snes->ppuLatch = false;
++  xband_keyboard_reset(&snes->xbandKeyboard);
++  snes_mouse_reset(&snes->mouse);
+   snes->multiplyA = 0xff;
+   snes->multiplyResult = 0xfe01;
+   snes->divideA = 0xffff;
+@@ -276,30 +319,10 @@ uint8_t snes_readReg(Snes* snes, uint16_t adr) {
+       return snes->multiplyResult & 0xff;
+     case 0x4217:
+       return snes->multiplyResult >> 8;
+-    case 0x4016:  /* JOYSER0 — manual joypad read for controller 1. */
+-    case 0x4017:  /* JOYSER1 — manual joypad read for controller 2. */
+-      /* On real SNES, $4016/$4017 are the manual joypad-read serial
+-       * shift registers. After a strobe write to $4016 (latch), 16
+-       * sequential reads shift out the controller's 16-bit button
+-       * state (LSB-first). After 16 reads, subsequent reads return
+-       * bit 0 = 1 as the "controller present" signature for a
+-       * standard pad. snes9x's S9xReadJOYSERn (controls.cpp:2917)
+-       * implements this: in the no-latch state with read_idx>=16
+-       * it returns `bits | 1`.
+-       *
+-       * Recomp's emulation core didn't handle these registers at
+-       * all — the reads fell through to the default `return 0` path,
+-       * which made SMW's CheckWhichControllersArePluggedIn at $00:9A74
+-       * conclude "no controllers connected" and write $0DA0 = 0x00.
+-       * That single byte then cascaded into ~250 downstream WRAM
+-       * divergences over the attract demo, contributing to the
+-       * koopa-stomp visible bug (Mario contacts the koopa from a
+-       * different angle, dies instead of stomping).
+-       *
+-       * For correctness without full strobe-latch tracking, return
+-       * 0x01 unconditionally — same effect as snes9x's post-latch
+-       * read past 16 bits with a standard pad attached. */
+-      return 0x01;
++    case 0x4016:  /* JOYSER0 — controller-port-1 Super NES Mouse. */
++      return snes_mouse_read_port(&snes->mouse);
++    case 0x4017:  /* JOYSER1 — XBAND keyboard DATA0/DATA1. */
++      return xband_keyboard_read_port(&snes->xbandKeyboard);
+     case 0x4218:
+       return SwapInputBits(snes->input1_currentState) & 0xff;
+     case 0x4219:
+@@ -322,6 +345,10 @@ uint8_t snes_readReg(Snes* snes, uint16_t adr) {
+ 
+ void snes_writeReg(Snes* snes, uint16_t adr, uint8_t val) {
+   switch(adr) {
++    case 0x4016: {
++      snes_mouse_latch(&snes->mouse, (val & 1) != 0);
++      break;
++    }
+     case 0x4200: {
+       snes->autoJoyRead = val & 0x1;
+       if(!snes->autoJoyRead) snes->autoJoyTimer = 0;
+@@ -336,6 +363,7 @@ void snes_writeReg(Snes* snes, uint16_t adr, uint8_t val) {
+       break;
+     }
+     case 0x4201: {
++      xband_keyboard_write_io(&snes->xbandKeyboard, val);
+       if(!(val & 0x80) && snes->ppuLatch) {
+         // latch the ppu
+         ppu_read(g_ppu, 0x37);
+@@ -421,10 +449,8 @@ uint8_t snes_read(Snes* snes, uint32_t adr) {
+     if(adr >= 0x2100 && adr < 0x2200) {
+       return snes_readBBus(snes, adr & 0xff); // B-bus
+     }
+-    if (adr == 0x4016 || adr == 0x4017) {
+-      // joypad read disabled
+-      return 0;
+-    }
++    if (adr == 0x4016 || adr == 0x4017)
++      return snes_readReg(snes, adr);
+     if(adr >= 0x4200 && adr < 0x4220 || adr >= 0x4218 && adr < 0x4220) {
+       return snes_readReg(snes, adr); // internal registers
+     }
+@@ -436,6 +462,21 @@ uint8_t snes_read(Snes* snes, uint32_t adr) {
+   return cart_read(snes->cart, bank, adr);
+ }
+ 
++bool snes_xband_key_event(Snes* snes, uint8_t scancode, bool pressed,
++                          bool extended) {
++  return xband_keyboard_push_scancode(&snes->xbandKeyboard, scancode, pressed,
++                                      extended);
++}
++
++void snes_mouse_event(Snes* snes, int8_t dx, int8_t dy, bool left,
++                      bool right) {
++  if (!snes) return;
++  snes->mouse.dx = mouse_add_clamped(snes->mouse.dx, dx);
++  snes->mouse.dy = mouse_add_clamped(snes->mouse.dy, dy);
++  snes->mouse.left = left;
++  snes->mouse.right = right;
++}
++
+ void snes_write(Snes* snes, uint32_t adr, uint8_t val) {
+   uint8_t bank = adr >> 16;
+   adr &= 0xffff;
+@@ -466,7 +507,7 @@ void snes_write(Snes* snes, uint32_t adr, uint8_t val) {
+     if(adr >= 0x2100 && adr < 0x2200) {
+       snes_writeBBus(snes, adr & 0xff, val); // B-bus
+     }
+-    if(adr >= 0x4200 && adr < 0x4220) {
++    if(adr == 0x4016 || (adr >= 0x4200 && adr < 0x4220)) {
+       snes_writeReg(snes, adr, val); // internal registers
+     }
+     if(adr >= 0x4300 && adr < 0x4380) {
+diff --git a/runner/src/snes/snes.h b/runner/src/snes/snes.h
+index f60a43f..8b62c40 100644
+--- a/runner/src/snes/snes.h
++++ b/runner/src/snes/snes.h
+@@ -15,7 +15,21 @@ typedef struct Snes Snes;
+ #include "dma.h"
+ #include "ppu.h"
+ #include "cart.h"
+ #include "saveload.h"
++#include "xband_keyboard.h"
++
++/* Controller-port-1 Super NES Mouse state. It is transient host input, just
++ * like the XBAND keyboard, and therefore intentionally sits before the
++ * saveload blob. The report is latched by $4016.d0 and read MSB-first. */
++typedef struct SnesMouse {
++  int16_t dx;
++  int16_t dy;
++  bool left;
++  bool right;
++  bool strobe;
++  uint8_t bit;
++  uint32_t report;
++} SnesMouse;
+ 
+ struct Snes {
+   Cpu* cpu;
+@@ -25,7 +39,12 @@ struct Snes {
+   Cart* cart;
+   uint16 input1_currentState;
+   uint16 input2_currentState;
+   bool disableRender;
++
++  // Controller-port-2 XBAND keyboard. This is transient peripheral state,
++  // deliberately outside the saveload blob that starts at hPos.
++  XbandKeyboard xbandKeyboard;
++  SnesMouse mouse;
+ 
+   // ram data port ($2180-$2183)
+   uint32_t ramAdr;
+@@ -65,7 +84,11 @@ uint8_t snes_read(Snes* snes, uint32_t adr);
+ void snes_write(Snes* snes, uint32_t adr, uint8_t val);
+ uint8_t snes_readReg(Snes* snes, uint16_t adr);
+ void snes_writeReg(Snes* snes, uint16_t adr, uint8_t val);
+ uint16_t SwapInputBits(uint16_t x);
++bool snes_xband_key_event(Snes* snes, uint8_t scancode, bool pressed,
++                          bool extended);
++void snes_mouse_event(Snes* snes, int8_t dx, int8_t dy, bool left,
++                      bool right);
+ 
+ 
+ // snes_other.c functions:
+diff --git a/runner/src/snes/xband_keyboard.c b/runner/src/snes/xband_keyboard.c
+new file mode 100644
+index 0000000..bdf3815
+--- /dev/null
++++ b/runner/src/snes/xband_keyboard.c
+@@ -0,0 +1,75 @@
++#include "xband_keyboard.h"
++
++#include <string.h>
++
++static bool queue_byte(XbandKeyboard *keyboard, uint8_t value) {
++  if (keyboard->queue_count == kXbandKeyboardQueueCapacity)
++    return false;
++  uint8_t write = (uint8_t)((keyboard->queue_read + keyboard->queue_count) %
++                            kXbandKeyboardQueueCapacity);
++  keyboard->queue[write] = value;
++  keyboard->queue_count++;
++  return true;
++}
++
++void xband_keyboard_reset(XbandKeyboard *keyboard) {
++  memset(keyboard, 0, sizeof(*keyboard));
++  keyboard->io_high = true;
++}
++
++bool xband_keyboard_push_scancode(XbandKeyboard *keyboard, uint8_t scancode,
++                                  bool pressed, bool extended) {
++  unsigned needed = 1u + (extended ? 1u : 0u) + (pressed ? 0u : 1u);
++  if ((unsigned)keyboard->queue_count + needed > kXbandKeyboardQueueCapacity)
++    return false;
++  if (extended)
++    queue_byte(keyboard, 0xe0);
++  if (!pressed)
++    queue_byte(keyboard, 0xf0);
++  queue_byte(keyboard, scancode);
++  return true;
++}
++
++static void begin_transaction(XbandKeyboard *keyboard) {
++  keyboard->packet_count = keyboard->queue_count < 15 ? keyboard->queue_count : 15;
++  keyboard->bit_index = 0;
++  keyboard->transaction_active = true;
++  for (uint8_t i = 0; i < keyboard->packet_count; i++) {
++    keyboard->packet[i] = keyboard->queue[keyboard->queue_read];
++    keyboard->queue_read = (uint8_t)((keyboard->queue_read + 1) %
++                                     kXbandKeyboardQueueCapacity);
++    keyboard->queue_count--;
++  }
++}
++
++void xband_keyboard_write_io(XbandKeyboard *keyboard, uint8_t wrio) {
++  bool high = (wrio & 0x80) != 0;
++  if (!high)
++    begin_transaction(keyboard);
++  keyboard->io_high = high;
++}
++
++static uint8_t transaction_bit(const XbandKeyboard *keyboard, unsigned bit) {
++  if (bit < 8)
++    return (uint8_t)((0x78u >> bit) & 1u);
++  if (bit < 12)
++    return (uint8_t)((keyboard->packet_count >> (bit - 8)) & 1u);
++  bit -= 12;
++  if (bit >= (unsigned)keyboard->packet_count * 8u)
++    return 1;
++  return (uint8_t)((keyboard->packet[bit >> 3] >> (bit & 7)) & 1u);
++}
++
++uint8_t xband_keyboard_read_port(XbandKeyboard *keyboard) {
++  if (!keyboard->transaction_active)
++    return 0x03;
++  unsigned total_bits = 12u + (unsigned)keyboard->packet_count * 8u;
++  uint8_t pair = (uint8_t)(transaction_bit(keyboard, keyboard->bit_index) |
++                           (transaction_bit(keyboard, keyboard->bit_index + 1) << 1));
++  keyboard->bit_index = (uint8_t)(keyboard->bit_index + 2);
++  if (keyboard->bit_index >= total_bits)
++    keyboard->transaction_active = false;
++  // The keyboard's DATA0/DATA1 lines are active-low. The cartridge reader
++  // inverts the completed ID/count/scancode value, matching the XBAND BIOS.
++  return (uint8_t)(pair ^ 0x03u);
++}
+diff --git a/runner/src/snes/xband_keyboard.h b/runner/src/snes/xband_keyboard.h
+new file mode 100644
+index 0000000..a8ee8fd
+--- /dev/null
++++ b/runner/src/snes/xband_keyboard.h
+@@ -0,0 +1,26 @@
++#ifndef SNES_XBAND_KEYBOARD_H
++#define SNES_XBAND_KEYBOARD_H
++
++#include <stdbool.h>
++#include <stdint.h>
++
++enum { kXbandKeyboardQueueCapacity = 256 };
++
++typedef struct XbandKeyboard {
++  uint8_t queue[kXbandKeyboardQueueCapacity];
++  uint16_t queue_read;
++  uint16_t queue_count;
++  uint8_t packet[15];
++  uint8_t packet_count;
++  uint8_t bit_index;
++  bool io_high;
++  bool transaction_active;
++} XbandKeyboard;
++
++void xband_keyboard_reset(XbandKeyboard *keyboard);
++bool xband_keyboard_push_scancode(XbandKeyboard *keyboard, uint8_t scancode,
++                                  bool pressed, bool extended);
++void xband_keyboard_write_io(XbandKeyboard *keyboard, uint8_t wrio);
++uint8_t xband_keyboard_read_port(XbandKeyboard *keyboard);
++
++#endif

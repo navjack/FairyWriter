@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.navjack.FairyWriter</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <name>FairyWriter</name>
+  <summary>Source-generated SNES cartridge word processor</summary>
+  <description>
+    <p>FairyWriter runs a real, source-generated Super Nintendo word-processor cartridge inside a native desktop application.</p>
+    <p>The cartridge owns the fixed 256x224 editor, menus, help, keyboard, and mouse behavior. The native host owns documents, files, atomic saves, recovery, and operating-system integration.</p>
+    <p>FairyWriter is experimental pre-release software derived from FocusWriter 1.9.0.</p>
+  </description>
+
+  <url type="homepage">https://github.com/navjack/FairyWriter</url>
+  <url type="bugtracker">https://github.com/navjack/FairyWriter/issues</url>
+  <url type="vcs-browser">https://github.com/navjack/FairyWriter</url>
+
+  <developer id="io.github.navjack">
+    <name translatable="no">FairyWriter contributors</name>
+  </developer>
+
+  <provides>
+    <binary>fairywriter</binary>
+    <mediatype>application/rtf</mediatype>
+    <mediatype>application/vnd.oasis.opendocument.text</mediatype>
+    <mediatype>application/vnd.oasis.opendocument.text-flat-xml</mediatype>
+    <mediatype>application/vnd.openxmlformats-officedocument.wordprocessingml.document</mediatype>
+    <mediatype>text/plain</mediatype>
+    <mediatype>text/rtf</mediatype>
+  </provides>
+  <launchable type="desktop-id">fairywriter.desktop</launchable>
+
+  <kudos>
+    <kudo>HiDpiIcon</kudo>
+    <kudo>ModernToolkit</kudo>
+  </kudos>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="0.1.0" date="2026-07-28">
+      <description>
+        <p>Initial public-development baseline for the cartridge-owned FairyWriter product.</p>
+      </description>
+    </release>
+  </releases>
+</component>

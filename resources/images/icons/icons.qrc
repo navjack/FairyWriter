@@ -1,0 +1,5 @@
+<!DOCTYPE RCC><RCC version="1.0">
+<qresource>
+	<file alias="fairywriter.png">hicolor/256x256/apps/fairywriter.png</file>
+</qresource>
+</RCC>

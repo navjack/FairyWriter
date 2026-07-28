@@ -1,0 +1,47 @@
+name: Bug report
+description: Report reproducible FairyWriter behavior
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for helping test FairyWriter. Do not attach private documents.
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: Operating system version and CPU architecture
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Artifact name and SHA-256, or Git commit
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction
+      description: Exact steps from launch to the problem
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Safe supporting evidence
+      description: Logs, screenshots, or a minimal non-private document
+  - type: checkboxes
+    id: private
+    attributes:
+      label: Privacy check
+      options:
+        - label: I have removed private writing, credentials, and personal paths.
+          required: true

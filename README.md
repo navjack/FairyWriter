@@ -94,6 +94,20 @@ preserve and update it when making substantial changes.
 Bug reports and development discussion are welcome in
 [GitHub Issues](https://github.com/navjack/FairyWriter/issues).
 
+## Development process and AI disclosure
+
+FairyWriter was conceived and directed by Jack Mangano. The product ideas came
+from Jack, with the initial spark coming from a friend who wanted a word
+processor that looked like it belonged on the SNES. The decisive answer was to
+build the word processor on an actual source-generated SNES cartridge.
+
+Development made extensive use of agentic LLM coding assistance from Claude
+Fable, Opus, and Sonnet; Gemini Flash and Pro; and ChatGPT 5.6 Luna, Terra, and
+Sol. The agents helped implement, investigate, test, document, package, and
+audit the project under human direction. Read
+[How FairyWriter was developed](docs/DEVELOPMENT_PROCESS.md) for the full
+history, workflow, and attribution.
+
 ## Heritage and license
 
 FairyWriter is derived from

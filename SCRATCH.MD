@@ -53,6 +53,9 @@
   Mouse patch replaces the previous dependency on a neighboring dirty checkout.
 - Public-facing README, architecture/build/contribution/security/license
   indexes, GitHub templates, and Linux CI are published.
+- `docs/DEVELOPMENT_PROCESS.md` records Jack Mangano's creative ownership, the
+  friend's SNES-word-processor inspiration, the human-directed agentic workflow,
+  and the disclosed Claude, Gemini, and ChatGPT model families used.
 - `build-arm64` is the one active native build directory.
 - `build-arm64/FairyWriter.app` is the freshly built production app. The
   top-level `FairyWriter.app` has been synchronized from it after the complete

@@ -9,6 +9,11 @@ The project is now open for development. It is usable enough for focused
 testing, but it is not yet a stable general release. Expect missing features,
 rough edges, and file-format limitations.
 
+[Download the current tester packages from GitHub
+Releases](https://github.com/navjack/FairyWriter/releases). Release numbering
+and the publication checklist are documented in
+[VERSIONING.md](VERSIONING.md).
+
 No commercial ROM or copyrighted game data is included. The 64 KiB FairyWriter
 cartridge is generated from source during every build and embedded in the
 application.
@@ -56,7 +61,7 @@ ctest --test-dir build --output-on-failure
 ```
 
 See [BUILDING.md](BUILDING.md) for platform-specific requirements and
-packaging.
+packaging. `VERSION` is the authoritative product/package version.
 
 ## How it works
 

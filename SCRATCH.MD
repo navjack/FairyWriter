@@ -42,10 +42,10 @@
 
 ### Active working tree
 
-- Branch: `codex/three-platform-release`, based directly on public `origin/main`
-  after the persistence/ROM hardening and durable-handoff merges. Its intended
-  public scope is the native Windows x64 production runner, release-package
-  retention for all three platforms, and the matching tester/status documents.
+- Branch: `codex/versioning-baseline`, based directly on public `origin/main`
+  after the three-platform build PR merged and the `v0.1.0` tester preview was
+  published. Its intended public scope is one deterministic product-version
+  authority and the SemVer/release process from that baseline forward.
 - Private development branches remain local. Their history contains old
   packaged applications and must not be pushed. Public GitHub `main` was
   created as a new root from the sanitized source tree; neither it nor this
@@ -71,11 +71,10 @@
 - `build-arm64/FairyWriter.app` is the current validated production app. The
   ignored top-level `FairyWriter.app` was not synchronized during this
   source/push-readiness pass.
-- `release-macos-arm64/FairyWriter-0.1.0-macos-arm64.dmg` and
-  `release-linux-x86_64/FairyWriter-0.1.0-x86_64.AppImage` are fresh local
-  rebuilds from the current public source. The release itself must use retained
-  artifacts from one green post-merge GitHub Actions run so Windows and both
-  Unix packages share an exact source commit.
+- The local DMG/AppImage are fresh validation rebuilds from the versioning
+  branch. The published `v0.1.0` assets instead come from green post-merge
+  GitHub Actions run `30483999477` at public commit `440ddef`, so Windows and
+  both Unix release packages share one exact source commit.
 - `ideas/` remains ignored personal reference artwork. It was deliberately kept
   during repository cleanup because it is creative source material.
 - `plan.md` contains the user-authored durable persistence plan and is committed
@@ -117,12 +116,43 @@ public commit after each platform's real production and package audit passes.
   `--version` result empty. Windows now embeds standard `VERSIONINFO` product
   metadata from the CMake project version, and the package gate reads that
   native metadata instead of depending on console attachment behavior.
-- The repository has no existing tag or GitHub Release. The intended first
-  public package is a `v0.1.0` prerelease containing only the three packages and
-  their checksum sidecars from one green post-merge `main` run.
+- PR 4 squash-merged as public commit `440ddef`. Its post-merge run
+  `30483999477` passed all three production package jobs and retained exactly
+  one versioned package plus checksum per platform.
+- `v0.1.0` is published as an experimental GitHub prerelease with the audited
+  macOS arm64 DMG, Linux x86_64 AppImage, Windows x64 ZIP, and their three
+  checksum sidecars. GitHub's asset digests match the independently downloaded
+  packages: DMG `624174003d53c735d2b55a7b8b4f99a6637263d65d9ea7957bc92a62151d6b01`,
+  AppImage `f59e9a3beea0121d9b00e89cff3508508bcb6299e71c01560b8bb85368bdea93`,
+  and ZIP `a53826956fd4b62709f62815711749e923461b31fb6e2e0f995e84a00c75a166`.
 - This is automated build/package evidence, not physical Windows first launch,
   notarization, code signing identity, or human keyboard/mouse/dialog/recovery
   acceptance.
+
+### Completed in the current pass (deterministic versioning after v0.1.0)
+
+Invariant: one committed value must determine the product version everywhere;
+repository tags or dirtiness must never make identical source trees produce
+different application versions.
+
+- `VERSION` is the single `MAJOR.MINOR.PATCH` authority for CMake, executable
+  metadata, all three package builders, package filenames, and CI artifact
+  names.
+- The legacy version compile helper no longer uses `git describe`. Public tags
+  identify immutable releases; commit IDs and Actions run IDs identify
+  development builds.
+- `VERSIONING.md` defines pre-1.0 SemVer choices, exact-commit package
+  publication, changelog/AppStream updates, immutable tags/assets, and rendered
+  release verification. `v0.1.0` is the baseline.
+- The manpage and tester guide no longer contain independently maintained
+  current-package version strings.
+- Local validation after the public tag exists proves the same source still
+  reports `FairyWriter 0.1.0` rather than a `git describe` suffix. Native macOS
+  and containerized Linux production package gates each pass all 10 tests,
+  their version/content/display audits, and emit the `VERSION`-derived DMG or
+  AppImage plus checksum. The workflow passes actionlint 1.7.12, both shell
+  builders parse, the PowerShell builder parses, and the full branch delta
+  passes Gitleaks.
 
 ### Completed in the previous pass (persistence/ROM reconciliation)
 
@@ -212,46 +242,42 @@ Platform packaging may differ; product behavior and ownership may not.
   return keys.
 - Windows source/configuration and its ZIP builder now exist. File durability,
   normalized/case-insensitive catalog containment, root enumeration, GUI target
-  metadata, and executable icon are portable. This is source evidence only
-  until a Windows x64 host builds and runs it.
-- Production registers 7 tests. The three retired presentation/theme tests are
-  available only with development UI enabled, for 10 total.
+  metadata, and executable icon are portable. The subsequent native Windows CI
+  gate closes the build/test/deploy/package evidence gap but not physical first
+  launch.
+- Production registers 10 tests. The three retired presentation/theme tests
+  remain development-UI-only and outside the production gate.
 - Linux packaging is now `packaging/linux/build-linux.sh` and uses official Qt
   6.8.3 binaries on the Ubuntu 22.04/glibc baseline. macOS packaging stages the
   pruned arm64 bundle, deploys Qt, ad-hoc signs it, audits it, and makes a DMG.
-  Windows packaging targets Qt 6.8/vcpkg/windeployqt. Every artifact ships
-  `COPYING` and `TESTING.md`.
+  Windows packaging targets Qt 6.8/vcpkg/windeployqt. Every platform build
+  output includes `COPYING` and `TESTING.md`; the Windows ZIP and macOS DMG
+  contain them directly.
 - The former long-document ODT fixture had once been restored after accidental
   framebuffer overwrite. Before public development it was removed because it
   contained private writing; the generated public ODT now preserves the real
   reader/edit/save/reopen coverage without publishing that content.
 
-Current automated evidence: the sanitized public tree passes Gitleaks with no
-findings and contains no loose ROMs, private documents, packages, or files over
-5 MiB. The one public capture is an explicitly authorized, silent H.264 MP4;
-its SHA-256 is
+Current automated evidence: the sanitized public tree and current branch delta
+pass Gitleaks and contain no loose ROMs, private documents, or packaged
+applications in Git. The one public capture is the explicitly authorized,
+silent H.264 MP4 with SHA-256
 `1e7f9af86167cdce30afc5a7a023ab250f5c3ef9092f5b6286e60990b31f0024`.
-GitHub's Markdown renderer produces a real controlled video element for its
-user-attachment URL. A fresh public dependency bootstrap is idempotent. macOS
-ROM generator tests, the focused XBAND regression, and production `ctest`
-**7/7** pass against that dependency. GitHub Actions run `30408040731`
-independently passed the Linux Qt 6.8.3 container build, production **7/7**,
-AppImage version, X11, Wayland, and ROM/scratch audits. Earlier signed artifact
-hashes:
+Post-merge run `30483999477` passed the 10-test and package gate on macOS arm64,
+Linux x86_64, and Windows x64. The current versioning branch repeats the macOS
+and Linux production package gates locally; native Windows confirmation remains
+the PR CI boundary.
 
-- macOS DMG:
-  `181279b216cd28a710394c2e7a1ebccee04b74d55c913b8c94c9035fa2e70a2c`
-- Linux AppImage:
-  `217ba2cd7a484a1c0bbadb03b7ab9377b88719fff9a4f370d5e92207967fcc0e`
+Still manual/unproved: physical Windows first launch and SmartScreen behavior,
+macOS Intel, signing/notarization identities, and the full real-fixture
+mouse/keyboard/recovery pass on each platform. Do not launch the input-capturing
+GUI unattended to close that gap.
 
-Still manual/unproved: Windows build and first run, macOS Intel, and the full
-real-fixture mouse/keyboard/recovery pass on each platform. Do not launch the
-input-capturing GUI unattended to close that gap.
-
-Next concrete action: run the Windows builder and first-launch checks on Windows
-x64, then perform the complete human keyboard/mouse/recovery acceptance
-checklist on actual target systems. Keep public `main` free of private history,
-ROMs, documents, unauthorized captures, and packaged applications.
+Next concrete action: push the deterministic-versioning branch, require all
+three native package jobs to pass, then merge it. After that, perform the
+complete human keyboard/mouse/recovery acceptance checklist on actual target
+systems. Keep public `main` free of private history, ROMs, documents,
+unauthorized captures, and packaged applications.
 
 ### Completed in the latest pass (blue document surface)
 

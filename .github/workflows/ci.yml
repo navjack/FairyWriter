@@ -18,6 +18,12 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+      - name: Read product version
+        id: product_version
+        run: |
+          version=$(tr -d '\r\n' < VERSION)
+          [[ $version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
       - name: Prepare pinned SNES runtime
         run: ./scripts/bootstrap-snesrecomp.sh
       - name: Build, test, and audit AppImage
@@ -25,10 +31,10 @@ jobs:
       - name: Retain Linux release package
         uses: actions/upload-artifact@v6
         with:
-          name: FairyWriter-0.1.0-linux-x86_64
+          name: FairyWriter-${{ steps.product_version.outputs.version }}-linux-x86_64
           path: |
-            release-linux-x86_64/FairyWriter-0.1.0-x86_64.AppImage
-            release-linux-x86_64/FairyWriter-0.1.0-x86_64.AppImage.sha256
+            release-linux-x86_64/FairyWriter-${{ steps.product_version.outputs.version }}-x86_64.AppImage
+            release-linux-x86_64/FairyWriter-${{ steps.product_version.outputs.version }}-x86_64.AppImage.sha256
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
@@ -38,6 +44,12 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+      - name: Read product version
+        id: product_version
+        run: |
+          version=$(tr -d '\r\n' < VERSION)
+          [[ $version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
       - name: Install native build dependencies
         run: brew install cmake ninja qt go python
       - name: Prepare pinned SNES runtime
@@ -47,10 +59,10 @@ jobs:
       - name: Retain macOS release package
         uses: actions/upload-artifact@v6
         with:
-          name: FairyWriter-0.1.0-macos-arm64
+          name: FairyWriter-${{ steps.product_version.outputs.version }}-macos-arm64
           path: |
-            release-macos-arm64/FairyWriter-0.1.0-macos-arm64.dmg
-            release-macos-arm64/FairyWriter-0.1.0-macos-arm64.dmg.sha256
+            release-macos-arm64/FairyWriter-${{ steps.product_version.outputs.version }}-macos-arm64.dmg
+            release-macos-arm64/FairyWriter-${{ steps.product_version.outputs.version }}-macos-arm64.dmg.sha256
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
@@ -60,6 +72,13 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+      - name: Read product version
+        id: product_version
+        shell: bash
+        run: |
+          version=$(tr -d '\r\n' < VERSION)
+          [[ $version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
       - name: Install Qt 6.8.3
         uses: jurplel/install-qt-action@v4
         with:
@@ -78,10 +97,10 @@ jobs:
       - name: Retain Windows release package
         uses: actions/upload-artifact@v6
         with:
-          name: FairyWriter-0.1.0-windows-x64
+          name: FairyWriter-${{ steps.product_version.outputs.version }}-windows-x64
           path: |
-            release-windows-x64/FairyWriter-0.1.0-windows-x64.zip
-            release-windows-x64/FairyWriter-0.1.0-windows-x64.zip.sha256
+            release-windows-x64/FairyWriter-${{ steps.product_version.outputs.version }}-windows-x64.zip
+            release-windows-x64/FairyWriter-${{ steps.product_version.outputs.version }}-windows-x64.zip.sha256
           if-no-files-found: error
           compression-level: 0
           retention-days: 14

@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## 0.1.0 — tester preview
+## 0.1.0 — 2026-07-29 — tester preview
 
 - Added native macOS arm64, Linux x86_64, and Windows x64 release jobs. Every
   job runs the production test and package audit before retaining a versioned

@@ -1,4 +1,4 @@
-.TH FAIRYWRITER 1 "July 2026" "FairyWriter 0.1.0" "General Commands Manual"
+.TH FAIRYWRITER 1 "July 2026" "FairyWriter @PROJECT_VERSION@" "General Commands Manual"
 
 .SH "NAME"
 fairywriter \- source-generated SNES cartridge word processor

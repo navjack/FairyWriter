@@ -17,6 +17,10 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $SourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+$Version = (Get-Content -LiteralPath (Join-Path $SourceRoot "VERSION") -Raw).Trim()
+if ($Version -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+    throw "VERSION must contain one MAJOR.MINOR.PATCH number."
+}
 if ([string]::IsNullOrWhiteSpace($VcpkgRoot)) {
     throw "Pass -VcpkgRoot or set VCPKG_ROOT."
 }
@@ -38,7 +42,6 @@ foreach ($Required in @($QtConfig, $WinDeployQt, $Vcpkg, $Toolchain, $SnesInterp
     }
 }
 
-$Version = "0.1.0"
 $BuildRoot = Join-Path $SourceRoot "build-windows-x64"
 $ReleaseRoot = Join-Path $SourceRoot "release-windows-x64"
 $StageRoot = Join-Path $ReleaseRoot "FairyWriter-$Version-windows-x64"

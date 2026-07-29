@@ -2,6 +2,8 @@
 
 FairyWriter builds its cartridge from source and links a pinned, locally
 patched `snesrecomp` runtime. A fresh clone does not need a separate ROM.
+Package names and executable metadata read the canonical SemVer number from
+`VERSION`.
 
 ## Requirements
 
@@ -77,6 +79,6 @@ its first physical-machine acceptance pass.
 - `FAIRYWRITER_DEVELOPER_TOOLS=ON` builds standalone cartridge hosts.
 - `FAIRYWRITER_SNESRECOMP_ROOT=/path` selects an already prepared runtime.
 
-The production configuration currently registers seven tests. The development
+The production configuration currently registers 10 tests. The development
 UI adds three legacy presentation tests. Automated success does not replace the
 manual keyboard, mouse, recovery, and physical-platform checks in `TESTING.md`.

@@ -491,9 +491,15 @@ qt_add_resources(fairywriter "fairywriter_appicon"
 if(WIN32)
 	# Embed the native executable/taskbar icon as a Win32 resource. The same
 	# artwork is also in the Qt resource above for QWindow::setWindowIcon().
+	configure_file(
+		resources/windows/fairywriter-version.rc.in
+		${CMAKE_CURRENT_BINARY_DIR}/fairywriter-version.rc
+		@ONLY
+	)
 	target_sources(fairywriter PRIVATE
 		resources/windows/fairywriter.rc
 		resources/windows/fairywriter.ico
+		${CMAKE_CURRENT_BINARY_DIR}/fairywriter-version.rc
 	)
 	target_include_directories(fairywriter PRIVATE resources/windows)
 	set_source_files_properties(resources/windows/fairywriter.ico PROPERTIES HEADER_FILE_ONLY TRUE)

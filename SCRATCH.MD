@@ -111,6 +111,12 @@ public commit after each platform's real production and package audit passes.
   rich-text bold property that its authoritative UTF-8 source cannot represent;
   ODT/DOCX/RTF still must round-trip bold, while Markdown must round-trip its
   exact source and rendered text.
+- With all 10 native Windows tests green, staging and `windeployqt` completed.
+  The package audit then exposed that PowerShell does not synchronously capture
+  stdout from a GUI-subsystem executable, leaving the otherwise valid
+  `--version` result empty. Windows now embeds standard `VERSIONINFO` product
+  metadata from the CMake project version, and the package gate reads that
+  native metadata instead of depending on console attachment behavior.
 - The repository has no existing tag or GitHub Release. The intended first
   public package is a `v0.1.0` prerelease containing only the three packages and
   their checksum sidecars from one green post-merge `main` run.

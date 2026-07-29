@@ -42,14 +42,14 @@
 
 ### Active working tree
 
-- Branch: `codex/persistence-rom-hardening`, based directly on current public
-  `origin/main` (`b4c48d0`). It contains only the two user-authorized local
-  hardening commits plus their reconciliation; it is safe to push as a new
-  branch without force. The already-merged showcase branch remains untouched.
-- The local branch retains the full private development history. That history
-  contains old packaged applications and must not be pushed. Public GitHub
-  `main` was created as a new root from the sanitized source tree, leaving all
-  private local history and branches intact.
+- Branch: `codex/record-pr2-merge`, based directly on public `origin/main` after
+  the persistence/ROM hardening merge. It contains only this durable handoff
+  refresh. PR #2 squash-merged `codex/persistence-rom-hardening` into `main` at
+  `050e405` after both required production jobs passed.
+- Private development branches remain local. Their history contains old
+  packaged applications and must not be pushed. Public GitHub `main` was
+  created as a new root from the sanitized source tree; neither it nor this
+  handoff branch contains the private history.
 - Local documents, packaged applications, and the ignored `FairyWriter/`
   artifact directory remain untracked and untouched. The user-authorized demo
   was converted to a repository-owned H.264 MP4 at
@@ -72,8 +72,9 @@
   ignored top-level `FairyWriter.app` was not synchronized during this
   source/push-readiness pass.
 - `release-linux-x86_64/FairyWriter-0.1.0-x86_64.AppImage` predates the 64 KiB
-  cartridge and is stale against current source. The Linux CI/container gate
-  must rebuild it; do not publish the existing payload as current.
+  cartridge and is stale against current source. GitHub CI rebuilt and audited
+  a fresh AppImage for PR #2, but the local payload remains historical; do not
+  publish it as current.
 - `ideas/` remains ignored personal reference artwork. It was deliberately kept
   during repository cleanup because it is creative source material.
 - `plan.md` contains the user-authored durable persistence plan and is committed
@@ -546,6 +547,9 @@ and without the fix and confirming the new test fails then passes.
 - The direct SNES machine regression and mailbox regression pass, including the
   recovery-history UI, complete event acknowledgement, ring wrap, and
   full-versus-empty index invariant.
+- GitHub Actions run `30480171594` passed both required jobs before PR #2 was
+  merged: `macos-arm64` ran the complete 10-test production gate, and
+  `linux-x86_64` built, tested, packaged, and audited a fresh AppImage.
 - The prior Linux Qt 6.8.3 container rebuild from the ordered-worker source
   passed **9/9** in 21.33 seconds. Its AppImage passed `--version`,
   X11 and Wayland bounded launches, ROM/scratch exclusion, and package audits.
@@ -557,15 +561,13 @@ and without the fix and confirming the new test fails then passes.
 
 ### Next actions
 
-1. Push `codex/persistence-rom-hardening` and require the GitHub macOS and Linux
-   production gates to pass before merging.
-2. Perform the short packaged-app manual smoke on macOS and Linux: first Save,
+1. Perform the short packaged-app manual smoke on macOS and Linux: first Save,
    format picker layout, close/relaunch/open, F3 settings/history, forced-exit
    recovery, and Markdown Rendered/Source. Automated process evidence proves
    persistence semantics but not final cartridge pixels or packaged input.
-3. Run the Windows builder and equivalent first-launch/manual persistence pass
+2. Run the Windows builder and equivalent first-launch/manual persistence pass
    on Windows x64. macOS Intel remains unsupported.
-4. Keep the older long-document caret, scrollbar, wrap, and stale-cell checks in
+3. Keep the older long-document caret, scrollbar, wrap, and stale-cell checks in
    the same human acceptance pass; their automated evidence remains green but
    does not replace visual inspection.
 

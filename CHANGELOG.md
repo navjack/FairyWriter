@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- Kept resolved recovery generations as history without presenting them as
+  unfinished startup work. A successful primary save or explicit Discard now
+  closes the startup-prompt boundary for all older generations, while a later
+  checkpoint becomes the sole unresolved candidate.
+- Grew the cartridge from 32 KiB to 64 KiB LoROM, splitting it into a program
+  bank and a data bank. Program space went from 59 free bytes to 21480, and the
+  PPU tile budget from 0 free bytes to 10736 (554 of 889 slots used, against a
+  1024-tile VRAM ceiling). LoROM was never the constraint — it addresses up to
+  4 MB — and HiROM was rejected because it would relocate the SRAM mailbox off
+  `$70:0000` to buy 64 KiB-contiguous data the VRAM ceiling makes unusable.
+- Fixed the cartridge header checksum, which was computed with both the checksum
+  and its complement zeroed rather than `$0000`/`$ffff`, leaving it `0x1fe` below
+  the canonical value. Lenient loaders accepted it; a real verifier would not.
+- Pointed every interrupt vector except RESET at an RTI landing pad instead of at
+  the reset entry, wrote the v3 extended header that developer ID `$33` had been
+  advertising without populating, and established DB explicitly at reset.
+- Added `tools/fairywriter-romcheck` and the `fairywriter_cartridge_conformance`
+  test, which check the canonical checksum, map mode against header position,
+  vector resolution, and that no rival header location can outscore the real one
+  and flip the image to HiROM.
 - Opened the source tree for public development with clean project
   documentation, contribution guidance, issue templates, and Linux CI.
 - Made the patched `snesrecomp` dependency reproducible from a fresh clone.

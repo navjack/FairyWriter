@@ -1,4 +1,75 @@
-# FairyWriter Development Status (Synced 2026-07-28)
+# FairyWriter Development Status (Synced 2026-07-29)
+
+## 2026-07-29 persistence and cartridge reconciliation
+
+The durable-persistence and SNES-conformance changes now share one public
+`origin/main` base and one production gate. The cartridge is a canonical 64 KiB
+two-bank LoROM with validated header selection, checksum, vectors, explicit DB
+state, and bank-aware data access. `fairywriter_cartridge_conformance` raises
+the production expectation to **10/10**.
+
+Recovery generations now also carry an explicit resolved-transition bit. A
+successful primary save or an explicit Discard retains older generations in
+Recovery History but removes them from startup candidates; a later checkpoint
+becomes the sole unresolved candidate. Version-1 recovery files remain readable
+and conservatively unresolved.
+
+## 2026-07-29 durable persistence, recovery, autosave, and Markdown
+
+Persistence now has one production coordinator and one invariant: a transition
+cannot replace or close a document until one immutable content generation has a
+typed durable result.
+
+### State and filesystem safety
+
+- Viewport revisions are separate from content generations. Cursor movement,
+  selection, Find, and scrolling never dirty a document or create recovery;
+  text and formatting changes do.
+- The UI thread captures immutable snapshots. A single FIFO worker performs
+  file reads, parsing/encoding, SHA-256 hashing, recovery rotation, sync, and
+  atomic commit. Close and document replacement wait for its result.
+- New files use same-directory staging, complete write + sync, no-replace
+  rename, and directory sync. Existing-file replacement disables direct-write
+  fallback and checks size/mtime/SHA-256 before encoding and again immediately
+  before commit. Failed or corrupt loads leave the active document untouched.
+- ODT is the new-document and first-Save default. Save As offers ODT, DOCX, RTF,
+  and Markdown; FODT and plain text remain compatibility formats.
+
+### Autosave and recovery
+
+- Defaults are Save + Recovery, one minute, and five retained copies. F3 exposes
+  Recovery Only, the 1-255 minute interval, 0-255 copies, Recovery History, and
+  Markdown Rendered/Source. Zero copies disables timed writes; explicit Save and
+  pinned Checkpoint remain available.
+- Independent checksummed `.fwrecover` generations retain document identity,
+  original path/format, rich state or Markdown source, cursor/anchor, sequence,
+  UTC time, content hash, and primary fingerprint. Adjacent duplicates collapse,
+  A-B-A remains history, rotation happens only after commit, corrupt generations
+  are skipped, and matching post-save history does not prompt at startup.
+- Close, New, Open, Recent, session switching, and Recovery use one
+  cartridge-owned Checkpoint/Save/Discard/Cancel transition. Restored recovery
+  is dirty and retains its original path, format, and prior fingerprint.
+
+### Markdown and validation
+
+- Vendored cmark-gfm `0.29.0.gfm.13`
+  (`587a12bb54d95ac37241377e6ddc93ea0e45439b`) provides reproducible offline
+  GFM parsing. Source is authoritative UTF-8; untouched source is byte-stable,
+  common rendered edits patch their smallest unique source span, and links,
+  images, raw HTML, front matter, and destinations remain inert.
+- Persistence adds two production tests. `fairywriter_persistence` runs the 670-example
+  GFM corpus plus real filesystem, fingerprint, recovery, format, and Markdown
+  regressions. `fairywriter_persistence_process_e2e` launches the actual
+  production executable and drives ordinary cartridge input through
+  ODT/DOCX/RTF/Markdown save/relaunch plus unclean checkpoint recovery.
+- A macOS CI production job now accompanies Linux. Automated native macOS and
+  Linux container evidence establishes persistence behavior; packaged
+  mouse/keyboard/dialog layout still requires the short human smoke described
+  in `TESTING.md`.
+- Before the cartridge-conformance commit, the native macOS production gate and
+  Qt 6.8.3 Linux container gate both passed **9/9**. That AppImage also passed
+  its X11 and Wayland bounded launches; its SHA-256 is
+  `878ce2e8d41d93a090b3a18f57ca0ac203bd765a546423042e469784aca3bdf4`.
 
 ## 2026-07-28 three-platform tester-readiness pass
 
@@ -229,9 +300,11 @@ Four defects had to be fixed first, all of them blocking:
    Now an absolute `JMP`. Any remaining hand-computed displacement in this file
    is a latent instance of the same bug.
 
-Cartridge static-data layout moved another `+0x100` (cumulative `+0x500`). After
-the later help-plane shift and current deterministic rebuild, the image uses 554
-tiles and has 76 slots left before `scanMapOffset`.
+Cartridge static-data layout moved another `+0x100` (cumulative `+0x500`). In
+the old 32 KiB layout, the later help-plane shift used all 554 available PPU
+tile slots. The reconciled 64 KiB layout moves bulk data into bank 1 and has 889
+cartridge slots before the rival-header reservation, while VRAM remains capped
+at 1024 tiles.
 
 Follow-ups this exposed (both since closed -- see the section above): the pointer
 rejecting rows >= 8, and the local optimistic Up/Down move disagreeing with what
@@ -311,7 +384,7 @@ Authoritative docs:
   whose filename, text, and three chapter markers are exercised automatically
   via `ctest`; no private manuscript is part of the repository.
 - Bold/italic/underline rendering is implemented end to end. The host already transmitted these format-run flags; the ROM previously masked them out (`AND #$18`) before they reached the per-cell style map. Fixed by widening the mask to `#$1f` at both the projection loop and the draw loop, and adding three new 128-tile glyph-shape pages (underline/bold/italic, ids 128-511) generated by pixel-transforming the existing resident font (underline: lit 8th row; bold: 1px right dilation; italic: up-to-2px top-weighted right skew). Style (shape) and proofing (palette) are independent bit fields in the SNES tilemap attribute byte and combine correctly on the same cell (e.g. bold+spelling), confirmed both by SNES-level tests and a direct framebuffer/PPM visual dump. Priority when more than one style bit is set on the same run: underline > bold > italic. Selection continues to take priority over both proofing and style. Gated by a real `richStyleVisualsEnabled` switch (unlike the pre-existing `proofingVisualsEnabled`, which was found to be inert/never referenced).
-- The ROM's static-data layout (`menuOffset` and everything after it) moved by a cumulative `+0x400` in this historical pass: rich-style rendering, toolbar staging/DMA, and the document-position path each consumed explicit program-space pages. The later help-plane shift and current rebuild use 554 PPU tiles and retain 76 slots before `scanMapOffset`. Two styled-path branches use the standard 65816 long-branch trampoline (inverted condition skipping over an absolute `JMP`).
+- The ROM's static-data layout (`menuOffset` and everything after it) moved by a cumulative `+0x400` in this historical pass: rich-style rendering, toolbar staging/DMA, and the document-position path each consumed explicit program-space pages. The later help-plane shift and current rebuild use 554 PPU tiles, which exactly fill the gap before `scanMapOffset` (17728 bytes = 554 * 32) -- slot 555 panics the build. An earlier revision of this line claimed 76 spare slots; that has not been true since the help plane landed. Two styled-path branches use the standard 65816 long-branch trampoline (inverted condition skipping over an absolute `JMP`).
 ## 2026-07-27 caret positioning, Page Up/Down, and word-wrap overflow fixes
 - Caret positioning bug fixed: the draw loop had two unconditional `$0b` overwrite sites (natural end-of-text, and the `screenFull` overflow sentinel) that clobbered the one true per-character caret capture whenever the cursor sat before the last rendered character. Both are now guarded by a new "already found" flag (`$56`), zeroed once per render pass. A separate, previously-masked bug was exposed by this fix: `drawCursor` unconditionally rewrote the cell's attribute byte (not just the glyph tile) wherever it drew the caret, which used to be harmless only because the caret was always misplaced past the end of real text; fixed by dropping the attribute write.
 - Page Up/Page Down now emit `MovePageUp`/`MovePageDown` commands from the document editor: `command_enqueue`'s dispatch chain previously stopped checking at `End` (0x17) and silently dropped both codes as non-printable, even though the host already implemented both commands and the file browser's separate dispatcher already handled them.

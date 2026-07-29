@@ -1,14 +1,18 @@
 #include "document_engine.h"
 #include <QStringDecoder>
 #include "document_writer.h"
+#include "markdown_codec.h"
 #include "format_manager.h"
 #include "format_reader.h"
 #include <QFile>
 #include <QFileInfo>
+#include <QCryptographicHash>
 #include <QRegularExpression>
 #include <QTextBlock>
 #include <QTextDocumentFragment>
 #include <QTextBoundaryFinder>
+#include <QUrl>
+#include <QVariant>
 #include <memory>
 #include <algorithm>
 #include <string>
@@ -139,7 +143,136 @@ static std::vector<std::uint8_t> residentTitleBytes(const QString& filename) {
 	return result;
 }
 
-DocumentEngine::DocumentEngine() : m_cursor(&m_document) {}
+DocumentEngine::DocumentEngine() : m_cursor(&m_document) {
+	// Markdown links and image destinations are document data, never I/O
+	// instructions. Returning an empty resource keeps local and network images
+	// inert even if a layout requests them.
+	m_document.setResourceProvider([](const QUrl&) { return QVariant(); });
+	markSaved();
+}
+
+bool DocumentEngine::isMarkdown() const noexcept {
+	return m_format == QLatin1String("md") || m_format == QLatin1String("markdown");
+}
+
+QByteArray DocumentEngine::currentMarkdownSource() const {
+	if (!isMarkdown()) return {};
+	if (m_markdown_source_mode) return m_document.toPlainText().toUtf8();
+	if (m_markdown_source_pristine) return m_markdown_source;
+	return m_document.toMarkdown(QTextDocument::MarkdownDialectGitHub).toUtf8();
+}
+
+void DocumentEngine::reconcileMarkdownProjection() {
+	const QString projection = m_document.toPlainText();
+	if (m_markdown_projection_text.isNull()) {
+		m_markdown_projection_text = projection;
+		m_markdown_source_pristine = false;
+		return;
+	}
+	// Appending or prepending rendered prose is the common semantic edit and
+	// has an exact source mapping: the existing source region is untouched.
+	// Keep every byte of front matter, raw HTML, destinations and hand-authored
+	// spacing, and add only the newly projected UTF-8 text.
+	if (projection == m_markdown_projection_text) {
+		// A content commit with identical plain text is formatting-only.
+		m_markdown_source_pristine = false;
+	} else if (projection.startsWith(m_markdown_projection_text)) {
+		m_markdown_source += projection.mid(
+			m_markdown_projection_text.size()).toUtf8();
+		m_markdown_source_pristine = true;
+	} else if (projection.endsWith(m_markdown_projection_text)) {
+		m_markdown_source.prepend(projection.left(
+			projection.size() - m_markdown_projection_text.size()).toUtf8());
+		m_markdown_source_pristine = true;
+	} else {
+		// A rendered replacement/deletion inside a unique literal has one exact
+		// source span. Patch that smallest span and leave every other byte,
+		// including surrounding Markdown delimiters and inert raw HTML, alone.
+		int prefix = 0;
+		const int shared = qMin(projection.size(),
+			m_markdown_projection_text.size());
+		while (prefix < shared
+			&& projection.at(prefix) == m_markdown_projection_text.at(prefix)) {
+			++prefix;
+		}
+		int suffix = 0;
+		while (suffix < projection.size() - prefix
+			&& suffix < m_markdown_projection_text.size() - prefix
+			&& projection.at(projection.size() - 1 - suffix)
+				== m_markdown_projection_text.at(
+					m_markdown_projection_text.size() - 1 - suffix)) {
+			++suffix;
+		}
+		const QByteArray old_literal = m_markdown_projection_text.mid(
+			prefix,
+			m_markdown_projection_text.size() - prefix - suffix).toUtf8();
+		const QByteArray new_literal = projection.mid(
+			prefix, projection.size() - prefix - suffix).toUtf8();
+		const int source_at = old_literal.isEmpty()
+			? -1 : m_markdown_source.indexOf(old_literal);
+		if (source_at >= 0
+			&& m_markdown_source.indexOf(old_literal,
+				source_at + old_literal.size()) < 0) {
+			m_markdown_source.replace(source_at, old_literal.size(), new_literal);
+			m_markdown_source_pristine = true;
+		} else {
+			// Ambiguous edits and formatting-only changes cannot be assigned to
+			// one source span without guessing. Qt's GFM projection is the
+			// explicit fallback; Source mode remains byte-exact.
+			m_markdown_source_pristine = false;
+		}
+	}
+	m_markdown_projection_text = projection;
+}
+
+QByteArray DocumentEngine::markdownSource() const {
+	return currentMarkdownSource();
+}
+
+QByteArray DocumentEngine::contentHash() const {
+	QCryptographicHash hash(QCryptographicHash::Sha256);
+	if (isMarkdown()) {
+		hash.addData(QByteArrayLiteral("markdown\0"));
+		hash.addData(currentMarkdownSource());
+	} else {
+		hash.addData(QByteArrayLiteral("richtext\0"));
+		hash.addData(m_document.toHtml().toUtf8());
+	}
+	return hash.result();
+}
+
+bool DocumentEngine::isDirty() const {
+	return contentHash() != m_saved_content_hash;
+}
+
+void DocumentEngine::markSaved() {
+	m_saved_content_hash = contentHash();
+	m_document.setModified(false);
+}
+
+bool DocumentEngine::setMarkdownSourceMode(bool source_mode) {
+	if (!isMarkdown() || source_mode == m_markdown_source_mode) return isMarkdown();
+	const int position = m_cursor.position();
+	const int anchor = m_cursor.anchor();
+	if (source_mode) {
+		m_markdown_source = currentMarkdownSource();
+		m_document.setPlainText(QString::fromUtf8(m_markdown_source));
+		m_markdown_source_pristine = true;
+	} else {
+		m_markdown_source = m_document.toPlainText().toUtf8();
+		m_document.setMarkdown(QString::fromUtf8(m_markdown_source),
+			QTextDocument::MarkdownDialectGitHub);
+		m_markdown_source_pristine = true;
+		m_markdown_projection_text = m_document.toPlainText();
+	}
+	m_markdown_source_mode = source_mode;
+	m_cursor = QTextCursor(&m_document);
+	m_cursor.setPosition(qBound(0, anchor, m_document.characterCount() - 1));
+	m_cursor.setPosition(qBound(0, position, m_document.characterCount() - 1),
+		QTextCursor::KeepAnchor);
+	commitViewport();
+	return true;
+}
 
 void DocumentEngine::refreshDocumentCache() const {
 	const int document_revision = m_document.revision();
@@ -184,7 +317,36 @@ DocumentEngine::Statistics DocumentEngine::statistics() const {
 bool DocumentEngine::load(const QString& filename, const QString& type) {
 	QFile file(filename);
 	if (!file.open(QIODevice::ReadOnly)) return false;
-	const QString selected = type.isEmpty() ? filename.section(QLatin1Char('.'), -1).toLower() : type.toLower();
+	QString selected = type.isEmpty() ? filename.section(QLatin1Char('.'), -1).toLower() : type.toLower();
+	if (selected == QLatin1String("markdown")) selected = QStringLiteral("md");
+	if (selected == QLatin1String("md")) {
+		const QByteArray source = file.readAll();
+		QStringDecoder decoder(QStringDecoder::Utf8);
+		const QString decoded = decoder.decode(source);
+		if (decoder.hasError() || !MarkdownCodec::validate(source)) return false;
+		QTextDocument parsed;
+		parsed.setResourceProvider([](const QUrl&) { return QVariant(); });
+		parsed.setMarkdown(decoded, QTextDocument::MarkdownDialectGitHub);
+		m_document.clear();
+		QTextCursor destination(&m_document);
+		destination.insertFragment(QTextDocumentFragment(&parsed));
+		m_filename = filename;
+		m_format = QStringLiteral("md");
+		m_markdown_source = source;
+		m_markdown_source_pristine = true;
+		m_markdown_source_mode = false;
+		m_markdown_projection_text = m_document.toPlainText();
+		m_loaded_modified = QFileInfo(filename).lastModified();
+		m_loaded_fingerprint = FileFingerprint::read(filename);
+		m_has_loaded_file = true;
+		m_read_only = !QFileInfo(filename).isWritable();
+		m_revision = 0;
+		m_content_generation = 0;
+		m_document_id = QUuid::createUuid();
+		m_cursor = QTextCursor(&m_document);
+		markSaved();
+		return true;
+	}
 	std::unique_ptr<FormatReader> reader(FormatManager::createReader(&file, selected));
 	if (!reader) return false;
 	if ((selected == "odt" || selected == "fodt") && reader->type() != 3) return false;
@@ -199,11 +361,57 @@ bool DocumentEngine::load(const QString& filename, const QString& type) {
 	m_filename = filename;
 	m_format = selected.isEmpty() ? QStringLiteral("odt") : selected;
 	m_loaded_modified = QFileInfo(filename).lastModified();
+	m_loaded_fingerprint = FileFingerprint::read(filename);
 	m_has_loaded_file = true;
 	m_read_only = !QFileInfo(filename).isWritable();
 	m_revision = 0;
-	m_saved_revision = 0;
+	m_content_generation = 0;
+	m_document_id = QUuid::createUuid();
+	m_markdown_source.clear();
+	m_markdown_projection_text.clear();
+	m_markdown_source_pristine = false;
+	m_markdown_source_mode = false;
 	m_cursor = QTextCursor(&m_document);
+	markSaved();
+	return true;
+}
+
+bool DocumentEngine::saveTo(const QString& target, bool create_new,
+	std::optional<FileFingerprint> expected) {
+	if (target.isEmpty()) return false;
+	DocumentWriter writer;
+	writer.setDocument(&m_document);
+	writer.setFileName(target);
+	QString target_format = target == m_filename
+		? m_format : target.section(QLatin1Char('.'), -1).toLower();
+	if (target_format == QLatin1String("markdown")) target_format = QStringLiteral("md");
+	writer.setType(target_format);
+	if (target_format == QLatin1String("md")) writer.setMarkdownSource(currentMarkdownSource());
+	if (!create_new && !expected && target == m_filename && m_has_loaded_file) {
+		expected = m_loaded_fingerprint;
+	}
+	if (expected) {
+		writer.setPreCommitCheck([target, expected = *expected] {
+			return expected.sameContent(FileFingerprint::read(target));
+		});
+	}
+	if (!writer.write(create_new
+			? DocumentWriter::WriteMode::CreateNew
+			: DocumentWriter::WriteMode::ReplaceExisting)) {
+		return false;
+	}
+	m_filename = target;
+	m_format = target_format;
+	if (isMarkdown()) {
+		m_markdown_source = currentMarkdownSource();
+		m_markdown_source_pristine = true;
+		m_markdown_projection_text = m_document.toPlainText();
+	}
+	m_loaded_modified = QFileInfo(target).lastModified();
+	m_loaded_fingerprint = FileFingerprint::read(target);
+	m_has_loaded_file = true;
+	m_read_only = !QFileInfo(target).isWritable();
+	markSaved();
 	return true;
 }
 
@@ -211,21 +419,16 @@ bool DocumentEngine::save(const QString& filename) {
 	const QString target = filename.isEmpty() ? m_filename : filename;
 	if (target.isEmpty()) return false;
 	if (m_read_only && filename.isEmpty()) return false;
-	if (filename.isEmpty() && m_has_loaded_file) {
-		const QFileInfo current(target);
-		if (!current.exists() || current.lastModified() != m_loaded_modified) return false;
+	if (filename.isEmpty() && m_has_loaded_file
+		&& !m_loaded_fingerprint.sameContent(FileFingerprint::read(target))) {
+		return false;
 	}
-	DocumentWriter writer;
-	writer.setDocument(&m_document);
-	writer.setFileName(target);
-	writer.setType(filename.isEmpty() ? m_format : target.section(QLatin1Char('.'), -1).toLower());
-	if (!writer.write()) return false;
-	m_filename = target;
-	m_format = target.section(QLatin1Char('.'), -1).toLower();
-	m_loaded_modified = QFileInfo(target).lastModified();
-	m_has_loaded_file = true;
-	m_saved_revision = m_revision;
-	return true;
+	return saveTo(target, false);
+}
+
+bool DocumentEngine::saveNew(const QString& filename) {
+	if (filename.isEmpty() || QFileInfo::exists(filename)) return false;
+	return saveTo(filename, true);
 }
 
 bool DocumentEngine::writeRecovery(const QString& filename) const {
@@ -234,6 +437,7 @@ bool DocumentEngine::writeRecovery(const QString& filename) const {
 	writer.setDocument(&m_document);
 	writer.setFileName(filename);
 	writer.setType(m_format.isEmpty() ? QStringLiteral("odt") : m_format);
+	if (isMarkdown()) writer.setMarkdownSource(currentMarkdownSource());
 	return writer.write();
 }
 
@@ -245,6 +449,9 @@ bool DocumentEngine::recover(const QString& filename, const QString& originalFil
 	m_filename = originalFilename;
 	m_has_loaded_file = !originalFilename.isEmpty();
 	m_read_only = false;
+	// A recovered snapshot is not a primary-file save. It must remain dirty even
+	// if its bytes happen to match the recovery payload that was just parsed.
+	m_saved_content_hash.clear();
 	return true;
 }
 
@@ -255,10 +462,79 @@ bool DocumentEngine::newDocument(std::uint64_t expected_revision) {
 	m_filename.clear();
 	m_format = QStringLiteral("odt");
 	m_loaded_modified = QDateTime();
+	m_loaded_fingerprint = {};
 	m_has_loaded_file = false;
 	m_read_only = false;
 	m_revision = 0;
-	m_saved_revision = 0;
+	m_content_generation = 0;
+	m_document_id = QUuid::createUuid();
+	m_markdown_source.clear();
+	m_markdown_projection_text.clear();
+	m_markdown_source_pristine = false;
+	m_markdown_source_mode = false;
+	markSaved();
+	return true;
+}
+
+DocumentSnapshot DocumentEngine::snapshot() const {
+	DocumentSnapshot result;
+	result.document_id = m_document_id;
+	if (!documentFormatFromName(m_format, result.format)) {
+		result.format = DocumentFormat::PlainText;
+	}
+	result.filename = m_filename;
+	result.rich_html = m_document.toHtml().toUtf8();
+	if (isMarkdown()) result.markdown_source = currentMarkdownSource();
+	result.content_hash = contentHash();
+	result.viewport_revision = m_revision;
+	result.content_generation = m_content_generation;
+	result.cursor = m_cursor.position();
+	result.anchor = m_cursor.anchor();
+	return result;
+}
+
+bool DocumentEngine::restoreSnapshot(const DocumentSnapshot& snapshot, bool dirty) {
+	if (snapshot.document_id.isNull() || snapshot.content_hash.size() != 32) return false;
+	QTextDocument restored;
+	if (snapshot.format == DocumentFormat::Markdown) {
+		QStringDecoder decoder(QStringDecoder::Utf8);
+		const QString source = decoder.decode(snapshot.markdown_source);
+		if (decoder.hasError() || !MarkdownCodec::validate(snapshot.markdown_source)) return false;
+		restored.setResourceProvider([](const QUrl&) { return QVariant(); });
+		restored.setMarkdown(source, QTextDocument::MarkdownDialectGitHub);
+	} else {
+		QStringDecoder decoder(QStringDecoder::Utf8);
+		const QString html = decoder.decode(snapshot.rich_html);
+		if (decoder.hasError()) return false;
+		restored.setHtml(html);
+	}
+	m_document.clear();
+	QTextCursor destination(&m_document);
+	destination.insertFragment(QTextDocumentFragment(&restored));
+	m_document_id = snapshot.document_id;
+	m_format = documentFormatName(snapshot.format);
+	m_filename = snapshot.filename;
+	m_markdown_source = snapshot.markdown_source;
+	m_markdown_source_pristine = snapshot.format == DocumentFormat::Markdown;
+	m_markdown_source_mode = false;
+	m_markdown_projection_text = snapshot.format == DocumentFormat::Markdown
+		? m_document.toPlainText() : QString();
+	m_has_loaded_file = !m_filename.isEmpty();
+	m_read_only = false;
+	m_revision = snapshot.viewport_revision;
+	m_content_generation = snapshot.content_generation;
+	m_cursor = QTextCursor(&m_document);
+	const int maximum = qMax(0, m_document.characterCount() - 1);
+	m_cursor.setPosition(qBound(0, snapshot.anchor, maximum));
+	m_cursor.setPosition(qBound(0, snapshot.cursor, maximum), QTextCursor::KeepAnchor);
+	// Persistence owns filesystem identity. A recovery restore must retain the
+	// fingerprint recorded with the checkpoint, and a parsed load supplies the
+	// fingerprint read by its ordered disk task after this immutable state has
+	// been installed on the UI thread.
+	m_loaded_modified = QDateTime();
+	m_loaded_fingerprint = {};
+	if (dirty) m_saved_content_hash.clear();
+	else markSaved();
 	return true;
 }
 
@@ -266,22 +542,28 @@ bool DocumentEngine::accepts(std::uint64_t expected_revision) const noexcept {
 	return expected_revision == m_revision;
 }
 
-void DocumentEngine::commit() {
+void DocumentEngine::commitViewport() {
 	++m_revision;
+}
+
+void DocumentEngine::commitContent() {
+	++m_revision;
+	++m_content_generation;
+	if (isMarkdown() && !m_markdown_source_mode) reconcileMarkdownProjection();
 }
 
 bool DocumentEngine::insertText(std::uint64_t expected_revision, const QString& value) {
 	if (m_read_only || !accepts(expected_revision) || value.isEmpty()) return false;
 	const QString insertion = m_smart_quotes ? smartQuoteText(value, m_document.characterAt(m_cursor.position() - 1)) : value;
 	m_cursor.insertText(insertion);
-	commit();
+	commitContent();
 	return true;
 }
 
 bool DocumentEngine::deleteSelection(std::uint64_t expected_revision) {
 	if (m_read_only || !accepts(expected_revision) || !m_cursor.hasSelection()) return false;
 	m_cursor.removeSelectedText();
-	commit();
+	commitContent();
 	return true;
 }
 
@@ -296,7 +578,7 @@ bool DocumentEngine::deleteBackward(std::uint64_t expected_revision) {
 		m_cursor.setPosition(previous, QTextCursor::KeepAnchor);
 	}
 	m_cursor.removeSelectedText();
-	commit();
+	commitContent();
 	return true;
 }
 
@@ -311,7 +593,7 @@ bool DocumentEngine::deleteForward(std::uint64_t expected_revision) {
 		m_cursor.setPosition(next, QTextCursor::KeepAnchor);
 	}
 	m_cursor.removeSelectedText();
-	commit();
+	commitContent();
 	return true;
 }
 
@@ -319,7 +601,7 @@ bool DocumentEngine::moveCursor(std::uint64_t expected_revision, QTextCursor::Mo
 	QTextCursor::MoveMode mode, int n) {
 	if (!accepts(expected_revision) || n < 1) return false;
 	if (!m_cursor.movePosition(op, mode, n)) return true; // valid boundary no-op
-	commit();
+	commitViewport();
 	return true;
 }
 
@@ -328,7 +610,7 @@ bool DocumentEngine::setCursorPosition(std::uint64_t expected_revision, int posi
 	const int clamped = qBound(0, position, static_cast<int>(cachedPlainText().size()));
 	if (m_cursor.position() == clamped && !m_cursor.hasSelection()) return true; // no-op
 	m_cursor.setPosition(clamped);
-	commit();
+	commitViewport();
 	return true;
 }
 
@@ -337,28 +619,28 @@ bool DocumentEngine::setSelectionEndPosition(std::uint64_t expected_revision, in
 	const int clamped = qBound(0, position, static_cast<int>(cachedPlainText().size()));
 	if (m_cursor.position() == clamped) return true; // no-op
 	m_cursor.setPosition(clamped, QTextCursor::KeepAnchor);
-	commit();
+	commitViewport();
 	return true;
 }
 
 bool DocumentEngine::undo(std::uint64_t expected_revision) {
 	if (m_read_only || !accepts(expected_revision) || !m_document.isUndoAvailable()) return false;
 	m_document.undo();
-	commit();
+	commitContent();
 	return true;
 }
 
 bool DocumentEngine::redo(std::uint64_t expected_revision) {
 	if (m_read_only || !accepts(expected_revision) || !m_document.isRedoAvailable()) return false;
 	m_document.redo();
-	commit();
+	commitContent();
 	return true;
 }
 
 bool DocumentEngine::selectAll(std::uint64_t expected_revision) {
 	if (!accepts(expected_revision)) return false;
 	m_cursor.select(QTextCursor::Document);
-	commit();
+	commitViewport();
 	return true;
 }
 
@@ -376,7 +658,7 @@ bool DocumentEngine::replaceAll(std::uint64_t expected_revision, const QString& 
 	}
 	transaction.endEditBlock();
 	m_cursor = QTextCursor(&m_document);
-	commit();
+	commitContent();
 	return true;
 }
 
@@ -391,12 +673,12 @@ bool DocumentEngine::findNext(std::uint64_t expected_revision, const QString& qu
 	if (match.isNull()) {
 		if (m_cursor.hasSelection()) {
 			m_cursor.clearSelection();
-			commit();
+			commitViewport();
 		}
 		return false;
 	}
 	m_cursor = match;
-	commit();
+	commitViewport();
 	return true;
 }
 
@@ -417,7 +699,7 @@ bool DocumentEngine::promoteInferredChapterHeadings(std::uint64_t expected_revis
 		heading.setBlockFormat(format);
 	}
 	transaction.endEditBlock();
-	commit();
+	commitContent();
 	return true;
 }
 
@@ -771,7 +1053,7 @@ bool DocumentEngine::apply(const MailboxRecord& command) {
 		if (command.kind == ToggleItalic) format.setFontItalic(!m_cursor.charFormat().fontItalic());
 		if (command.kind == ToggleUnderline) format.setFontUnderline(!m_cursor.charFormat().fontUnderline());
 		m_cursor.mergeCharFormat(format);
-		commit();
+		commitContent();
 		return true;
 	}
 	case AlignLeft:
@@ -781,7 +1063,7 @@ bool DocumentEngine::apply(const MailboxRecord& command) {
 		QTextBlockFormat block = m_cursor.blockFormat();
 		block.setAlignment(command.kind == AlignLeft ? Qt::AlignLeft : command.kind == AlignCenter ? Qt::AlignHCenter : Qt::AlignRight);
 		m_cursor.setBlockFormat(block);
-		commit();
+		commitContent();
 		return true;
 	}
 	case IndentIncrease:
@@ -790,7 +1072,7 @@ bool DocumentEngine::apply(const MailboxRecord& command) {
 		QTextBlockFormat block = m_cursor.blockFormat();
 		block.setIndent(qMax(0, block.indent() + (command.kind == IndentIncrease ? 1 : -1)));
 		m_cursor.setBlockFormat(block);
-		commit();
+		commitContent();
 		return true;
 	}
 	case ListBullet:
@@ -799,7 +1081,7 @@ bool DocumentEngine::apply(const MailboxRecord& command) {
 		QTextListFormat list;
 		list.setStyle(command.kind == ListBullet ? QTextListFormat::ListDisc : QTextListFormat::ListDecimal);
 		m_cursor.createList(list);
-		commit();
+		commitContent();
 		return true;
 	}
 	case ReplaceAll: {

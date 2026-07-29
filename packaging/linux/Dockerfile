@@ -51,6 +51,7 @@ RUN apt-get update \
 		ninja-build \
 		patchelf \
 		p7zip-full \
+		python3 \
 		squashfs-tools \
 		weston \
 		xvfb \

@@ -10,6 +10,7 @@
 #include <limits>
 #include <optional>
 #include "mailbox.h"
+#include "document_persistence.h"
 
 namespace FairyWriter {
 
@@ -42,7 +43,9 @@ public:
 	DocumentEngine();
 
 	std::uint64_t revision() const noexcept { return m_revision; }
-	bool isDirty() const noexcept { return m_revision != m_saved_revision; }
+	std::uint64_t contentGeneration() const noexcept { return m_content_generation; }
+	bool isDirty() const;
+	QByteArray contentHash() const;
 	const QTextDocument* document() const noexcept { return &m_document; }
 	QTextDocument* document() noexcept { return &m_document; }
 	const QTextCursor& cursor() const noexcept { return m_cursor; }
@@ -53,8 +56,16 @@ public:
 	void setReadOnly(bool value) noexcept { m_read_only = value; }
 	QString filename() const { return m_filename; }
 	QString format() const { return m_format; }
+	const QUuid& documentId() const noexcept { return m_document_id; }
+	const FileFingerprint& loadedFingerprint() const noexcept { return m_loaded_fingerprint; }
+	DocumentSnapshot snapshot() const;
+	bool restoreSnapshot(const DocumentSnapshot& snapshot, bool dirty);
+	bool markdownSourceMode() const noexcept { return m_markdown_source_mode; }
+	bool setMarkdownSourceMode(bool source_mode);
+	QByteArray markdownSource() const;
 	bool load(const QString& filename, const QString& type = QString());
 	bool save(const QString& filename = QString());
+	bool saveNew(const QString& filename);
 	// Recovery writes are independent of the opened file: they never change
 	// filename, revision, dirty state, or the authoritative document.
 	bool writeRecovery(const QString& filename) const;
@@ -99,17 +110,32 @@ public:
 	QString selectedText() const { return m_cursor.selectedText(); }
 
 private:
+	friend class DocumentPersistence;
 	bool accepts(std::uint64_t expected_revision) const noexcept;
-	void commit();
+	void commitViewport();
+	void commitContent();
+	bool isMarkdown() const noexcept;
+	QByteArray currentMarkdownSource() const;
+	void reconcileMarkdownProjection();
+	void markSaved();
+	bool saveTo(const QString& filename, bool create_new,
+		std::optional<FileFingerprint> expected = std::nullopt);
 	void refreshDocumentCache() const;
 	const QString& cachedPlainText() const;
 	QTextDocument m_document;
 	QTextCursor m_cursor;
 	std::uint64_t m_revision = 0;
-	std::uint64_t m_saved_revision = 0;
+	std::uint64_t m_content_generation = 0;
+	QByteArray m_saved_content_hash;
+	QUuid m_document_id = QUuid::createUuid();
 	QString m_filename;
 	QString m_format = QStringLiteral("odt");
+	QByteArray m_markdown_source;
+	QString m_markdown_projection_text;
+	bool m_markdown_source_pristine = false;
+	bool m_markdown_source_mode = false;
 	QDateTime m_loaded_modified;
+	FileFingerprint m_loaded_fingerprint;
 	bool m_has_loaded_file = false;
 	bool m_read_only = false;
 	bool m_smart_quotes = true;

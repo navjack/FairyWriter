@@ -140,6 +140,7 @@ public:
 	std::size_t used() const noexcept;
 	std::size_t freeSpace() const noexcept;
 	void clear() noexcept;
+	bool consumeTo(std::size_t read);
 	bool importRaw(const std::uint8_t* bytes, std::size_t read, std::size_t write);
 	bool exportRaw(std::uint8_t* bytes, std::size_t bytes_size, std::size_t& read, std::size_t& write) const;
 

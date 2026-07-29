@@ -556,8 +556,12 @@ int main(int argc, char** argv)
 	}
 	if (fairy_snes_debug_wram(machine, 0x031d) != 1 || fairy_snes_debug_wram(machine, 0x031e) != 3
 		|| !fairy_snes_key_event(machine, 0x5a, true, false) || !runFrames(machine, 2)
+		|| fairy_snes_debug_wram(machine, 0x031d) != 0x11
+		|| fairy_snes_debug_wram(machine, 0x032f) != 0
+		|| !wramEquals(machine, 0x1008, "SAVE AS FORMAT")
+		|| !fairy_snes_key_event(machine, 0x5a, true, false) || !runFrames(machine, 2)
 		|| fairy_snes_debug_wram(machine, 0x031d) != 3) {
-		std::fputs("Save As menu action did not enter its cartridge loading state\n", stderr);
+		std::fputs("Save As did not select ODT before entering its cartridge loading state\n", stderr);
 		return 79;
 	}
 	constexpr std::string_view overwrite_id = "existing-save-target";
@@ -643,6 +647,8 @@ int main(int argc, char** argv)
 		if (!fairy_snes_key_event(machine, 0x72, true, true) || !runFrames(machine, 2)) return 87;
 	}
 	if (!fairy_snes_key_event(machine, 0x5a, true, false) || !runFrames(machine, 2)
+		|| fairy_snes_debug_wram(machine, 0x031d) != 0x11
+		|| !fairy_snes_key_event(machine, 0x5a, true, false) || !runFrames(machine, 2)
 		|| fairy_snes_debug_wram(machine, 0x031d) != 3) return 88;
 	constexpr std::string_view parent_id = "save-parent-directory";
 	constexpr std::string_view parent_name = "WRITING";
@@ -685,7 +691,8 @@ int main(int argc, char** argv)
 		std::fputs("Save As New did not enter the cartridge filename screen\n", stderr);
 		return 90;
 	}
-	constexpr std::string_view new_name = "new.odt";
+	constexpr std::string_view new_name = "new";
+	constexpr std::string_view committed_name = "new.odt";
 	if (!typeAscii(machine, new_name) || !wramEquals(machine, 0x1880, new_name)
 		|| !wramEquals(machine, 0x1096, "NEW FILE NAME:")
 		|| !wramEquals(machine, 0x10b4, new_name)) {
@@ -697,7 +704,7 @@ int main(int argc, char** argv)
 		|| fairy_snes_debug_wram(machine, 0x031d) != 0
 		|| fairy_snes_debug_bus_read(machine, navigation_command + new_file_offset + 2) != 0x0a
 		|| fairy_snes_debug_bus_read(machine, navigation_command + new_file_offset + 3) != 1
-		|| fairy_snes_debug_bus_read(machine, navigation_command + new_file_offset + 4) != parent_id.size() + 1 + new_name.size()) {
+		|| fairy_snes_debug_bus_read(machine, navigation_command + new_file_offset + 4) != parent_id.size() + 1 + committed_name.size()) {
 		std::fputs("filename submission did not emit CommandSaveAsNew\n", stderr);
 		return 92;
 	}
@@ -706,9 +713,9 @@ int main(int argc, char** argv)
 			!= static_cast<std::uint8_t>(parent_id[i])) return 93;
 	}
 	if (fairy_snes_debug_bus_read(machine, navigation_command + new_file_offset + 20 + parent_id.size()) != 0) return 94;
-	for (std::size_t i = 0; i < new_name.size(); ++i) {
+	for (std::size_t i = 0; i < committed_name.size(); ++i) {
 		if (fairy_snes_debug_bus_read(machine, navigation_command + new_file_offset + 21 + parent_id.size() + static_cast<std::uint32_t>(i))
-			!= static_cast<std::uint8_t>(new_name[i])) return 95;
+			!= static_cast<std::uint8_t>(committed_name[i])) return 95;
 	}
 	fairy_snes_destroy(machine);
 	machine = fairy_snes_create(rom.data(), rom.size());
@@ -2435,6 +2442,152 @@ int main(int argc, char** argv)
 		if (middle_thumb == middle_background || end_background == end_thumb) {
 			std::fputs("document-position thumb OAM did not move visibly across the track\n", stderr);
 			return 200;
+		}
+		fairy_snes_destroy(machine);
+	}
+
+	// Persistence settings and destructive transitions are cartridge-owned.
+	// Settings events populate the full byte ranges, F3 edits them through a
+	// typed command, Recovery History is a real paged cartridge browser with
+	// opaque tokens/status text, and the shared dirty-transition dialog emits
+	// one explicit Checkpoint/Save/Discard/Cancel decision.
+	{
+		machine = fairy_snes_create(rom.data(), rom.size());
+		if (!machine || !runFrames(machine, 3)) return 232;
+		std::vector<std::uint8_t> settings_wire;
+		appendRecord(settings_wire, 0x8212, {1, 255, 0, 0, 4});
+		for (std::size_t i = 0; i < settings_wire.size(); ++i) {
+			fairy_snes_debug_bus_write(machine,
+				0x702100 + static_cast<std::uint32_t>(i), settings_wire[i]);
+		}
+		fairy_snes_debug_bus_write(machine, 0x700006,
+			static_cast<std::uint8_t>(settings_wire.size()));
+		fairy_snes_debug_bus_write(machine, 0x700007,
+			static_cast<std::uint8_t>(settings_wire.size() >> 8));
+		if (!runFrames(machine, 3)
+			|| fairy_snes_debug_wram(machine, 0x031b) != 1
+			|| fairy_snes_debug_wram(machine, 0x031c) != 255
+			|| fairy_snes_debug_wram(machine, 0x032b) != 0
+			|| fairy_snes_debug_wram(machine, 0x0369) != 4) return 233;
+		if (!fairy_snes_key_event(machine, 0x04, true, false)
+			|| !runFrames(machine, 2)
+			|| fairy_snes_debug_wram(machine, 0x031d) != 0x10
+			|| !wramEquals(machine, 0x1007, "SAVE AND RECOVERY")
+			|| !wramEquals(machine, 0x10a0, "RENDERED")) {
+			std::fputs("F3 did not render the committed persistence settings\n", stderr);
+			return 234;
+		}
+		if (!fairy_snes_key_event(machine, 0x74, true, true)
+			|| !runFrames(machine, 2)
+			|| fairy_snes_debug_bus_read(machine, 0x700102) != 0x12
+			|| fairy_snes_debug_bus_read(machine, 0x700103) != 0x01
+			|| fairy_snes_debug_bus_read(machine, 0x700104) != 3
+			|| fairy_snes_debug_bus_read(machine, 0x700114) != 0
+			|| fairy_snes_debug_bus_read(machine, 0x700115) != 255
+			|| fairy_snes_debug_bus_read(machine, 0x700116) != 0) {
+			std::fputs("settings change did not emit one complete typed value\n", stderr);
+			return 235;
+		}
+		for (int row = 0; row < 3; ++row) {
+			if (!fairy_snes_key_event(machine, 0x72, true, true)
+				|| !runFrames(machine, 2)) return 236;
+		}
+		if (!fairy_snes_key_event(machine, 0x5a, true, false)
+			|| !runFrames(machine, 2)
+			|| fairy_snes_debug_wram(machine, 0x031d) != 4
+			|| fairy_snes_debug_bus_read(machine, 0x700100 + 23 + 2) != 0x08
+			|| fairy_snes_debug_bus_read(machine, 0x700100 + 23 + 3) != 0x01) {
+			std::fputs("Recovery History did not issue its paged list command\n", stderr);
+			return 236;
+		}
+		constexpr std::string_view recovery_id = "a1b2c3d4";
+		constexpr std::string_view recovery_name =
+			"07-29 12:34 STORY UNSAVED";
+		std::vector<std::uint8_t> recovery_payload;
+		recovery_payload.push_back(recovery_id.size());
+		append16(recovery_payload, recovery_name.size());
+		recovery_payload.push_back(2);
+		append64(recovery_payload, 4096);
+		append64(recovery_payload, 1234567);
+		recovery_payload.insert(recovery_payload.end(),
+			recovery_id.cbegin(), recovery_id.cend());
+		recovery_payload.insert(recovery_payload.end(),
+			recovery_name.cbegin(), recovery_name.cend());
+		std::vector<std::uint8_t> recovery_page;
+		appendRecord(recovery_page, 0x8200, recovery_payload);
+		std::vector<std::uint8_t> recovery_complete;
+		append32(recovery_complete, 1);
+		append32(recovery_complete, 0);
+		recovery_complete.push_back(1);
+		recovery_complete.push_back(4);
+		recovery_complete.push_back(0);
+		appendRecord(recovery_page, 0x820f, recovery_complete);
+		for (std::size_t i = 0; i < recovery_page.size(); ++i) {
+			fairy_snes_debug_bus_write(machine,
+				0x702100 + static_cast<std::uint32_t>(settings_wire.size() + i),
+				recovery_page[i]);
+		}
+		const std::size_t recovery_event_producer =
+			settings_wire.size() + recovery_page.size();
+		fairy_snes_debug_bus_write(machine, 0x700006,
+			static_cast<std::uint8_t>(recovery_event_producer));
+		fairy_snes_debug_bus_write(machine, 0x700007,
+			static_cast<std::uint8_t>(recovery_event_producer >> 8));
+		if (!runFrames(machine, 3)
+			|| fairy_snes_debug_wram(machine, 0x031d) != 7
+			|| !wramEquals(machine, 0x1007, "RECOVERY HISTORY")
+			|| !wramEquals(machine, 0x1000 + 32, recovery_name)
+			|| !wramEquals(machine, 0x1600, recovery_id)) {
+			std::fputs("Recovery History page did not render its status row\n", stderr);
+			return 236;
+		}
+		if (!fairy_snes_key_event(machine, 0x5a, true, false)
+			|| !runFrames(machine, 2)
+			|| fairy_snes_debug_wram(machine, 0x031d) != 0
+			|| fairy_snes_debug_bus_read(machine, 0x700100 + 43 + 2) != 0x09
+			|| fairy_snes_debug_bus_read(machine, 0x700100 + 43 + 3) != 0x01
+			|| !wramEquals(machine, 0x1800, recovery_id)) {
+			std::fputs("Recovery History selection did not emit its opaque restore token\n",
+				stderr);
+			return 236;
+		}
+		const std::size_t decision_offset =
+			fairy_snes_debug_bus_read(machine, 0x700002)
+			| (std::size_t(fairy_snes_debug_bus_read(machine, 0x700003)) << 8);
+		std::vector<std::uint8_t> transition_wire;
+		appendRecord(transition_wire, 0x8213, {});
+		for (std::size_t i = 0; i < transition_wire.size(); ++i) {
+			fairy_snes_debug_bus_write(machine,
+				0x702100 + static_cast<std::uint32_t>(
+					recovery_event_producer + i),
+				transition_wire[i]);
+		}
+		const std::size_t event_producer =
+			recovery_event_producer + transition_wire.size();
+		fairy_snes_debug_bus_write(machine, 0x700006,
+			static_cast<std::uint8_t>(event_producer));
+		fairy_snes_debug_bus_write(machine, 0x700007,
+			static_cast<std::uint8_t>(event_producer >> 8));
+		if (!runFrames(machine, 3)
+			|| fairy_snes_debug_wram(machine, 0x031d) != 0x12
+			|| !wramEquals(machine, 0x1008, "UNSAVED CHANGES")) {
+			std::fputs("dirty transition event did not open the shared cartridge dialog\n", stderr);
+			return 236;
+		}
+		if (!fairy_snes_key_event(machine, 0x72, true, true)
+			|| !runFrames(machine, 2)
+			|| !fairy_snes_key_event(machine, 0x72, true, true)
+			|| !runFrames(machine, 2)
+			|| !fairy_snes_key_event(machine, 0x5a, true, false)
+			|| !runFrames(machine, 2)) return 237;
+		const std::uint32_t decision_record =
+			0x700100 + static_cast<std::uint32_t>(decision_offset);
+		if (fairy_snes_debug_bus_read(machine, decision_record + 2) != 0x14
+			|| fairy_snes_debug_bus_read(machine, decision_record + 3) != 0x01
+			|| fairy_snes_debug_bus_read(machine, decision_record + 4) != 1
+			|| fairy_snes_debug_bus_read(machine, decision_record + 20) != 2) {
+			std::fputs("dirty transition did not emit the selected Discard decision\n", stderr);
+			return 238;
 		}
 		fairy_snes_destroy(machine);
 	}

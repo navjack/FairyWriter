@@ -78,6 +78,8 @@ if (-not (Test-Path -LiteralPath $Executable)) {
 if ($LASTEXITCODE -ne 0) { throw "windeployqt failed" }
 
 Copy-Item -LiteralPath (Join-Path $SourceRoot "COPYING") -Destination $StageRoot
+Copy-Item -LiteralPath (Join-Path $SourceRoot "third_party\\cmark-gfm\\COPYING") `
+    -Destination (Join-Path $StageRoot "CMARK-GFM-LICENSE")
 Copy-Item -LiteralPath (Join-Path $SourceRoot "TESTING.md") -Destination $StageRoot
 
 $ReportedVersion = (& $Executable --version | Out-String).Trim()

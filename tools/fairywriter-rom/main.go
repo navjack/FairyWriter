@@ -10,26 +10,48 @@ import (
 )
 
 const (
-	screenW       = 256
-	screenH       = 224
-	romSize       = 0x8000
-	scanMapOffset = 0x7ec0
-	// Shifted +0x600 from their original values: 0x100 for the rich-style draw
-	// loop, 0x200 for the toolbar plane/DMA, 0x100 for the document-position
-	// calculation/OAM path, 0x100 for the shared cell-resolve subroutine and
-	// wrap-aware vertical movement, and 0x100 for the F2 help plane.
-	// tilesOffset only consumes tile-count headroom, not program space; the
-	// current 554 tiles still leave 76 slots before scanMap.
-	menuOffset         = 0x2380
-	browserOffset      = 0x2470
-	browserReadyOffset = 0x2560
+	screenW = 256
+	screenH = 224
+	// Two LoROM banks. The cartridge was 32 KiB -- the smallest image the SNES
+	// accepts, and the only thing a 32 KiB image can be -- until program space
+	// ran down to 59 free program bytes and zero free PPU-tile slots. LoROM
+	// itself was never the constraint; it addresses up to 4 MB.
+	romSize = 0x10000
+
+	// Bank 0 is program plus the scan map, and nothing else. The layout follows
+	// the standard LoROM convention for data-heavy carts: code at the start of
+	// the image, bulk data at the end.
+	//
+	// The scan map stays in bank 0 because it is the one data table read with
+	// `LDA abs,X` rather than a long read -- it resolves through DB, so moving
+	// it to bank 1 would silently read program bytes instead. Everything else is
+	// either DMA'd (bank supplied via $4304) or read with `LDA.l` (bank in the
+	// operand), so both follow their offsets across the boundary.
+	scanMapOffset = 0x7eb0 // 256 bytes, ending exactly at the v3 extended header
+
+	// Bank 1 is data. It opens at 0x8200 rather than 0x8000 to clear the first
+	// reserved window; see reservedWindows below for why those exist.
+	paletteOffset      = 0x8200 // 128
+	tilemapOffset      = 0x8280 // 2048
+	menuOffset         = 0x8a80 // 240
+	browserOffset      = 0x8b70 // 240
+	browserReadyOffset = 0x8c60 // 240
 	// The help card is a full-screen static plane like the menu and browser
 	// planes, not a dialog overlay, so it gets its own 240-byte page and is
 	// copied by the same 8-bit-X loop they use.
-	helpOffset    = 0x2650
-	paletteOffset = 0x2780
-	tilemapOffset = 0x2800
-	tilesOffset   = 0x3000
+	helpOffset       = 0x8d50 // 240
+	settingsOffset   = 0x8e40 // 240
+	saveFormatOffset = 0x8f30 // 336
+	// Tiles are last because they are the only variable-size blob, so the fixed
+	// pages above keep stable offsets. Capacity here is 0xffb0-tilesOffset =
+	// 28464 bytes = 889 tiles, up from the 554 that exactly filled the old
+	// layout. The hard ceiling beyond that is VRAM, not ROM: BG1 plus OBJ cannot
+	// address more than 1024 4bpp tiles however large the cartridge gets. New
+	// static planes come out of this budget by shifting tilesOffset up.
+	tilesOffset = 0x9080
+	// bank1Limit is where bank 1's data has to stop: the start of the reserved
+	// header-scoring window at $ffb0. See the reserved-window check in build().
+	bank1Limit = 0xffb0
 	// Proofing visuals must stay opt-in until a fully test-gated BG3/color-math
 	// path lands without destabilizing document tile rendering.
 	proofingVisualsEnabled = true
@@ -250,9 +272,35 @@ func helpPlane() []byte {
 		"  CTRL Z UNDO    CTRL Y REDO",
 		"  CTRL B I U   BOLD ITAL UNDL",
 		"  CTRL C X V   COPY CUT PASTE",
-		"  CTRL A ALL     CTRL F FIND",
+		"  F3 SAVE SET    F4 FIND",
 		"  DRAG THE BAR ABOVE TO SCROLL",
 		"  F1 OR BACK RETURNS",
+	)
+}
+
+func settingsPlane() []byte {
+	return textPlane(
+		"       SAVE AND RECOVERY",
+		"  MODE:",
+		"  INTERVAL:       MIN",
+		"  COPIES:",
+		"  RECOVERY HISTORY...",
+		"  MARKDOWN:",
+		"  LEFT RIGHT CHANGE",
+		"  F3 OR BACK RETURNS",
+	)
+}
+
+func saveFormatPlane() []byte {
+	return textPlane(
+		"        SAVE AS FORMAT",
+		"  ODT",
+		"  DOCX",
+		"  RTF",
+		"  MARKDOWN",
+		"",
+		"  ENTER CHOOSES",
+		"  BACK CANCELS",
 	)
 }
 
@@ -269,9 +317,22 @@ func browserLoadingPlane() []byte {
 	)
 }
 
+func transitionPlane() []byte {
+	return textPlane(
+		"        UNSAVED CHANGES",
+		"  CHECKPOINT",
+		"  SAVE",
+		"  DISCARD",
+		"  CANCEL",
+		"",
+		"  ENTER CHOOSES",
+		"  BACK CANCELS",
+	)
+}
+
 func browserReadyPlane() []byte {
 	return textPlane(
-		"             FILES",
+		"         FILE BROWSER",
 		"",
 		"",
 		"",
@@ -470,9 +531,10 @@ func xbandScanMap() [256]byte {
 	var m [256]byte
 	for scan, ch := range map[byte]byte{
 		0x05: 0x18, // F1 opens the cartridge-owned menu.
-		0x04: 0x19, // F3 opens the cartridge-owned find screen.
+		0x04: 0x19, // F3 opens Save and Recovery settings.
+		0x0c: 0x1d, // F4 opens the cartridge-owned find screen.
 		// Key codes 0x11-0x1b are taken by the extended cursor commands, F1 and
-		// F3; 0x1c is the first free one.
+		// F3; 0x1c and 0x1d are used by F2 and F4.
 		0x06: 0x1c, // F2 opens the cartridge-owned help card.
 		0x1c: 'a', 0x32: 'b', 0x21: 'c', 0x23: 'd', 0x24: 'e', 0x2b: 'f',
 		0x34: 'g', 0x33: 'h', 0x43: 'i', 0x3b: 'j', 0x42: 'k', 0x4b: 'l',
@@ -494,39 +556,91 @@ func xbandScanMap() [256]byte {
 	return m
 }
 
-func emitProgram(tileBytes int) []byte {
+// LoROM maps each 32 KiB cartridge bank into the upper half of a CPU bank, so a
+// flat file offset splits into a bank byte and a $8000-$ffff address. These are
+// the single authority on that translation -- before they existed, `0x8000+off`
+// was open-coded at ~90 sites, which is exactly the kind of thing that silently
+// keeps compiling while addressing the wrong bank once the ROM outgrows 32 KiB.
+func loromBank(offset int) byte   { return byte(offset >> 15) }
+func loromAddr(offset int) uint16 { return uint16(0x8000 + (offset & 0x7fff)) }
+
+// emitProgram returns the 65816 program image and the offset of its RTI
+// interrupt landing pad, which build() wires into every non-RESET vector.
+func emitProgram(tileBytes int) ([]byte, int) {
 	var p []byte
 	b := func(v ...byte) { p = append(p, v...) }
+	// patch16 back-patches the 16-bit operand of an already-emitted instruction
+	// at `at` to point at `target`. `jump` is the same thing named for its
+	// common use (JMP/JSR abs); both exist because ~40 call sites used to inline
+	// this assignment and bypass the helper entirely.
+	patch16 := func(at, target int) {
+		addr := loromAddr(target)
+		p[at+1], p[at+2] = byte(addr), byte(addr>>8)
+	}
+	jump := patch16
+	// jmpTo/jsrTo emit a same-bank absolute JMP/JSR. Both stay 16-bit: the
+	// program lives entirely in bank 0, so a long JML/JSL would only cost bytes.
+	jmpTo := func(target int) { addr := loromAddr(target); b(0x4c, byte(addr), byte(addr>>8)) }
+	jsrTo := func(target int) { addr := loromAddr(target); b(0x20, byte(addr), byte(addr>>8)) }
+	// branch back-patches an already-emitted 2-byte relative branch. It cannot
+	// widen one: a trampoline is 3 bytes longer, and every label in this emitter
+	// is a raw `len(p)` int already captured in a local, so inserting bytes here
+	// would silently invalidate every offset downstream. Growing a branch is
+	// therefore a source-level fix, and the panic says which one.
+	//
+	// The standard 65816 long-branch trampoline inverts the condition and skips
+	// over an absolute JMP:
+	//
+	//	skip := len(p)
+	//	b(0xd0, 0) // BNE over the JMP, i.e. the inverse of the BEQ you wanted
+	//	jmpTo(target)
+	//	branch(skip, len(p))
+	//
+	// Making this automatic needs labels to become objects with a relaxation
+	// pass rather than ints -- worth doing, but not as a blind rewrite across
+	// 423 branch sites in a ROM that currently works.
 	branch := func(at, target int) {
 		delta := target - (at + 2)
 		if delta < -128 || delta > 127 {
-			panic("65816 branch is out of range")
+			panic(fmt.Sprintf("65816 branch at %#x to %#x is out of range (delta %d); "+
+				"rewrite it as an inverted-condition trampoline over a jmpTo", at, target, delta))
 		}
 		p[at+1] = byte(int8(delta))
 	}
-	jump := func(at, target int) {
-		p[at+1], p[at+2] = byte(0x8000+target), byte((0x8000+target)>>8)
-	}
 	sta := func(addr uint16) { b(0x8d, byte(addr), byte(addr>>8)) }
 	ldaSta := func(v byte, addr uint16) { b(0xa9, v); sta(addr) }
-	dma := func(src, size uint16, mode, dest byte) {
+	// dma takes a flat cartridge offset, not a CPU address: the A-bus address in
+	// $4302/$4303 does not carry into the bank byte in $4304, so a transfer that
+	// straddles a bank boundary silently wraps and re-reads the start of its own
+	// bank rather than continuing into the next one.
+	dma := func(srcOffset int, size uint16, mode, dest byte) {
+		if (srcOffset&0x7fff)+int(size) > 0x8000 {
+			panic(fmt.Sprintf("DMA source %#x size %d straddles a bank boundary", srcOffset, size))
+		}
+		src := loromAddr(srcOffset)
 		ldaSta(mode, 0x4300)
 		ldaSta(dest, 0x4301)
 		ldaSta(byte(src), 0x4302)
 		ldaSta(byte(src>>8), 0x4303)
-		ldaSta(0, 0x4304)
+		ldaSta(loromBank(srcOffset), 0x4304)
 		ldaSta(byte(size), 0x4305)
 		ldaSta(byte(size>>8), 0x4306)
 		ldaSta(1, 0x420b)
 	}
 	b(0x78, 0x18, 0xfb, 0xc2, 0x30, 0xa2, 0xff, 0x1f, 0x9a, 0xe2, 0x30)
+	// PHK; PLB -- establish DB=PB=$00 rather than inheriting it from reset
+	// state. Every absolute STA to a hardware register below depends on DB being
+	// $00, and the render path deliberately swaps DB to $7e and back (see the
+	// note above the VBlank upload block), so the initial value should be set
+	// here explicitly instead of being a property of how the CPU came up.
+	b(0x4b, 0xab)
 	ldaSta(0x80, 0x2100)
 	b(0x9c, 0x00, 0x42)
 	ldaSta(1, 0x2105)
 	ldaSta(0, 0x2107)
 	ldaSta(1, 0x210b)
 	b(0x9c, 0x21, 0x21)
-	dma(0x8000+paletteOffset, 128, 0, 0x22)
+	dma(paletteOffset, 128, 0, 0x22)
 	// OBJ palette 0 for the resident pointer and document-position thumb:
 	// index 1 is the dark outline, index 15 the white fill, and index 0 stays
 	// transparent.
@@ -538,16 +652,16 @@ func emitProgram(tileBytes int) []byte {
 	ldaSta(0x7f, 0x2122)
 	ldaSta(0x80, 0x2115)
 	b(0x9c, 0x16, 0x21, 0x9c, 0x17, 0x21)
-	dma(0x8000+tilemapOffset, 2048, 1, 0x18)
+	dma(tilemapOffset, 2048, 1, 0x18)
 	ldaSta(0, 0x2116)
 	ldaSta(0x10, 0x2117)
-	dma(0x8000+tilesOffset, uint16(tileBytes), 1, 0x18)
+	dma(tilesOffset, uint16(tileBytes), 1, 0x18)
 	// Upload the pointer and position-thumb OBJ tiles to VRAM word $6000 (OBJ
 	// name base 3). Their ROM bytes are the final 64 of the tile blob.
 	ldaSta(0x80, 0x2115)
 	ldaSta(0x00, 0x2116)
 	ldaSta(0x60, 0x2117)
-	dma(uint16(0x8000+tilesOffset+tileBytes-64), 64, 1, 0x18)
+	dma(tilesOffset+tileBytes-64, 64, 1, 0x18)
 	// OBSEL: 8x8 objects, name base 3 -> VRAM word $6000.
 	ldaSta(0x03, 0x2101)
 	// Hide every sprite by parking it off the 224-line screen, then clear the
@@ -582,17 +696,20 @@ func emitProgram(tileBytes int) []byte {
 	// The primary input is the real XBAND controller-port-2 protocol. The
 	// three-byte SRAM channel remains a bring-up fallback for emulators that do
 	// not yet expose the rare keyboard peripheral.
-	b(0x64, 0x00, 0x64, 0x08)                                                      // cursor=0, document length=0
-	b(0x9c, 0x0f, 0x03)                                                            // Caps Lock state starts off in dedicated WRAM.
-	b(0xa9, 0xff, 0x8f, 0x10, 0x03, 0x7e)                                          // no host viewport has been consumed
-	b(0x9c, 0x11, 0x03, 0x9c, 0x12, 0x03)                                          // command sequence starts at zero
-	b(0x9c, 0x17, 0x03, 0x9c, 0x18, 0x03, 0x9c, 0x19, 0x03)                        // command kind/count/flags high state
-	b(0x9c, 0x13, 0x03, 0x9c, 0x1d, 0x03, 0x9c, 0x1e, 0x03)                        // help return mode, editor mode, menu selection
-	b(0x9c, 0x1f, 0x03, 0x9c, 0x20, 0x03, 0x9c, 0x30, 0x03, 0x9c, 0x31, 0x03)      // browser/page and Save As lengths
-	b(0x9c, 0x32, 0x03)                                                            // find query length
-	b(0xa9, 128, 0x8d, 0x34, 0x03, 0xa9, 112, 0x8d, 0x35, 0x03, 0x9c, 0x36, 0x03)  // SNES mouse pointer and previous left button
-	b(0xa9, scrollThumbTrackStart, 0x8d, 0x52, 0x03, 0xa9, 0x01, 0x8d, 0x53, 0x03) // document-position thumb starts dirty at track origin
-	b(0xa9, 0xff, 0x8d, 0x3c, 0x03, 0x8d, 0x3d, 0x03)                             // no sticky vertical column yet ($033c/$033d)
+	b(0x64, 0x00, 0x64, 0x08)                                                                   // cursor=0, document length=0
+	b(0x9c, 0x0f, 0x03)                                                                         // Caps Lock state starts off in dedicated WRAM.
+	b(0xa9, 0xff, 0x8f, 0x10, 0x03, 0x7e)                                                       // no host viewport has been consumed
+	b(0x9c, 0x11, 0x03, 0x9c, 0x12, 0x03)                                                       // command sequence starts at zero
+	b(0x9c, 0x17, 0x03, 0x9c, 0x18, 0x03, 0x9c, 0x19, 0x03)                                     // command kind/count/flags high state
+	b(0x9c, 0x13, 0x03, 0x9c, 0x1d, 0x03, 0x9c, 0x1e, 0x03)                                     // help return mode, editor mode, menu selection
+	b(0x9c, 0x14, 0x03, 0x9c, 0x1a, 0x03, 0x9c, 0x1b, 0x03)                                     // settings return/selection, Save+Recovery mode
+	b(0xa9, 0x01, 0x8d, 0x1c, 0x03, 0xa9, 0x05, 0x8d, 0x2b, 0x03)                               // one minute, five retained copies
+	b(0x9c, 0x2e, 0x03, 0x9c, 0x2f, 0x03, 0x9c, 0x68, 0x03, 0x9c, 0x69, 0x03, 0x9c, 0x6a, 0x03) // rendered Markdown, ODT, no filter/current format/transition Save
+	b(0x9c, 0x1f, 0x03, 0x9c, 0x20, 0x03, 0x9c, 0x30, 0x03, 0x9c, 0x31, 0x03)                   // browser/page and Save As lengths
+	b(0x9c, 0x32, 0x03)                                                                         // find query length
+	b(0xa9, 128, 0x8d, 0x34, 0x03, 0xa9, 112, 0x8d, 0x35, 0x03, 0x9c, 0x36, 0x03)               // SNES mouse pointer and previous left button
+	b(0xa9, scrollThumbTrackStart, 0x8d, 0x52, 0x03, 0xa9, 0x01, 0x8d, 0x53, 0x03)              // document-position thumb starts dirty at track origin
+	b(0xa9, 0xff, 0x8d, 0x3c, 0x03, 0x8d, 0x3d, 0x03)                                           // no sticky vertical column yet ($033c/$033d)
 	// Versioned 32 KiB SRAM mailbox header. The host and cartridge share only
 	// committed indices here; payload regions begin at the fixed offsets in
 	// src/mailbox.h and are never treated as an authoritative document copy.
@@ -637,7 +754,7 @@ func emitProgram(tileBytes int) []byte {
 	b(0x20, 0, 0) // consume one committed host event without blocking input
 	commandSpaceCall := len(p)
 	b(0x20, 0, 0, 0xb0, 0x03) // preserve XBAND bytes until the host ring has room
-	b(0x4c, byte(0x8000+loop), byte((0x8000+loop)>>8))
+	jmpTo(loop)
 	mousePollCall := len(p)
 	b(0x20, 0, 0) // controller-port-1 SNES Mouse; returns semantic Enter on a new left click
 	b(0xf0, 0x03)
@@ -653,7 +770,7 @@ func emitProgram(tileBytes int) []byte {
 	b(0xf0, 0)
 	b(0xaf, 0x00, 0x00, 0x70) // fallback ASCII
 	key := len(p)
-	p[mouseKeyJump+1], p[mouseKeyJump+2] = byte(0x8000+key), byte((0x8000+key)>>8)
+	patch16(mouseKeyJump, key)
 	// The pending key code lives at $5b, not $01. $00/$01 is the 16-bit guest
 	// cursor -- the draw loop matches the caret with a 16-bit `CPX $00` and the
 	// insert path advances it with a 16-bit `INC $00` -- so parking the key code
@@ -686,7 +803,7 @@ func emitProgram(tileBytes int) []byte {
 	// that silently wrapped instead of failing once the body grew past -128,
 	// which lands the loop in the middle of an instruction. The branch helper
 	// used everywhere else would have caught it; a JMP removes the limit outright.
-	b(0x4c, byte(0x8000+loop), byte((0x8000+loop)>>8))
+	jmpTo(loop)
 	branch(beq, loop)
 
 	// xband_poll: receive a complete XBAND scancode batch into $0100-$010f,
@@ -694,7 +811,7 @@ func emitProgram(tileBytes int) []byte {
 	// before the peripheral is polled again, so E0/F0 multi-byte events cannot
 	// be torn across transactions.
 	poll := len(p)
-	p[pollCall+1], p[pollCall+2] = byte(0x8000+poll), byte((0x8000+poll)>>8)
+	patch16(pollCall, poll)
 	b(0xa5, 0x05) // LDA queue_count
 	bneDequeue := len(p)
 	b(0xd0, 0)
@@ -828,7 +945,7 @@ func emitProgram(tileBytes int) []byte {
 	b(0xc9, 0x59)
 	beqShiftMake2 := len(p)
 	b(0xf0, 0)
-	b(0xaa, 0xbd, byte(scanMapOffset&0xff), byte((0x8000+scanMapOffset)>>8))
+	b(0xaa, 0xbd, byte(loromAddr(scanMapOffset)), byte(loromAddr(scanMapOffset)>>8))
 	b(0xa6, 0x04)
 	beqNormalReturn := len(p)
 	b(0xf0, 0)
@@ -860,7 +977,7 @@ func emitProgram(tileBytes int) []byte {
 	b(0xa9, 0x01, 0x85, 0x04, 0xa9, 0x00, 0x60)
 	absent := len(p)
 	for _, at := range []int{absentJump1, absentJump2} {
-		p[at+1], p[at+2] = byte(0x8000+absent), byte((0x8000+absent)>>8)
+		patch16(at, absent)
 	}
 	ldaSta(0xff, 0x4201)
 	b(0xa9, 0x00, 0x60)
@@ -869,7 +986,7 @@ func emitProgram(tileBytes int) []byte {
 	// carries signed-magnitude Y/X deltas and button state; only the cartridge
 	// maps a rising left button into its existing menu/browser Enter behavior.
 	mousePoll := len(p)
-	p[mousePollCall+1], p[mousePollCall+2] = byte(0x8000+mousePoll), byte((0x8000+mousePoll)>>8)
+	patch16(mousePollCall, mousePoll)
 	b(0xa9, 0x01, 0x8d, 0x16, 0x40, 0x9c, 0x16, 0x40) // latch then shift
 	b(0xa2, 0x00)                                     // X = packet byte
 	mouseByte := len(p)
@@ -1066,18 +1183,18 @@ func emitProgram(tileBytes int) []byte {
 	// the viewport start and owns the authoritative caret; the cartridge only
 	// resolves pixels to a cell.
 	pointerClick := len(p) // press entry (left rising edge)
-	p[pointerClickCall+1], p[pointerClickCall+2] = byte(0x8000+pointerClick), byte((0x8000+pointerClick)>>8)
+	patch16(pointerClickCall, pointerClick)
 	// $FFFF is not a reachable cell, so a press always passes the drag
 	// repeat-suppression check below.
-	b(0xc2, 0x20)             // REP #$20
-	b(0xa9, 0xff, 0xff)       // LDA #$FFFF
-	b(0x8d, 0x50, 0x03)       // STA $0350 (last emitted cell)
-	b(0xe2, 0x20)             // SEP #$20
+	b(0xc2, 0x20)                   // REP #$20
+	b(0xa9, 0xff, 0xff)             // LDA #$FFFF
+	b(0x8d, 0x50, 0x03)             // STA $0350 (last emitted cell)
+	b(0xe2, 0x20)                   // SEP #$20
 	b(0xa9, 0x04, 0x8d, 0x44, 0x03) // LDA #$04; STA $0344 (kind low = SetCursor)
 	braResolve := len(p)
 	b(0x80, 0)            // BRA pointerResolve
 	pointerDrag := len(p) // drag entry (left held over the body)
-	p[pointerDragCall+1], p[pointerDragCall+2] = byte(0x8000+pointerDrag), byte((0x8000+pointerDrag)>>8)
+	patch16(pointerDragCall, pointerDrag)
 	b(0xa9, 0x0f, 0x8d, 0x44, 0x03) // LDA #$0f; STA $033e (kind low = ExtendCursor)
 	pointerResolve := len(p)
 	branch(braResolve, pointerResolve)
@@ -1132,11 +1249,11 @@ func emitProgram(tileBytes int) []byte {
 	b(0xf0, 0)    // BEQ ptrOut (same cell)
 	b(0xe2, 0x20) // SEP #$20
 	pointerResolveCall := len(p)
-	b(0x20, 0, 0)             // JSR resolveCellCommand
-	b(0xc2, 0x20)             // REP #$20
-	b(0xad, 0x39, 0x03)       // LDA $0339 (16-bit)
-	b(0x8d, 0x50, 0x03)       // STA $0350 (last emitted cell)
-	b(0xe2, 0x20)             // SEP #$20
+	b(0x20, 0, 0)       // JSR resolveCellCommand
+	b(0xc2, 0x20)       // REP #$20
+	b(0xad, 0x39, 0x03) // LDA $0339 (16-bit)
+	b(0x8d, 0x50, 0x03) // STA $0350 (last emitted cell)
+	b(0xe2, 0x20)       // SEP #$20
 	braPtrOut := len(p)
 	b(0x80, 0)
 	// The same-cell early-out is reached with a 16-bit accumulator, so it has to
@@ -1158,10 +1275,8 @@ func emitProgram(tileBytes int) []byte {
 	// touched: the user places it afterwards by clicking in the scrolled view,
 	// which is also what ends the scroll and re-anchors the window on the caret.
 	scrollTrackDrag := len(p)
-	p[scrollTrackClickCall+1], p[scrollTrackClickCall+2] =
-		byte(0x8000+scrollTrackDrag), byte((0x8000+scrollTrackDrag)>>8)
-	p[scrollTrackDragCall+1], p[scrollTrackDragCall+2] =
-		byte(0x8000+scrollTrackDrag), byte((0x8000+scrollTrackDrag)>>8)
+	patch16(scrollTrackClickCall, scrollTrackDrag)
+	patch16(scrollTrackDragCall, scrollTrackDrag)
 	// thumb = pointerX - trackStart - thumbWidth/2, clamped to the travel, so the
 	// thumb centres under the pointer rather than hanging off to its right.
 	b(0xad, 0x34, 0x03)                                     // LDA $0334 (mouse X)
@@ -1224,8 +1339,7 @@ func emitProgram(tileBytes int) []byte {
 	// high byte was discarded too (`STZ $1801`), which would have capped
 	// addressable offsets at 255 even once the base was right.
 	resolveCellCommand := len(p)
-	p[pointerResolveCall+1], p[pointerResolveCall+2] =
-		byte(0x8000+resolveCellCommand), byte((0x8000+resolveCellCommand)>>8)
+	patch16(pointerResolveCall, resolveCellCommand)
 	b(0xa9, 0x01, 0x8d, 0x40, 0x03) // LDA #1; STA $0340 (hit active)
 	b(0x9c, 0x3b, 0x03)             // STZ $033b (found = 0)
 	resolveRenderCall := len(p)
@@ -1233,14 +1347,14 @@ func emitProgram(tileBytes int) []byte {
 	b(0x9c, 0x40, 0x03) // STZ $0340 (hit inactive)
 	b(0xad, 0x3b, 0x03) // LDA $033b (found?)
 	beqResolveOut := len(p)
-	b(0xf0, 0)          // BEQ resolveOut
-	b(0xc2, 0x10)       // REP #$10 (16-bit index: character indices reach 509)
-	b(0xae, 0x41, 0x03) // LDX $0341 (document character index at the hit cell)
-	b(0xbd, 0x00, 0x07) // LDA $0700,X (viewport-relative UTF-16 offset, low)
-	b(0x8d, 0x00, 0x18) // STA $1800 (payload[0])
-	b(0xbd, 0x00, 0x09) // LDA $0900,X (offset, high)
-	b(0x8d, 0x01, 0x18) // STA $1801 (payload[1])
-	b(0xe2, 0x10)       // SEP #$10
+	b(0xf0, 0)                            // BEQ resolveOut
+	b(0xc2, 0x10)                         // REP #$10 (16-bit index: character indices reach 509)
+	b(0xae, 0x41, 0x03)                   // LDX $0341 (document character index at the hit cell)
+	b(0xbd, 0x00, 0x07)                   // LDA $0700,X (viewport-relative UTF-16 offset, low)
+	b(0x8d, 0x00, 0x18)                   // STA $1800 (payload[0])
+	b(0xbd, 0x00, 0x09)                   // LDA $0900,X (offset, high)
+	b(0x8d, 0x01, 0x18)                   // STA $1801 (payload[1])
+	b(0xe2, 0x10)                         // SEP #$10
 	b(0xad, 0x44, 0x03, 0x8d, 0x16, 0x03) // kind low from $0344 (SetCursor/ExtendCursor)
 	b(0xa9, 0x01, 0x8d, 0x17, 0x03)       // kind high = 0x01
 	b(0xa9, 0x02, 0x8d, 0x15, 0x03)       // payload count low = 2
@@ -1335,7 +1449,7 @@ func emitProgram(tileBytes int) []byte {
 	vertKind := len(p)
 	branch(braVertKind, vertKind)
 	b(0x8d, 0x44, 0x03) // STA $0344 (command kind low)
-	b(0x20, byte(0x8000+resolveCellCommand), byte((0x8000+resolveCellCommand)>>8))
+	jsrTo(resolveCellCommand)
 	b(0xad, 0x3b, 0x03) // LDA $033b (did it publish?)
 	beqVertFallback2 := len(p)
 	b(0xf0, 0)
@@ -1365,7 +1479,7 @@ func emitProgram(tileBytes int) []byte {
 	viewportRenderCalls := []int{}
 	browserRenderCalls := []int{}
 	viewport := len(p)
-	p[viewportCall+1], p[viewportCall+2] = byte(0x8000+viewport), byte((0x8000+viewport)>>8)
+	patch16(viewportCall, viewport)
 	b(0xaf, 0x0a, 0x00, 0x70)       // LDA.l $70000a
 	b(0xcf, 0x10, 0x03, 0x7e)       // CMP.l $7e0310
 	b(0xd0, 0x01, 0x60)             // unchanged generation returns immediately
@@ -1594,7 +1708,7 @@ func emitProgram(tileBytes int) []byte {
 	b(0xc0, 0xfe, 0x01, 0x90, 0x03)                               // CPY #510
 	viewportDecodedJumps = append(viewportDecodedJumps, len(p))
 	b(0x4c, 0, 0)
-	b(0x4c, byte(0x8000+viewportDecode), byte((0x8000+viewportDecode)>>8))
+	jmpTo(viewportDecode)
 
 	viewportDecoded := len(p)
 	for _, at := range viewportDecodedJumps {
@@ -1690,11 +1804,11 @@ func emitProgram(tileBytes int) []byte {
 	proofNextRun := len(p)
 	branch(beqProofNextRun, proofNextRun)
 	b(0x8a, 0x18, 0x69, 0x08, 0xaa) // TXA; CLC; ADC #8; TAX
-	b(0x4c, byte(0x8000+proofRunLoop), byte((0x8000+proofRunLoop)>>8))
+	jmpTo(proofRunLoop)
 	proofNextCell := len(p)
 	branch(bcsProofNextCell, proofNextCell)
 	b(0xc8)
-	b(0x4c, byte(0x8000+proofCellLoop), byte((0x8000+proofCellLoop)>>8))
+	jmpTo(proofCellLoop)
 	proofDone := len(p)
 	branch(bcsProofDone, proofDone)
 	b(0xc2, 0x20)                                     // REP #$20
@@ -1728,7 +1842,7 @@ func emitProgram(tileBytes int) []byte {
 	// 32-bit division routine. Only low-order precision is discarded, keeping
 	// large-document positioning stable to a small number of track pixels.
 	updateScrollThumb := len(p)
-	p[scrollThumbCall+1], p[scrollThumbCall+2] = byte(0x8000+updateScrollThumb), byte((0x8000+updateScrollThumb)>>8)
+	patch16(scrollThumbCall, updateScrollThumb)
 	b(0xe2, 0x30) // SEP #$30: byte-oriented metadata normalization
 	for i := 0; i < 4; i++ {
 		b(0xaf, byte(0x6c+i), 0x41, 0x70, 0x8d, byte(0x54+i), 0x03) // total -> $0354..$0357
@@ -1772,8 +1886,29 @@ func emitProgram(tileBytes int) []byte {
 	b(0xa9, 0x01, 0x8d, 0x53, 0x03, 0x60) // publish X and mark sprite 1 dirty
 
 	editor := len(p)
-	p[editCall+1], p[editCall+2] = byte(0x8000+editor), byte((0x8000+editor)>>8)
+	patch16(editCall, editor)
 	b(0xc2, 0x10)
+	// F3 owns persistence settings globally. $0314 preserves the exact origin
+	// screen, matching the F2 help-card contract.
+	b(0xa5, 0x5b, 0xc9, 0x19)
+	bneSettingsToggle := len(p)
+	b(0xd0, 0)
+	b(0xad, 0x1d, 0x03, 0xc9, 0x10)
+	beqSettingsClose := len(p)
+	b(0xf0, 0)
+	b(0x8d, 0x14, 0x03)
+	b(0xa9, 0x10, 0x8d, 0x1d, 0x03, 0x9c, 0x1a, 0x03)
+	braSettingsToggled := len(p)
+	b(0x80, 0)
+	settingsClose := len(p)
+	branch(beqSettingsClose, settingsClose)
+	b(0xad, 0x14, 0x03, 0x8d, 0x1d, 0x03)
+	settingsToggled := len(p)
+	branch(braSettingsToggled, settingsToggled)
+	settingsToggleRenderCall := len(p)
+	b(0x20, 0, 0, 0x64, 0x5b, 0x60)
+	settingsNotToggle := len(p)
+	branch(bneSettingsToggle, settingsNotToggle)
 	// F2 opens the help card from any mode. $0313 retains the exact origin so F2,
 	// F1, or Backspace returns to the screen the user was on, including a live
 	// browser or menu selection. Help handling comes before the generic F1 menu
@@ -1854,9 +1989,9 @@ func emitProgram(tileBytes int) []byte {
 	// byte and corrupt the insert/shift loop. Restore 8-bit X/Y here. Paths that
 	// need 16-bit index (e.g. command navigation) set it themselves.
 	b(0xe2, 0x10) // SEP #$10
-	// F3 opens the cartridge find screen; the query is guest-owned text until
+	// F4 opens the cartridge find screen; the query is guest-owned text until
 	// Enter publishes one CommandFindNext record.
-	b(0xa5, 0x5b, 0xc9, 0x19)
+	b(0xa5, 0x5b, 0xc9, 0x1d)
 	bneEditNotFind := len(p)
 	b(0xd0, 0)
 	b(0xa9, 0x0e, 0x8d, 0x1d, 0x03)
@@ -1938,7 +2073,7 @@ func emitProgram(tileBytes int) []byte {
 
 	insert := len(p)
 	for _, at := range []int{insertCall, insertPrintableCall} {
-		p[at+1], p[at+2] = byte(0x8000+insert), byte((0x8000+insert)>>8)
+		patch16(at, insert)
 	}
 	b(0xa5, 0x08, 0xc9, 0xef) // bounded 239-byte guest working set
 	bcsInsertDone := len(p)
@@ -1962,7 +2097,7 @@ func emitProgram(tileBytes int) []byte {
 	b(0x4c, 0, 0)
 
 	editDelete := len(p)
-	p[deleteCall+1], p[deleteCall+2] = byte(0x8000+editDelete), byte((0x8000+editDelete)>>8)
+	patch16(deleteCall, editDelete)
 	b(0xa5, 0x00, 0xd0, 0x03)
 	dispatchExitJumps = append(dispatchExitJumps, len(p))
 	b(0x4c, 0, 0)
@@ -1986,7 +2121,7 @@ func emitProgram(tileBytes int) []byte {
 	b(0x60)
 
 	backspace := len(p)
-	p[backspaceCall+1], p[backspaceCall+2] = byte(0x8000+backspace), byte((0x8000+backspace)>>8)
+	patch16(backspaceCall, backspace)
 	b(0xa5, 0x00)
 	beqBackspaceDone := len(p)
 	b(0xf0, 0)
@@ -2014,7 +2149,7 @@ func emitProgram(tileBytes int) []byte {
 	b(0x60)
 
 	delete := len(p)
-	p[deleteCall+1], p[deleteCall+2] = byte(0x8000+delete), byte((0x8000+delete)>>8)
+	patch16(deleteCall, delete)
 	b(0xa5, 0x00, 0xc5, 0x08)
 	bcsDeleteDone := len(p)
 	b(0xb0, 0)
@@ -2036,19 +2171,19 @@ func emitProgram(tileBytes int) []byte {
 	b(0x60)
 
 	home := len(p)
-	p[homeCall+1], p[homeCall+2] = byte(0x8000+home), byte((0x8000+home)>>8)
+	patch16(homeCall, home)
 	b(0x64, 0x00)
 	emitDocumentRenderCall()
 	b(0x60)
 
 	end := len(p)
-	p[endCall+1], p[endCall+2] = byte(0x8000+end), byte((0x8000+end)>>8)
+	patch16(endCall, end)
 	b(0xa5, 0x08, 0x85, 0x00)
 	emitDocumentRenderCall()
 	b(0x60)
 
 	left := len(p)
-	p[leftCall+1], p[leftCall+2] = byte(0x8000+left), byte((0x8000+left)>>8)
+	patch16(leftCall, left)
 	b(0xa5, 0x00)
 	beqLeftDone := len(p)
 	b(0xf0, 0)
@@ -2059,7 +2194,7 @@ func emitProgram(tileBytes int) []byte {
 	b(0x60)
 
 	right := len(p)
-	p[rightCall+1], p[rightCall+2] = byte(0x8000+right), byte((0x8000+right)>>8)
+	patch16(rightCall, right)
 	b(0xa5, 0x00, 0xc5, 0x08)
 	bcsRightDone := len(p)
 	b(0xb0, 0)
@@ -2084,12 +2219,12 @@ func emitProgram(tileBytes int) []byte {
 	// Redrawing here still keeps the caret blinking on the unchanged position
 	// until then, which is stale by a frame but never wrong.
 	up := len(p)
-	p[upCall+1], p[upCall+2] = byte(0x8000+up), byte((0x8000+up)>>8)
+	patch16(upCall, up)
 	emitDocumentRenderCall()
 	b(0x60)
 
 	down := len(p)
-	p[downCall+1], p[downCall+2] = byte(0x8000+down), byte((0x8000+down)>>8)
+	patch16(downCall, down)
 	emitDocumentRenderCall()
 	b(0x60)
 
@@ -2099,7 +2234,7 @@ func emitProgram(tileBytes int) []byte {
 	// 64-byte opaque file identifier). Browser actions must not be allowed to
 	// consume an input byte if their complete backend command cannot fit.
 	commandSpace := len(p)
-	p[commandSpaceCall+1], p[commandSpaceCall+2] = byte(0x8000+commandSpace), byte((0x8000+commandSpace)>>8)
+	patch16(commandSpaceCall, commandSpace)
 	b(0xc2, 0x20)                   // REP #$20: 16-bit accumulator
 	b(0xaf, 0x04, 0x00, 0x70, 0x38) // consumer - producer - 1
 	b(0xef, 0x02, 0x00, 0x70, 0x3a)
@@ -2110,7 +2245,7 @@ func emitProgram(tileBytes int) []byte {
 	// DocumentEngine command numbers. The local edit is only an optimistic
 	// frame; the host commits this record and the next viewport replaces it.
 	commandEnqueue := len(p)
-	p[commandEnqueueCall+1], p[commandEnqueueCall+2] = byte(0x8000+commandEnqueue), byte((0x8000+commandEnqueue)>>8)
+	patch16(commandEnqueueCall, commandEnqueue)
 	b(0xad, 0x1d, 0x03)
 	beqCommandEditorMode := len(p)
 	b(0xf0, 0)
@@ -2205,9 +2340,9 @@ func emitProgram(tileBytes int) []byte {
 	commandUp := len(p)
 	jump(beqCommandUp, commandUp)
 	b(0xe2, 0x20, 0xa9, 0x00) // SEP #$20 ; LDA #0 (up)
-	b(0x20, byte(0x8000+verticalMove), byte((0x8000+verticalMove)>>8))
+	jsrTo(verticalMove)
 	beqUpHandled := len(p)
-	b(0xf0, 0) // BEQ upHandled (verticalMove returns A=0 when it published)
+	b(0xf0, 0)              // BEQ upHandled (verticalMove returns A=0 when it published)
 	emitSemanticNav(14, 39) // MoveUp / ExtendUp
 	braCommandWrite5 := len(p)
 	b(0x4c, 0, 0)
@@ -2217,9 +2352,9 @@ func emitProgram(tileBytes int) []byte {
 	commandDown := len(p)
 	jump(beqCommandDown, commandDown)
 	b(0xe2, 0x20, 0xa9, 0x01) // SEP #$20 ; LDA #1 (down)
-	b(0x20, byte(0x8000+verticalMove), byte((0x8000+verticalMove)>>8))
+	jsrTo(verticalMove)
 	beqDownHandled := len(p)
-	b(0xf0, 0) // BEQ downHandled
+	b(0xf0, 0)              // BEQ downHandled
 	emitSemanticNav(15, 40) // MoveDown / ExtendDown
 	braCommandWrite6 := len(p)
 	b(0x4c, 0, 0)
@@ -2275,9 +2410,9 @@ func emitProgram(tileBytes int) []byte {
 		b(0x20, 0, 0)
 	}
 	commandWrite := len(p)
-	p[commandWriteCall+1], p[commandWriteCall+2] = byte(0x8000+commandWrite), byte((0x8000+commandWrite)>>8)
-	p[resolveCommandCall+1], p[resolveCommandCall+2] = byte(0x8000+commandWrite), byte((0x8000+commandWrite)>>8)
-	p[scrollCommandCall+1], p[scrollCommandCall+2] = byte(0x8000+commandWrite), byte((0x8000+commandWrite)>>8)
+	patch16(commandWriteCall, commandWrite)
+	patch16(resolveCommandCall, commandWrite)
+	patch16(scrollCommandCall, commandWrite)
 	b(0xc2, 0x30, 0xaf, 0x02, 0x00, 0x70, 0xaa, 0xe2, 0x20)
 	b(0xad, 0x15, 0x03, 0x8d, 0x2c, 0x03) // contiguous 16-bit payload count
 	b(0xad, 0x18, 0x03, 0x8d, 0x2d, 0x03)
@@ -2322,7 +2457,7 @@ func emitProgram(tileBytes int) []byte {
 	b(0x9c, 0x17, 0x03) // STZ $0317 (kind high)
 	b(0x9c, 0x15, 0x03) // STZ $0315 (payload length low)
 	b(0x9c, 0x18, 0x03) // STZ $0318 (payload length high)
-	b(0x20, byte(0x8000+commandWrite), byte((0x8000+commandWrite)>>8))
+	jsrTo(commandWrite)
 	b(0x60) // RTS
 
 	// toolbarClick: mouse Y/X (packet-derived, $0335/$0334) already confirmed
@@ -2334,7 +2469,7 @@ func emitProgram(tileBytes int) []byte {
 	// x 168-191 / 192-215 / 216-239, with 8px of padding on each side that
 	// simply does nothing when clicked.
 	toolbarClick := len(p)
-	p[toolbarClickCall+1], p[toolbarClickCall+2] = byte(0x8000+toolbarClick), byte((0x8000+toolbarClick)>>8)
+	patch16(toolbarClickCall, toolbarClick)
 	b(0xad, 0x35, 0x03) // LDA $0335 (mouse Y)
 	b(0xc9, 16)
 	bccToolbarRow0 := len(p)
@@ -2367,7 +2502,7 @@ func emitProgram(tileBytes int) []byte {
 	emitAlign := len(p)
 	branch(braEmitAlign1, emitAlign)
 	branch(braEmitAlign2, emitAlign)
-	b(0x4c, byte(0x8000+emitToolbarCommand), byte((0x8000+emitToolbarCommand)>>8))
+	jmpTo(emitToolbarCommand)
 	// Row 0: bold/italic/underline.
 	toolbarClickRow0 := len(p)
 	branch(bccToolbarRow0, toolbarClickRow0)
@@ -2398,11 +2533,11 @@ func emitProgram(tileBytes int) []byte {
 	emitStyle := len(p)
 	branch(braEmitStyle1, emitStyle)
 	branch(braEmitStyle2, emitStyle)
-	b(0x4c, byte(0x8000+emitToolbarCommand), byte((0x8000+emitToolbarCommand)>>8))
+	jmpTo(emitToolbarCommand)
 
 	ringWrite := len(p)
 	for _, at := range ringWriteCalls {
-		p[at+1], p[at+2] = byte(0x8000+ringWrite), byte((0x8000+ringWrite)>>8)
+		patch16(at, ringWrite)
 	}
 	b(0x9f, 0x00, 0x01, 0x70, 0xe8, 0xe0, 0x00, 0x20)
 	b(0x90, 0x03, 0xa2, 0x00, 0x00, 0x60)
@@ -2411,8 +2546,17 @@ func emitProgram(tileBytes int) []byte {
 	// revisioned mailbox commands; the host never decides what a visible menu
 	// item means or where it is drawn.
 	menuInput := len(p)
-	p[menuInputCall+1], p[menuInputCall+2] = byte(0x8000+menuInput), byte((0x8000+menuInput)>>8)
-	b(0xad, 0x1d, 0x03, 0xc9, 0x05)
+	patch16(menuInputCall, menuInput)
+	b(0xad, 0x1d, 0x03, 0xc9, 0x10, 0xd0, 0x03)
+	settingsInputJump := len(p)
+	b(0x4c, 0, 0)
+	b(0xc9, 0x11, 0xd0, 0x03)
+	saveFormatInputJump := len(p)
+	b(0x4c, 0, 0)
+	b(0xc9, 0x12, 0xd0, 0x03)
+	transitionInputJump := len(p)
+	b(0x4c, 0, 0)
+	b(0xc9, 0x05)
 	bccBrowserNotReady := len(p)
 	b(0x90, 0)
 	browserInputCall = len(p)
@@ -2464,15 +2608,15 @@ func emitProgram(tileBytes int) []byte {
 	b(0xc9, 0x02)
 	beqMenuSave := len(p)
 	b(0xf0, 0)
-	b(0xc9, 0x03)
-	beqMenuSaveAs := len(p)
-	b(0xf0, 0)
-	b(0xc9, 0x04)
-	beqMenuRecent := len(p)
-	b(0xf0, 0)
-	b(0xc9, 0x05)
-	beqMenuStructure := len(p)
-	b(0xf0, 0)
+	b(0xc9, 0x03, 0xd0, 0x03)
+	menuSaveAsJump := len(p)
+	b(0x4c, 0, 0)
+	b(0xc9, 0x04, 0xd0, 0x03)
+	menuRecentJump := len(p)
+	b(0x4c, 0, 0)
+	b(0xc9, 0x05, 0xd0, 0x03)
+	menuStructureJump := len(p)
+	b(0x4c, 0, 0)
 	// The remaining index is Statistics: a cartridge dialog rendered entirely
 	// from the committed viewport's word/character/line metadata. F1 and
 	// Backspace remain the menu dismissal paths.
@@ -2499,19 +2643,55 @@ func emitProgram(tileBytes int) []byte {
 	braMenuCommandSaving := len(p)
 	b(0x80, 0)
 	menuSaveAs := len(p)
-	branch(beqMenuSaveAs, menuSaveAs)
-	b(0xa9, 0x07, 0x8d, 0x16, 0x03, 0xa9, 0x01, 0x8d, 0x17, 0x03)
-	b(0xa9, 0x03, 0x8d, 0x1d, 0x03, 0x9c, 0x1f, 0x03, 0x9c, 0x20, 0x03)
-	braMenuCommandWait2 := len(p)
+	jump(menuSaveAsJump, menuSaveAs)
+	b(0xa9, 0x01, 0x8d, 0x14, 0x03) // Back returns to the main menu.
+	b(0xa9, 0x11, 0x8d, 0x1d, 0x03)
+	// Default to the current offered format: ODT=0, DOCX=1, RTF=2,
+	// Markdown=3. Compatibility-only FODT/text fall back to ODT.
+	b(0xad, 0x69, 0x03)
+	beqMenuFormatReady := len(p)
+	b(0xf0, 0)
+	b(0xc9, 0x02)
+	beqMenuFormatDocx := len(p)
+	b(0xf0, 0)
+	b(0xc9, 0x03)
+	beqMenuFormatRtf := len(p)
+	b(0xf0, 0)
+	b(0xc9, 0x04)
+	beqMenuFormatMarkdown := len(p)
+	b(0xf0, 0)
+	b(0xa9, 0x00)
+	braMenuFormatReady1 := len(p)
 	b(0x80, 0)
+	menuFormatDocx := len(p)
+	branch(beqMenuFormatDocx, menuFormatDocx)
+	b(0xa9, 0x01)
+	braMenuFormatReady2 := len(p)
+	b(0x80, 0)
+	menuFormatRtf := len(p)
+	branch(beqMenuFormatRtf, menuFormatRtf)
+	b(0xa9, 0x02)
+	braMenuFormatReady3 := len(p)
+	b(0x80, 0)
+	menuFormatMarkdown := len(p)
+	branch(beqMenuFormatMarkdown, menuFormatMarkdown)
+	b(0xa9, 0x03)
+	menuFormatReady := len(p)
+	branch(beqMenuFormatReady, menuFormatReady)
+	branch(braMenuFormatReady1, menuFormatReady)
+	branch(braMenuFormatReady2, menuFormatReady)
+	branch(braMenuFormatReady3, menuFormatReady)
+	b(0x8d, 0x2f, 0x03)
+	menuRenderCallSaveFormat := len(p)
+	b(0x20, 0, 0, 0x60)
 	menuRecent := len(p)
-	branch(beqMenuRecent, menuRecent)
+	jump(menuRecentJump, menuRecent)
 	b(0xa9, 0x06, 0x8d, 0x16, 0x03, 0xa9, 0x01, 0x8d, 0x17, 0x03)
 	b(0xa9, 0x04, 0x8d, 0x1d, 0x03, 0x9c, 0x1f, 0x03, 0x9c, 0x20, 0x03)
 	braMenuCommandWait3 := len(p)
 	b(0x80, 0)
 	menuStructure := len(p)
-	branch(beqMenuStructure, menuStructure)
+	jump(menuStructureJump, menuStructure)
 	b(0xa9, 0x2b, 0x8d, 0x16, 0x03, 0x9c, 0x17, 0x03)
 	menuCommandClose := len(p)
 	branch(braMenuCommandClose1, menuCommandClose)
@@ -2519,19 +2699,19 @@ func emitProgram(tileBytes int) []byte {
 	braMenuCommandReady := len(p)
 	b(0x80, 0)
 	menuCommandWait := len(p)
-	for _, at := range []int{braMenuCommandWait1, braMenuCommandWait2, braMenuCommandWait3} {
+	for _, at := range []int{braMenuCommandWait1, braMenuCommandWait3} {
 		branch(at, menuCommandWait)
 	}
 	// The three list menus (Open/Save As/Recent) converge here. Snapshot the
 	// pagination context: source kind from the staged $0316, page 0, no parent.
 	// Also record it as the root kind and reset the directory-back depth.
-	b(0xad, 0x16, 0x03, 0x8d, 0x4b, 0x03, 0x8d, 0x4e, 0x03)                                     // context + root kind = $0316
-	b(0x9c, 0x4a, 0x03, 0x9c, 0x4c, 0x03, 0x9c, 0x48, 0x03, 0x9c, 0x49, 0x03, 0x9c, 0x4d, 0x03) // page/flags/len/has_more/depth = 0
+	b(0xad, 0x16, 0x03, 0x8d, 0x4b, 0x03, 0x8d, 0x4e, 0x03)                                                       // context + root kind = $0316
+	b(0x9c, 0x68, 0x03, 0x9c, 0x4a, 0x03, 0x9c, 0x4c, 0x03, 0x9c, 0x48, 0x03, 0x9c, 0x49, 0x03, 0x9c, 0x4d, 0x03) // filter/page/flags/len/has_more/depth = 0
 	menuCommandReady := len(p)
 	branch(braMenuCommandReady, menuCommandReady)
 	branch(braMenuCommandSaving, menuCommandReady)
 	b(0x9c, 0x15, 0x03, 0x9c, 0x18, 0x03)
-	b(0x20, byte(0x8000+commandWrite), byte((0x8000+commandWrite)>>8))
+	jsrTo(commandWrite)
 	menuRenderCall3 := len(p)
 	b(0x20, 0, 0, 0x60)
 	menuDismiss := len(p)
@@ -2550,7 +2730,7 @@ func emitProgram(tileBytes int) []byte {
 	// commands. The cartridge retains both the selection and the opaque IDs;
 	// the host only interprets the command that crosses the SRAM boundary.
 	browserInput := len(p)
-	p[browserInputCall+1], p[browserInputCall+2] = byte(0x8000+browserInput), byte((0x8000+browserInput)>>8)
+	patch16(browserInputCall, browserInput)
 	emitBrowserRenderCall := func() {
 		browserRenderCalls = append(browserRenderCalls, len(p))
 		b(0x20, 0, 0)
@@ -2565,7 +2745,7 @@ func emitProgram(tileBytes int) []byte {
 	b(0xad, 0x4b, 0x03, 0x8d, 0x16, 0x03) // kind low = $034b
 	b(0xa9, 0x01, 0x8d, 0x17, 0x03)       // kind high = 1
 	b(0xad, 0x4a, 0x03, 0x8d, 0x4c, 0x03) // flags high = page $034a
-	b(0x9c, 0x19, 0x03)                   // flags low = 0
+	b(0xad, 0x68, 0x03, 0x8d, 0x19, 0x03) // preserve Save As format filter
 	b(0xad, 0x4b, 0x03)                   // A = source kind
 	bnePageNoParent := len(p)
 	b(0xd0, 0)                            // BNE pageNoParent (roots/recent -> empty payload)
@@ -2591,7 +2771,7 @@ func emitProgram(tileBytes int) []byte {
 	branch(braPageMode, pageMode)
 	b(0xad, 0x1d, 0x03, 0x38, 0xe9, 0x03, 0x8d, 0x1d, 0x03) // mode = ready-3 (loading)
 	b(0x9c, 0x1f, 0x03, 0x9c, 0x20, 0x03, 0x9c, 0x49, 0x03) // reset count/selection/has_more
-	b(0x20, byte(0x8000+commandWrite), byte((0x8000+commandWrite)>>8))
+	jsrTo(commandWrite)
 	emitBrowserRenderCall()
 	b(0x60) // RTS
 	browserDispatch := len(p)
@@ -2650,7 +2830,7 @@ func emitProgram(tileBytes int) []byte {
 	beqBrowserUpDone := len(p)
 	b(0xf0, 0)          // BEQ browserUpDone (already first page)
 	b(0xce, 0x4a, 0x03) // DEC $034a (previous page)
-	b(0x20, byte(0x8000+pageRequest), byte((0x8000+pageRequest)>>8))
+	jsrTo(pageRequest)
 	b(0x60)
 	browserUpMove := len(p)
 	branch(bneBrowserUpMove, browserUpMove)
@@ -2673,7 +2853,7 @@ func emitProgram(tileBytes int) []byte {
 	beqBrowserDownNoMore := len(p)
 	b(0xf0, 0)          // BEQ browserDownNoMore
 	b(0xee, 0x4a, 0x03) // INC $034a (next page)
-	b(0x20, byte(0x8000+pageRequest), byte((0x8000+pageRequest)>>8))
+	jsrTo(pageRequest)
 	b(0x60)
 	browserDownNoMore := len(p)
 	branch(beqBrowserDownNoMore, browserDownNoMore)
@@ -2690,7 +2870,7 @@ func emitProgram(tileBytes int) []byte {
 	beqBrowserPageUpDone := len(p)
 	b(0xf0, 0)          // BEQ browserPageUpDone (already first page)
 	b(0xce, 0x4a, 0x03) // DEC $034a (previous page)
-	b(0x20, byte(0x8000+pageRequest), byte((0x8000+pageRequest)>>8))
+	jsrTo(pageRequest)
 	browserPageUpDone := len(p)
 	branch(beqBrowserPageUpDone, browserPageUpDone)
 	b(0x60)
@@ -2703,7 +2883,7 @@ func emitProgram(tileBytes int) []byte {
 	beqBrowserPageDownDone := len(p)
 	b(0xf0, 0)          // BEQ browserPageDownDone (no more pages)
 	b(0xee, 0x4a, 0x03) // INC $034a (next page)
-	b(0x20, byte(0x8000+pageRequest), byte((0x8000+pageRequest)>>8))
+	jsrTo(pageRequest)
 	browserPageDownDone := len(p)
 	branch(beqBrowserPageDownDone, browserPageDownDone)
 	b(0x60)
@@ -2717,8 +2897,18 @@ func emitProgram(tileBytes int) []byte {
 	// directory off the back stack and re-list it at page 0.
 	b(0xad, 0x4d, 0x03) // LDA $034d (depth)
 	bneBackPop := len(p)
-	b(0xd0, 0)          // BNE backPop
-	b(0x9c, 0x1d, 0x03) // STZ $031d (close browser)
+	b(0xd0, 0) // BNE backPop
+	b(0xad, 0x4e, 0x03, 0xc9, 0x08)
+	bneBackCloseBrowser := len(p)
+	b(0xd0, 0)
+	b(0xa9, 0x10, 0x8d, 0x1d, 0x03) // Recovery History returns to F3 settings.
+	braBackRender := len(p)
+	b(0x80, 0)
+	backCloseBrowser := len(p)
+	branch(bneBackCloseBrowser, backCloseBrowser)
+	b(0x9c, 0x1d, 0x03) // Other root listings close to the document.
+	backRender := len(p)
+	branch(braBackRender, backRender)
 	emitBrowserRenderCall()
 	b(0x60)
 	backPop := len(p)
@@ -2752,7 +2942,7 @@ func emitProgram(tileBytes int) []byte {
 	backReq := len(p)
 	branch(braBackReq, backReq)
 	b(0x9c, 0x4a, 0x03, 0x9c, 0x4c, 0x03, 0x9c, 0x49, 0x03) // page 0, flags 0, has_more 0
-	b(0x20, byte(0x8000+pageRequest), byte((0x8000+pageRequest)>>8))
+	jsrTo(pageRequest)
 	b(0x60)
 	browserEnter := len(p)
 	branch(bneBrowserEnter, browserEnter)
@@ -2846,7 +3036,7 @@ func emitProgram(tileBytes int) []byte {
 	dirSnapDone := len(p)
 	branch(bcsDirSnapDone, dirSnapDone)
 	branch(braDirSnapCopy, dirSnapCopy)
-	b(0x20, byte(0x8000+commandWrite), byte((0x8000+commandWrite)>>8))
+	jsrTo(commandWrite)
 	emitBrowserRenderCall()
 	b(0x60)
 
@@ -2855,10 +3045,21 @@ func emitProgram(tileBytes int) []byte {
 	b(0xa5, 0x18, 0xc9, 0x06)
 	beqBrowserSaveAs := len(p)
 	b(0xf0, 0)
+	// Recovery-history rows contain opaque recovery tokens, not catalog IDs.
+	b(0xad, 0x4e, 0x03, 0xc9, 0x08)
+	bneBrowserOpenFile := len(p)
+	b(0xd0, 0)
+	b(0xa9, 0x09, 0x8d, 0x16, 0x03, 0xa9, 0x01, 0x8d, 0x17, 0x03)
+	b(0x9c, 0x1d, 0x03)
+	jsrTo(commandWrite)
+	emitBrowserRenderCall()
+	b(0x60)
+	browserOpenFile := len(p)
+	branch(bneBrowserOpenFile, browserOpenFile)
 	// Open and Recent both open the selected file and return to the document.
 	b(0xa9, 0x01, 0x8d, 0x16, 0x03, 0xa9, 0x01, 0x8d, 0x17, 0x03)
 	b(0x9c, 0x1d, 0x03)
-	b(0x20, byte(0x8000+commandWrite), byte((0x8000+commandWrite)>>8))
+	jsrTo(commandWrite)
 	emitBrowserRenderCall()
 	b(0x60)
 	browserSaveAs := len(p)
@@ -2866,7 +3067,7 @@ func emitProgram(tileBytes int) []byte {
 	// Existing files require a host-issued overwrite event before committing.
 	b(0xa9, 0x02, 0x8d, 0x16, 0x03, 0xa9, 0x01, 0x8d, 0x17, 0x03)
 	b(0x9c, 0x19, 0x03, 0xa9, 0x08, 0x8d, 0x1d, 0x03)
-	b(0x20, byte(0x8000+commandWrite), byte((0x8000+commandWrite)>>8))
+	jsrTo(commandWrite)
 	emitBrowserRenderCall()
 	b(0x60)
 
@@ -2893,24 +3094,16 @@ func emitProgram(tileBytes int) []byte {
 	b(0xc9, 0x0d)
 	beqFilenameSubmit := len(p)
 	b(0xf0, 0)
-	b(0xc9, 0x20)
-	bccFilenameDone := len(p)
-	b(0x90, 0)
-	b(0xc9, 0x7f)
-	bcsFilenameDone := len(p)
-	b(0xb0, 0)
+	b(0xc9, 0x20, 0xb0, 0x01, 0x60) // printable lower bound or return
+	b(0xc9, 0x7f, 0x90, 0x01, 0x60) // printable upper bound or return
 	b(0x85, 0x1b, 0xad, 0x31, 0x03, 0xc9, 31)
-	bcsFilenameDone2 := len(p)
-	b(0xb0, 0)
+	b(0x90, 0x01, 0x60) // bounded filename buffer or return
 	b(0xae, 0x31, 0x03, 0xa5, 0x1b, 0x9d, 0x80, 0x18, 0xee, 0x31, 0x03)
 	emitBrowserRenderCall()
 	b(0x60)
 	filenameSubmit := len(p)
 	branch(beqFilenameSubmit, filenameSubmit)
-	b(0xad, 0x31, 0x03)
-	beqFilenameDone3 := len(p)
-	b(0xf0, 0)
-	b(0xad, 0x30, 0x03, 0x18, 0x69, 0x01, 0x6d, 0x31, 0x03, 0x8d, 0x15, 0x03)
+	b(0xad, 0x31, 0x03, 0xd0, 0x01, 0x60) // empty name cannot submit
 	b(0x9c, 0x18, 0x03, 0xa0, 0x00)
 	copyFilenameParent := len(p)
 	b(0xcc, 0x30, 0x03)
@@ -2933,18 +3126,52 @@ func emitProgram(tileBytes int) []byte {
 	filenameBytesDone := len(p)
 	branch(bcsFilenameBytesDone, filenameBytesDone)
 	branch(braCopyFilenameBytes, copyFilenameBytes)
+	// Save As names are base names. The cartridge appends the selected
+	// extension, so the host never has to guess the intended format.
+	b(0xad, 0x2f, 0x03)
+	beqFilenameExtOdt := len(p)
+	b(0xf0, 0)
+	b(0xc9, 0x01, 0xd0, 0x03)
+	filenameExtDocxJump := len(p)
+	b(0x4c, 0, 0)
+	b(0xc9, 0x02, 0xd0, 0x03)
+	filenameExtRtfJump := len(p)
+	b(0x4c, 0, 0)
+	filenameExtMarkdownJump := len(p)
+	b(0x4c, 0, 0)
+	appendFilenameExtension := func(extension string) {
+		for _, ch := range []byte(extension) {
+			b(0xa9, ch, 0x99, 0x00, 0x18, 0xc8)
+		}
+	}
+	filenameExtOdt := len(p)
+	branch(beqFilenameExtOdt, filenameExtOdt)
+	appendFilenameExtension(".odt")
+	filenameExtDoneJump1 := len(p)
+	b(0x4c, 0, 0)
+	filenameExtDocx := len(p)
+	jump(filenameExtDocxJump, filenameExtDocx)
+	appendFilenameExtension(".docx")
+	filenameExtDoneJump2 := len(p)
+	b(0x4c, 0, 0)
+	filenameExtRtf := len(p)
+	jump(filenameExtRtfJump, filenameExtRtf)
+	appendFilenameExtension(".rtf")
+	filenameExtDoneJump3 := len(p)
+	b(0x4c, 0, 0)
+	filenameExtMarkdown := len(p)
+	jump(filenameExtMarkdownJump, filenameExtMarkdown)
+	appendFilenameExtension(".md")
+	filenameExtDone := len(p)
+	jump(filenameExtDoneJump1, filenameExtDone)
+	jump(filenameExtDoneJump2, filenameExtDone)
+	jump(filenameExtDoneJump3, filenameExtDone)
+	b(0x8c, 0x15, 0x03) // payload count is final Y: parent + NUL + base + extension
 	b(0xa9, 0x0a, 0x8d, 0x16, 0x03, 0xa9, 0x01, 0x8d, 0x17, 0x03)
 	b(0x9c, 0x19, 0x03, 0x9c, 0x1d, 0x03)
-	b(0x20, byte(0x8000+commandWrite), byte((0x8000+commandWrite)>>8))
+	jsrTo(commandWrite)
 	emitBrowserRenderCall()
 	b(0x60)
-	filenameDone := len(p)
-	branch(bccFilenameDone, filenameDone)
-	branch(bcsFilenameDone, filenameDone)
-	branch(bcsFilenameDone2, filenameDone)
-	branch(beqFilenameDone3, filenameDone)
-	b(0x60)
-
 	// The saved opaque ID remains staged at $1800 while the host verifies an
 	// existing target. Confirmation sends the same command with flag bit zero
 	// set; cancellation keeps the visible Save As page intact.
@@ -2961,7 +3188,7 @@ func emitProgram(tileBytes int) []byte {
 	b(0xc9, 0x0d, 0xf0, 0x01, 0x60)
 	b(0xa9, 0x02, 0x8d, 0x16, 0x03, 0xa9, 0x01, 0x8d, 0x17, 0x03)
 	b(0xa9, 0x01, 0x8d, 0x19, 0x03, 0x9c, 0x1d, 0x03)
-	b(0x20, byte(0x8000+commandWrite), byte((0x8000+commandWrite)>>8))
+	jsrTo(commandWrite)
 	emitBrowserRenderCall()
 	b(0x60)
 
@@ -2986,7 +3213,7 @@ func emitProgram(tileBytes int) []byte {
 	}
 	b(0xa9, 0x09, 0x8d, 0x16, 0x03, 0xa9, 0x01, 0x8d, 0x17, 0x03)
 	b(0xa9, 0x07, 0x8d, 0x15, 0x03, 0x9c, 0x18, 0x03, 0x9c, 0x19, 0x03)
-	b(0x20, byte(0x8000+commandWrite), byte((0x8000+commandWrite)>>8))
+	jsrTo(commandWrite)
 	outcomeDismiss := len(p)
 	branch(beqOutcomeDismiss, outcomeDismiss)
 	branch(bneOutcomeDismiss2, outcomeDismiss)
@@ -3059,7 +3286,7 @@ func emitProgram(tileBytes int) []byte {
 	branch(braCopyFindQuery, copyFindQuery)
 	b(0xa9, 0x23, 0x8d, 0x16, 0x03, 0x9c, 0x17, 0x03) // kind = FindNext (35)
 	b(0x9c, 0x19, 0x03, 0x9c, 0x1d, 0x03)
-	b(0x20, byte(0x8000+commandWrite), byte((0x8000+commandWrite)>>8))
+	jsrTo(commandWrite)
 	emitBrowserRenderCall()
 	b(0x60)
 	findPrintable := len(p)
@@ -3082,6 +3309,305 @@ func emitProgram(tileBytes int) []byte {
 	branch(bcsFindIgnore2, findIgnore)
 	b(0x60)
 
+	// Save/Recovery settings (mode $10) are cartridge state projected from the
+	// typed host settings event. Changes cross the mailbox as one complete
+	// three-byte settings value, so mode/interval/retention cannot tear.
+	settingsInput := len(p)
+	jump(settingsInputJump, settingsInput)
+	b(0xe2, 0x30, 0xa5, 0x5b)
+	b(0xc9, 0x08, 0xd0, 0x03)
+	settingsBackJump := len(p)
+	b(0x4c, 0, 0)
+	b(0xc9, 0x13, 0xd0, 0x03)
+	settingsUpJump := len(p)
+	b(0x4c, 0, 0)
+	b(0xc9, 0x14, 0xd0, 0x03)
+	settingsDownJump := len(p)
+	b(0x4c, 0, 0)
+	b(0xc9, 0x11, 0xd0, 0x03)
+	settingsLeftJump := len(p)
+	b(0x4c, 0, 0)
+	b(0xc9, 0x12, 0xd0, 0x03)
+	settingsRightJump := len(p)
+	b(0x4c, 0, 0)
+	b(0xc9, 0x0d, 0xd0, 0x03)
+	settingsEnterJump := len(p)
+	b(0x4c, 0, 0)
+	b(0x60)
+
+	settingsBack := len(p)
+	jump(settingsBackJump, settingsBack)
+	b(0xad, 0x14, 0x03, 0x8d, 0x1d, 0x03)
+	emitBrowserRenderCall()
+	b(0x60)
+
+	settingsUp := len(p)
+	jump(settingsUpJump, settingsUp)
+	b(0xad, 0x1a, 0x03)
+	beqSettingsUpRender := len(p)
+	b(0xf0, 0)
+	b(0xce, 0x1a, 0x03)
+	settingsUpRender := len(p)
+	branch(beqSettingsUpRender, settingsUpRender)
+	emitBrowserRenderCall()
+	b(0x60)
+
+	settingsDown := len(p)
+	jump(settingsDownJump, settingsDown)
+	b(0xad, 0x1a, 0x03, 0xc9, 0x04)
+	bcsSettingsDownRender := len(p)
+	b(0xb0, 0)
+	b(0xee, 0x1a, 0x03)
+	settingsDownRender := len(p)
+	branch(bcsSettingsDownRender, settingsDownRender)
+	emitBrowserRenderCall()
+	b(0x60)
+
+	settingsLeft := len(p)
+	jump(settingsLeftJump, settingsLeft)
+	b(0x64, 0x1b)
+	settingsChangeJump1 := len(p)
+	b(0x4c, 0, 0)
+	settingsRight := len(p)
+	jump(settingsRightJump, settingsRight)
+	b(0xa9, 0x01, 0x85, 0x1b)
+	settingsChange := len(p)
+	jump(settingsChangeJump1, settingsChange)
+	b(0xad, 0x1a, 0x03)
+	bneSettingsNotMode := len(p)
+	b(0xd0, 0)
+	b(0xad, 0x1b, 0x03, 0x49, 0x01, 0x8d, 0x1b, 0x03)
+	settingsEmitConfigJump1 := len(p)
+	b(0x4c, 0, 0)
+	settingsNotMode := len(p)
+	branch(bneSettingsNotMode, settingsNotMode)
+	b(0xc9, 0x01)
+	bneSettingsNotInterval := len(p)
+	b(0xd0, 0)
+	b(0xa5, 0x1b)
+	bneSettingsIntervalInc := len(p)
+	b(0xd0, 0)
+	b(0xad, 0x1c, 0x03, 0xc9, 0x01)
+	bneSettingsIntervalDec := len(p)
+	b(0xd0, 0)
+	b(0xa9, 0xff, 0x8d, 0x1c, 0x03)
+	settingsEmitConfigJump2 := len(p)
+	b(0x4c, 0, 0)
+	settingsIntervalDec := len(p)
+	branch(bneSettingsIntervalDec, settingsIntervalDec)
+	b(0xce, 0x1c, 0x03)
+	settingsEmitConfigJump3 := len(p)
+	b(0x4c, 0, 0)
+	settingsIntervalInc := len(p)
+	branch(bneSettingsIntervalInc, settingsIntervalInc)
+	b(0xee, 0x1c, 0x03)
+	bneSettingsEmitConfig1 := len(p)
+	b(0xd0, 0)
+	b(0xee, 0x1c, 0x03) // 255+1 wraps; zero is not a legal interval.
+	settingsEmitConfigJump4 := len(p)
+	b(0x4c, 0, 0)
+	settingsNotInterval := len(p)
+	branch(bneSettingsNotInterval, settingsNotInterval)
+	b(0xc9, 0x02)
+	bneSettingsNotCopies := len(p)
+	b(0xd0, 0)
+	b(0xa5, 0x1b)
+	beqSettingsCopiesDec := len(p)
+	b(0xf0, 0)
+	b(0xee, 0x2b, 0x03)
+	settingsEmitConfigJump5 := len(p)
+	b(0x4c, 0, 0)
+	settingsCopiesDec := len(p)
+	branch(beqSettingsCopiesDec, settingsCopiesDec)
+	b(0xce, 0x2b, 0x03)
+	settingsEmitConfigJump6 := len(p)
+	b(0x4c, 0, 0)
+	settingsNotCopies := len(p)
+	branch(bneSettingsNotCopies, settingsNotCopies)
+	b(0xc9, 0x04)
+	bneSettingsChangeDone := len(p)
+	b(0xd0, 0)
+	b(0xad, 0x69, 0x03, 0xc9, 0x04)
+	bneSettingsChangeDone2 := len(p)
+	b(0xd0, 0)
+	b(0xad, 0x2e, 0x03, 0x49, 0x01, 0x8d, 0x2e, 0x03)
+	settingsEmitMarkdownJump := len(p)
+	b(0x4c, 0, 0)
+	settingsChangeDone := len(p)
+	branch(bneSettingsChangeDone, settingsChangeDone)
+	branch(bneSettingsChangeDone2, settingsChangeDone)
+	emitBrowserRenderCall()
+	b(0x60)
+
+	settingsEnter := len(p)
+	jump(settingsEnterJump, settingsEnter)
+	b(0xad, 0x1a, 0x03, 0xc9, 0x03)
+	bneSettingsEnterDone := len(p)
+	b(0xd0, 0)
+	// Recovery History reuses the paged cartridge browser with source kind 8.
+	// Loading mode 4 becomes ready mode 7 when the host completes the page; the
+	// root kind distinguishes recovery selection from Recent/Open.
+	b(0xa9, 0x08, 0x8d, 0x16, 0x03, 0xa9, 0x01, 0x8d, 0x17, 0x03)
+	b(0xa9, 0x04, 0x8d, 0x1d, 0x03)
+	b(0xa9, 0x08, 0x8d, 0x4b, 0x03, 0x8d, 0x4e, 0x03)
+	b(0x9c, 0x15, 0x03, 0x9c, 0x18, 0x03, 0x9c, 0x19, 0x03)
+	b(0x9c, 0x4a, 0x03, 0x9c, 0x4c, 0x03, 0x9c, 0x48, 0x03)
+	b(0x9c, 0x49, 0x03, 0x9c, 0x4d, 0x03)
+	jsrTo(commandWrite)
+	emitBrowserRenderCall()
+	b(0x60)
+	settingsEnterDone := len(p)
+	branch(bneSettingsEnterDone, settingsEnterDone)
+	b(0x60)
+
+	settingsEmitConfig := len(p)
+	for _, at := range []int{
+		settingsEmitConfigJump1, settingsEmitConfigJump2, settingsEmitConfigJump3,
+		settingsEmitConfigJump4, settingsEmitConfigJump5, settingsEmitConfigJump6,
+	} {
+		jump(at, settingsEmitConfig)
+	}
+	branch(bneSettingsEmitConfig1, settingsEmitConfig)
+	b(0xad, 0x1b, 0x03, 0x8d, 0x00, 0x18)
+	b(0xad, 0x1c, 0x03, 0x8d, 0x01, 0x18)
+	b(0xad, 0x2b, 0x03, 0x8d, 0x02, 0x18)
+	b(0xa9, 0x12, 0x8d, 0x16, 0x03, 0xa9, 0x01, 0x8d, 0x17, 0x03)
+	b(0xa9, 0x03, 0x8d, 0x15, 0x03, 0x9c, 0x18, 0x03, 0x9c, 0x19, 0x03)
+	jsrTo(commandWrite)
+	emitBrowserRenderCall()
+	b(0x60)
+
+	settingsEmitMarkdown := len(p)
+	jump(settingsEmitMarkdownJump, settingsEmitMarkdown)
+	b(0xad, 0x2e, 0x03, 0x8d, 0x00, 0x18)
+	b(0xa9, 0x13, 0x8d, 0x16, 0x03, 0xa9, 0x01, 0x8d, 0x17, 0x03)
+	b(0xa9, 0x01, 0x8d, 0x15, 0x03, 0x9c, 0x18, 0x03, 0x9c, 0x19, 0x03)
+	jsrTo(commandWrite)
+	emitBrowserRenderCall()
+	b(0x60)
+
+	// Save As format selection (mode $11). Enter begins a format-filtered file
+	// listing; the selected format is also used to append the extension later.
+	saveFormatInput := len(p)
+	jump(saveFormatInputJump, saveFormatInput)
+	b(0xe2, 0x30, 0xa5, 0x5b)
+	b(0xc9, 0x08, 0xd0, 0x03)
+	saveFormatBackJump := len(p)
+	b(0x4c, 0, 0)
+	b(0xc9, 0x13, 0xd0, 0x03)
+	saveFormatUpJump := len(p)
+	b(0x4c, 0, 0)
+	b(0xc9, 0x14, 0xd0, 0x03)
+	saveFormatDownJump := len(p)
+	b(0x4c, 0, 0)
+	b(0xc9, 0x0d, 0xd0, 0x03)
+	saveFormatEnterJump := len(p)
+	b(0x4c, 0, 0)
+	b(0x60)
+	saveFormatBack := len(p)
+	jump(saveFormatBackJump, saveFormatBack)
+	b(0xad, 0x14, 0x03, 0x8d, 0x1d, 0x03)
+	emitBrowserRenderCall()
+	b(0x60)
+	saveFormatUp := len(p)
+	jump(saveFormatUpJump, saveFormatUp)
+	b(0xad, 0x2f, 0x03)
+	beqSaveFormatUpDone := len(p)
+	b(0xf0, 0)
+	b(0xce, 0x2f, 0x03)
+	saveFormatUpDone := len(p)
+	branch(beqSaveFormatUpDone, saveFormatUpDone)
+	emitBrowserRenderCall()
+	b(0x60)
+	saveFormatDown := len(p)
+	jump(saveFormatDownJump, saveFormatDown)
+	b(0xad, 0x2f, 0x03, 0xc9, 0x03)
+	bcsSaveFormatDownDone := len(p)
+	b(0xb0, 0)
+	b(0xee, 0x2f, 0x03)
+	saveFormatDownDone := len(p)
+	branch(bcsSaveFormatDownDone, saveFormatDownDone)
+	emitBrowserRenderCall()
+	b(0x60)
+	saveFormatEnter := len(p)
+	jump(saveFormatEnterJump, saveFormatEnter)
+	b(0xa9, 0x07, 0x8d, 0x16, 0x03, 0x8d, 0x4b, 0x03, 0x8d, 0x4e, 0x03)
+	b(0xa9, 0x01, 0x8d, 0x17, 0x03)
+	b(0xad, 0x2f, 0x03, 0x1a, 0x0a, 0x8d, 0x68, 0x03, 0x8d, 0x19, 0x03)
+	b(0xa9, 0x03, 0x8d, 0x1d, 0x03)
+	b(0x9c, 0x15, 0x03, 0x9c, 0x18, 0x03, 0x9c, 0x1f, 0x03, 0x9c, 0x20, 0x03)
+	b(0x9c, 0x4a, 0x03, 0x9c, 0x4c, 0x03, 0x9c, 0x48, 0x03, 0x9c, 0x49, 0x03, 0x9c, 0x4d, 0x03)
+	jsrTo(commandWrite)
+	emitBrowserRenderCall()
+	b(0x60)
+
+	// One transition dialog owns every operation that would replace a dirty
+	// document. The decision byte is Checkpoint/Save/Discard/Cancel = 0..3.
+	transitionInput := len(p)
+	jump(transitionInputJump, transitionInput)
+	b(0xe2, 0x30, 0xa5, 0x5b)
+	b(0xc9, 0x08, 0xd0, 0x03)
+	transitionCancelJump := len(p)
+	b(0x4c, 0, 0)
+	b(0xc9, 0x13, 0xd0, 0x03)
+	transitionUpJump := len(p)
+	b(0x4c, 0, 0)
+	b(0xc9, 0x14, 0xd0, 0x03)
+	transitionDownJump := len(p)
+	b(0x4c, 0, 0)
+	b(0xc9, 0x0d, 0xd0, 0x03)
+	transitionSubmitJump := len(p)
+	b(0x4c, 0, 0)
+	b(0x60)
+	transitionUp := len(p)
+	jump(transitionUpJump, transitionUp)
+	b(0xad, 0x1a, 0x03)
+	beqTransitionUpDone := len(p)
+	b(0xf0, 0)
+	b(0xce, 0x1a, 0x03)
+	transitionUpDone := len(p)
+	branch(beqTransitionUpDone, transitionUpDone)
+	emitBrowserRenderCall()
+	b(0x60)
+	transitionDown := len(p)
+	jump(transitionDownJump, transitionDown)
+	b(0xad, 0x1a, 0x03, 0xc9, 0x03)
+	bcsTransitionDownDone := len(p)
+	b(0xb0, 0)
+	b(0xee, 0x1a, 0x03)
+	transitionDownDone := len(p)
+	branch(bcsTransitionDownDone, transitionDownDone)
+	emitBrowserRenderCall()
+	b(0x60)
+	transitionCancel := len(p)
+	jump(transitionCancelJump, transitionCancel)
+	b(0xa9, 0x03)
+	transitionEmitJump := len(p)
+	b(0x4c, 0, 0)
+	transitionSubmit := len(p)
+	jump(transitionSubmitJump, transitionSubmit)
+	b(0xad, 0x1a, 0x03)
+	transitionEmit := len(p)
+	jump(transitionEmitJump, transitionEmit)
+	b(0x8d, 0x00, 0x18)
+	b(0xc9, 0x01)
+	bneTransitionNotSave := len(p)
+	b(0xd0, 0)
+	b(0xa9, 0x01, 0x8d, 0x6a, 0x03)
+	braTransitionSaveFlagDone := len(p)
+	b(0x80, 0)
+	transitionNotSave := len(p)
+	branch(bneTransitionNotSave, transitionNotSave)
+	b(0x9c, 0x6a, 0x03)
+	transitionSaveFlagDone := len(p)
+	branch(braTransitionSaveFlagDone, transitionSaveFlagDone)
+	b(0x9c, 0x1d, 0x03)
+	b(0xa9, 0x14, 0x8d, 0x16, 0x03, 0xa9, 0x01, 0x8d, 0x17, 0x03)
+	b(0xa9, 0x01, 0x8d, 0x15, 0x03, 0x9c, 0x18, 0x03, 0x9c, 0x19, 0x03)
+	jsrTo(commandWrite)
+	emitBrowserRenderCall()
+	b(0x60)
+
 	// event_consume accepts one complete host record per main-loop pass.
 	// Unknown or malformed records advance the committed consumer without
 	// touching browser state. File entries are bounded to one seven-row page.
@@ -3091,14 +3617,18 @@ func emitProgram(tileBytes int) []byte {
 		b(0x20, 0, 0)
 	}
 	eventConsume := len(p)
-	p[eventCall+1], p[eventCall+2] = byte(0x8000+eventConsume), byte((0x8000+eventConsume)>>8)
+	patch16(eventCall, eventConsume)
 	b(0xc2, 0x30, 0xaf, 0x08, 0x00, 0x70, 0xc9, 0x00, 0x20)
 	bccEventConsumerValid := len(p)
 	b(0x90, 0)
 	b(0xa9, 0x00, 0x00)
 	eventConsumerValid := len(p)
 	branch(bccEventConsumerValid, eventConsumerValid)
-	b(0xaa, 0x8e, 0x2a, 0x03, 0xcf, 0x06, 0x00, 0x70, 0xe2, 0x20)
+	// Keep the 16-bit event cursor away from the persistent settings bytes at
+	// $032a/$032b. The earlier scratch word overlapped retained-copy count at
+	// $032b, so parsing the Settings event changed the cursor's high byte and
+	// committed an impossible consumer index.
+	b(0xaa, 0x8e, 0x6b, 0x03, 0xcf, 0x06, 0x00, 0x70, 0xe2, 0x20)
 	bneEventAvailable := len(p)
 	b(0xd0, 0)
 	b(0xe2, 0x10, 0x60)
@@ -3174,16 +3704,32 @@ func emitProgram(tileBytes int) []byte {
 	beqOutcomeKind2 := len(p)
 	b(0xf0, 0)
 	b(0xc9, 0x09)
-	bneOutcomeKind := len(p)
-	b(0xd0, 0)
+	beqOutcomeKind5 := len(p)
+	b(0xf0, 0)
+	b(0xc9, 0x11)
+	beqOutcomeKind6 := len(p)
+	b(0xf0, 0)
+	b(0xc9, 0x10, 0xd0, 0x03)
+	saveAsRequiredEventJump := len(p)
+	b(0x4c, 0, 0)
+	b(0xc9, 0x12, 0xd0, 0x03)
+	settingsEventJump := len(p)
+	b(0x4c, 0, 0)
+	b(0xc9, 0x13, 0xd0, 0x03)
+	transitionEventJump := len(p)
+	b(0x4c, 0, 0)
+	outcomeKindJump := len(p)
+	b(0x4c, 0, 0)
 	outcomeEventJump := len(p)
 	b(0x4c, 0, 0)
 	branch(beqOutcomeKind, outcomeEventJump)
 	branch(beqOutcomeKind2, outcomeEventJump)
 	branch(beqOutcomeKind3, outcomeEventJump)
 	branch(beqOutcomeKind4, outcomeEventJump)
+	branch(beqOutcomeKind5, outcomeEventJump)
+	branch(beqOutcomeKind6, outcomeEventJump)
 	outcomeKind := len(p)
-	branch(bneOutcomeKind, outcomeKind)
+	jump(outcomeKindJump, outcomeKind)
 	eventCommitJump3 := len(p)
 	b(0x4c, 0, 0)
 
@@ -3358,21 +3904,88 @@ func emitProgram(tileBytes int) []byte {
 	outcomeEventCommitJump := len(p)
 	b(0x4c, 0, 0)
 
+	saveAsRequiredEvent := len(p)
+	jump(saveAsRequiredEventJump, saveAsRequiredEvent)
+	// First Save is the same format/location flow as Save As. Untitled
+	// documents are ODT by invariant.
+	b(0xad, 0x6a, 0x03)
+	beqSaveAsNormalOrigin := len(p)
+	b(0xf0, 0)
+	b(0xa9, 0x12, 0x8d, 0x14, 0x03, 0x9c, 0x6a, 0x03)
+	braSaveAsOriginReady := len(p)
+	b(0x80, 0)
+	saveAsNormalOrigin := len(p)
+	branch(beqSaveAsNormalOrigin, saveAsNormalOrigin)
+	b(0x9c, 0x14, 0x03)
+	saveAsOriginReady := len(p)
+	branch(braSaveAsOriginReady, saveAsOriginReady)
+	b(0x9c, 0x2f, 0x03)
+	b(0xa9, 0x11, 0x8d, 0x1d, 0x03, 0xe2, 0x10)
+	saveAsRequiredRenderCall := len(p)
+	b(0x20, 0, 0, 0xc2, 0x10)
+	saveAsRequiredCommitJump := len(p)
+	b(0x4c, 0, 0)
+
+	settingsEvent := len(p)
+	jump(settingsEventJump, settingsEvent)
+	b(0xad, 0x24, 0x03)
+	bneSettingsEventInvalid := len(p)
+	b(0xd0, 0)
+	b(0xad, 0x23, 0x03, 0xc9, 0x05)
+	bneSettingsEventInvalid2 := len(p)
+	b(0xd0, 0)
+	eventRead()
+	sta(0x031b)
+	eventRead()
+	sta(0x031c)
+	eventRead()
+	sta(0x032b)
+	eventRead()
+	sta(0x032e)
+	eventRead()
+	sta(0x0369)
+	b(0xad, 0x1d, 0x03, 0xc9, 0x10)
+	bneSettingsEventCommit := len(p)
+	b(0xd0, 0)
+	b(0xe2, 0x10)
+	settingsEventRenderCall := len(p)
+	b(0x20, 0, 0, 0xc2, 0x10)
+	settingsEventCommit := len(p)
+	branch(bneSettingsEventCommit, settingsEventCommit)
+	settingsEventCommitJump := len(p)
+	b(0x4c, 0, 0)
+	settingsEventInvalid := len(p)
+	branch(bneSettingsEventInvalid, settingsEventInvalid)
+	branch(bneSettingsEventInvalid2, settingsEventInvalid)
+	settingsEventInvalidCommitJump := len(p)
+	b(0x4c, 0, 0)
+
+	transitionEvent := len(p)
+	jump(transitionEventJump, transitionEvent)
+	b(0x9c, 0x1a, 0x03)
+	b(0xa9, 0x12, 0x8d, 0x1d, 0x03, 0xe2, 0x10)
+	transitionEventRenderCall := len(p)
+	b(0x20, 0, 0, 0xc2, 0x10)
+	transitionEventCommitJump := len(p)
+	b(0x4c, 0, 0)
+
 	eventCommit := len(p)
 	for _, at := range []int{
 		eventCommitJump1, eventCommitJump2, eventCommitJump3, fileCommitJump1,
 		fileEventDoneJump, invalidFileCommitJump, overwriteEventCommitJump,
 		overwriteEventInvalidCommitJump, outcomeEventCommitJump,
+		saveAsRequiredCommitJump, settingsEventCommitJump,
+		settingsEventInvalidCommitJump, transitionEventCommitJump,
 	} {
 		jump(at, eventCommit)
 	}
-	b(0xc2, 0x30, 0xad, 0x2a, 0x03, 0x18, 0x69, 0x14, 0x00)
+	b(0xc2, 0x30, 0xad, 0x6b, 0x03, 0x18, 0x69, 0x14, 0x00)
 	b(0x6d, 0x23, 0x03, 0x29, 0xff, 0x1f, 0xaa, 0x8f, 0x08, 0x00, 0x70)
 	b(0xe2, 0x30, 0x60)
 
 	eventReadByte := len(p)
 	for _, at := range eventReadCalls {
-		p[at+1], p[at+2] = byte(0x8000+eventReadByte), byte((0x8000+eventReadByte)>>8)
+		patch16(at, eventReadByte)
 	}
 	b(0xbf, 0x00, 0x21, 0x70, 0x48, 0xe8, 0xe0, 0x00, 0x20)
 	b(0x90, 0x03, 0xa2, 0x00, 0x00, 0x68, 0x60)
@@ -3382,23 +3995,26 @@ func emitProgram(tileBytes int) []byte {
 	// the PPU and a full redraw cannot spill slow per-character VRAM writes into
 	// active display.
 	render := len(p)
-	p[initialRenderCall+1], p[initialRenderCall+2] = byte(0x8000+render), byte((0x8000+render)>>8)
-	p[resolveRenderCall+1], p[resolveRenderCall+2] = byte(0x8000+render), byte((0x8000+render)>>8)
+	patch16(initialRenderCall, render)
+	patch16(resolveRenderCall, render)
 	for _, at := range renderCalls {
-		p[at+1], p[at+2] = byte(0x8000+render), byte((0x8000+render)>>8)
+		patch16(at, render)
 	}
 	for _, at := range viewportRenderCalls {
-		p[at+1], p[at+2] = byte(0x8000+render), byte((0x8000+render)>>8)
+		patch16(at, render)
 	}
 	for _, at := range []int{
-		menuToggleRenderCall, helpToggleRenderCall, menuRenderCall1, menuRenderCall2,
-		menuRenderCall3, menuRenderCallStats, menuRenderCall5, eventRenderCall,
-		overwriteRenderCall, outcomeRenderCall,
+		menuToggleRenderCall, settingsToggleRenderCall, helpToggleRenderCall,
+		menuRenderCall1, menuRenderCall2, menuRenderCall3,
+		menuRenderCallSaveFormat, menuRenderCallStats, menuRenderCall5,
+		eventRenderCall, overwriteRenderCall, outcomeRenderCall,
+		saveAsRequiredRenderCall, settingsEventRenderCall,
+		transitionEventRenderCall,
 	} {
-		p[at+1], p[at+2] = byte(0x8000+render), byte((0x8000+render)>>8)
+		patch16(at, render)
 	}
 	for _, at := range browserRenderCalls {
-		p[at+1], p[at+2] = byte(0x8000+render), byte((0x8000+render)>>8)
+		patch16(at, render)
 	}
 	b(0x8b, 0xa9, 0x7e, 0x48, 0xab) // PHB; LDA #0x7e; PHA; PLB
 	// render is entered from both 8-bit and 16-bit X callers (viewport decode and
@@ -3584,6 +4200,18 @@ func emitProgram(tileBytes int) []byte {
 	b(0xd0, 0x03)
 	renderHelpJump := len(p)
 	b(0x4c, 0, 0)
+	b(0xc9, 0x10)
+	b(0xd0, 0x03)
+	renderSettingsJump := len(p)
+	b(0x4c, 0, 0)
+	b(0xc9, 0x11)
+	b(0xd0, 0x03)
+	renderSaveFormatJump := len(p)
+	b(0x4c, 0, 0)
+	b(0xc9, 0x12)
+	b(0xd0, 0x03)
+	renderTransitionJump := len(p)
+	b(0x4c, 0, 0)
 	b(0xc9, 0x05)
 	bccRenderBrowserLoading := len(p)
 	b(0x90, 0x03)
@@ -3594,7 +4222,7 @@ func emitProgram(tileBytes int) []byte {
 	branch(bccRenderBrowserLoading, renderBrowserLoading)
 	b(0xa2, 0x00)
 	copyBrowserPlane := len(p)
-	b(0xbf, byte(browserOffset&0xff), byte((0x8000+browserOffset)>>8), 0x00, 0x9d, 0x00, 0x10, 0xe8, 0xe0, 0xf0) // LDA long $00:plane,X (render DB is $7e)
+	b(0xbf, byte(loromAddr(browserReadyOffset)), byte(loromAddr(browserReadyOffset)>>8), loromBank(browserReadyOffset), 0x9d, 0x00, 0x10, 0xe8, 0xe0, 0xf0) // loading uses the neutral FILES plane
 	bneCopyBrowserPlane := len(p)
 	b(0xd0, 0)
 	branch(bneCopyBrowserPlane, copyBrowserPlane)
@@ -3605,10 +4233,20 @@ func emitProgram(tileBytes int) []byte {
 	jump(renderBrowserReadyJump, renderBrowserReady)
 	b(0xa2, 0x00)
 	copyBrowserReadyPlane := len(p)
-	b(0xbf, byte(browserReadyOffset&0xff), byte((0x8000+browserReadyOffset)>>8), 0x00, 0x9d, 0x00, 0x10, 0xe8, 0xe0, 0xf0) // LDA long $00:plane,X
+	b(0xbf, byte(loromAddr(browserReadyOffset)), byte(loromAddr(browserReadyOffset)>>8), loromBank(browserReadyOffset), 0x9d, 0x00, 0x10, 0xe8, 0xe0, 0xf0) // LDA long $00:plane,X
 	bneCopyBrowserReadyPlane := len(p)
 	b(0xd0, 0)
 	branch(bneCopyBrowserReadyPlane, copyBrowserReadyPlane)
+	// Recovery rows use the bounded browser entry plane, but keep their own
+	// cartridge-owned title.
+	b(0xad, 0x4e, 0x03, 0xc9, 0x08)
+	bneRecoveryHistoryTitle := len(p)
+	b(0xd0, 0)
+	for i, ch := range []byte("RECOVERY HISTORY") {
+		ldaSta(ch, uint16(0x1007+i))
+	}
+	recoveryHistoryTitle := len(p)
+	branch(bneRecoveryHistoryTitle, recoveryHistoryTitle)
 	// Confirmation is an overlay on the cartridge browser plane, not a host
 	// alert. The selected row remains visible behind it for context.
 	b(0xad, 0x1d, 0x03, 0xc9, 0x09, 0xf0, 0x03)
@@ -3698,12 +4336,23 @@ func emitProgram(tileBytes int) []byte {
 	b(0x4c, 0, 0)
 	outcomeOpenFailed := len(p)
 	branch(bneOutcomeOpenFailed, outcomeOpenFailed)
+	b(0xc9, 0x11)
+	bneOutcomeReallyOpenFailed := len(p)
+	b(0xd0, 0)
+	for i, ch := range []byte("SAVE FAILED") {
+		ldaSta(ch, uint16(0x10b4+i))
+	}
+	outcomeSaveFailedDoneJump := len(p)
+	b(0x4c, 0, 0)
+	outcomeReallyOpenFailed := len(p)
+	branch(bneOutcomeReallyOpenFailed, outcomeReallyOpenFailed)
 	for i, ch := range []byte("CANNOT OPEN FILE") {
 		ldaSta(ch, uint16(0x10b4+i))
 	}
 	outcomeTextDone := len(p)
 	jump(outcomeTextDoneJump, outcomeTextDone)
 	jump(outcomeReadOnlyDoneJump, outcomeTextDone)
+	jump(outcomeSaveFailedDoneJump, outcomeTextDone)
 	for i, ch := range []byte("ENTER OR BACK") {
 		ldaSta(ch, uint16(0x10d2+i))
 	}
@@ -3877,18 +4526,167 @@ func emitProgram(tileBytes int) []byte {
 	jump(renderHelpJump, renderHelp)
 	b(0xa2, 0x00)
 	copyHelpPlane := len(p)
-	b(0xbf, byte(helpOffset&0xff), byte((0x8000+helpOffset)>>8), 0x00, 0x9d, 0x00, 0x10, 0xe8, 0xe0, 0xf0) // LDA long $00:plane,X (render DB is $7e)
+	b(0xbf, byte(loromAddr(helpOffset)), byte(loromAddr(helpOffset)>>8), loromBank(helpOffset), 0x9d, 0x00, 0x10, 0xe8, 0xe0, 0xf0) // LDA long $00:plane,X (render DB is $7e)
 	bneCopyHelpPlane := len(p)
 	b(0xd0, 0)
 	branch(bneCopyHelpPlane, copyHelpPlane)
 	helpPlaneReadyJump := len(p)
 	b(0x4c, 0, 0)
 
+	renderSettings := len(p)
+	jump(renderSettingsJump, renderSettings)
+	b(0xa2, 0x00)
+	copySettingsPlane := len(p)
+	b(0xbf, byte(loromAddr(settingsOffset)), byte(loromAddr(settingsOffset)>>8), loromBank(settingsOffset), 0x9d, 0x00, 0x10, 0xe8, 0xe0, 0xf0)
+	bneCopySettingsPlane := len(p)
+	b(0xd0, 0)
+	branch(bneCopySettingsPlane, copySettingsPlane)
+	// Clear and then write the variable mode field.
+	for i := 0; i < 17; i++ {
+		ldaSta(' ', uint16(0x1025+i))
+	}
+	b(0xad, 0x1b, 0x03)
+	beqSettingsRecoveryOnly := len(p)
+	b(0xf0, 0)
+	for i, ch := range []byte("SAVE + RECOVERY") {
+		ldaSta(ch, uint16(0x1025+i))
+	}
+	settingsModeDoneJump := len(p)
+	b(0x4c, 0, 0)
+	settingsRecoveryOnly := len(p)
+	branch(beqSettingsRecoveryOnly, settingsRecoveryOnly)
+	for i, ch := range []byte("RECOVERY ONLY") {
+		ldaSta(ch, uint16(0x1025+i))
+	}
+	settingsModeDone := len(p)
+	jump(settingsModeDoneJump, settingsModeDone)
+	emitByteDigits := func(source uint16, address uint16) {
+		b(0xad, byte(source), byte(source>>8), 0xa2, 0x00)
+		hundreds := len(p)
+		b(0xc9, 100)
+		bccHundredsDone := len(p)
+		b(0x90, 0)
+		b(0x38, 0xe9, 100, 0xe8)
+		braHundreds := len(p)
+		b(0x80, 0)
+		branch(braHundreds, hundreds)
+		hundredsDone := len(p)
+		branch(bccHundredsDone, hundredsDone)
+		b(0x85, 0x1c, 0x8a, 0x18, 0x69, '0')
+		sta(address)
+		b(0xa5, 0x1c, 0xa2, 0x00)
+		tens := len(p)
+		b(0xc9, 10)
+		bccTensDone := len(p)
+		b(0x90, 0)
+		b(0x38, 0xe9, 10, 0xe8)
+		braTens := len(p)
+		b(0x80, 0)
+		branch(braTens, tens)
+		tensDone := len(p)
+		branch(bccTensDone, tensDone)
+		b(0x85, 0x1c, 0x8a, 0x18, 0x69, '0')
+		sta(address + 1)
+		b(0xa5, 0x1c, 0x18, 0x69, '0')
+		sta(address + 2)
+	}
+	emitByteDigits(0x031c, 0x104c)
+	emitByteDigits(0x032b, 0x106a)
+	for i := 0; i < 14; i++ {
+		ldaSta(' ', uint16(0x10a0+i))
+	}
+	b(0xad, 0x69, 0x03, 0xc9, 0x04)
+	bneSettingsNotMarkdownText := len(p)
+	b(0xd0, 0)
+	b(0xad, 0x2e, 0x03)
+	beqSettingsRenderedText := len(p)
+	b(0xf0, 0)
+	for i, ch := range []byte("SOURCE") {
+		ldaSta(ch, uint16(0x10a0+i))
+	}
+	settingsMarkdownTextDoneJump1 := len(p)
+	b(0x4c, 0, 0)
+	settingsRenderedText := len(p)
+	branch(beqSettingsRenderedText, settingsRenderedText)
+	for i, ch := range []byte("RENDERED") {
+		ldaSta(ch, uint16(0x10a0+i))
+	}
+	settingsMarkdownTextDoneJump2 := len(p)
+	b(0x4c, 0, 0)
+	settingsNotMarkdownText := len(p)
+	branch(bneSettingsNotMarkdownText, settingsNotMarkdownText)
+	for i, ch := range []byte("NOT MARKDOWN") {
+		ldaSta(ch, uint16(0x10a0+i))
+	}
+	settingsMarkdownTextDone := len(p)
+	jump(settingsMarkdownTextDoneJump1, settingsMarkdownTextDone)
+	jump(settingsMarkdownTextDoneJump2, settingsMarkdownTextDone)
+	b(0xac, 0x1a, 0x03, 0xc8, 0xa2, 0x00)
+	settingsRowOffset := len(p)
+	b(0x8a, 0x18, 0x69, 30, 0xaa, 0x88)
+	bneSettingsRowOffset := len(p)
+	b(0xd0, 0)
+	branch(bneSettingsRowOffset, settingsRowOffset)
+	b(0xa9, '>', 0x9d, 0x00, 0x10, 0xa9, 0x04, 0xa0, 30)
+	highlightSettingsRow := len(p)
+	b(0x9d, 0x00, 0x12, 0xe8, 0x88)
+	bneHighlightSettingsRow := len(p)
+	b(0xd0, 0)
+	branch(bneHighlightSettingsRow, highlightSettingsRow)
+	settingsPlaneReadyJump := len(p)
+	b(0x4c, 0, 0)
+
+	renderSaveFormat := len(p)
+	jump(renderSaveFormatJump, renderSaveFormat)
+	b(0xa2, 0x00)
+	copySaveFormatPlane := len(p)
+	b(0xbf, byte(loromAddr(saveFormatOffset)), byte(loromAddr(saveFormatOffset)>>8), loromBank(saveFormatOffset), 0x9d, 0x00, 0x10, 0xe8, 0xe0, 0xf0)
+	bneCopySaveFormatPlane := len(p)
+	b(0xd0, 0)
+	branch(bneCopySaveFormatPlane, copySaveFormatPlane)
+	b(0xac, 0x2f, 0x03, 0xc8, 0xa2, 0x00)
+	saveFormatRowOffset := len(p)
+	b(0x8a, 0x18, 0x69, 30, 0xaa, 0x88)
+	bneSaveFormatRowOffset := len(p)
+	b(0xd0, 0)
+	branch(bneSaveFormatRowOffset, saveFormatRowOffset)
+	b(0xa9, '>', 0x9d, 0x00, 0x10, 0xa9, 0x04, 0xa0, 30)
+	highlightSaveFormatRow := len(p)
+	b(0x9d, 0x00, 0x12, 0xe8, 0x88)
+	bneHighlightSaveFormatRow := len(p)
+	b(0xd0, 0)
+	branch(bneHighlightSaveFormatRow, highlightSaveFormatRow)
+	saveFormatPlaneReadyJump := len(p)
+	b(0x4c, 0, 0)
+
+	renderTransition := len(p)
+	jump(renderTransitionJump, renderTransition)
+	b(0xa2, 0x00)
+	copyTransitionPlane := len(p)
+	b(0xbf, byte(loromAddr(browserOffset)), byte(loromAddr(browserOffset)>>8), loromBank(browserOffset), 0x9d, 0x00, 0x10, 0xe8, 0xe0, 0xf0)
+	bneCopyTransitionPlane := len(p)
+	b(0xd0, 0)
+	branch(bneCopyTransitionPlane, copyTransitionPlane)
+	b(0xac, 0x1a, 0x03, 0xc8, 0xa2, 0x00)
+	transitionRowOffset := len(p)
+	b(0x8a, 0x18, 0x69, 30, 0xaa, 0x88)
+	bneTransitionRowOffset := len(p)
+	b(0xd0, 0)
+	branch(bneTransitionRowOffset, transitionRowOffset)
+	b(0xa9, '>', 0x9d, 0x00, 0x10, 0xa9, 0x04, 0xa0, 30)
+	highlightTransitionRow := len(p)
+	b(0x9d, 0x00, 0x12, 0xe8, 0x88)
+	bneHighlightTransitionRow := len(p)
+	b(0xd0, 0)
+	branch(bneHighlightTransitionRow, highlightTransitionRow)
+	transitionPlaneReadyJump := len(p)
+	b(0x4c, 0, 0)
+
 	renderMainMenu := len(p)
 	jump(renderMainMenuJump, renderMainMenu)
 	b(0xa2, 0x00)
 	copyMenuPlane := len(p)
-	b(0xbf, byte(menuOffset&0xff), byte((0x8000+menuOffset)>>8), 0x00, 0x9d, 0x00, 0x10, 0xe8, 0xe0, 0xf0) // LDA long $00:plane,X (render DB is $7e)
+	b(0xbf, byte(loromAddr(menuOffset)), byte(loromAddr(menuOffset)>>8), loromBank(menuOffset), 0x9d, 0x00, 0x10, 0xe8, 0xe0, 0xf0) // LDA long $00:plane,X (render DB is $7e)
 	bneCopyMenuPlane := len(p)
 	b(0xd0, 0)
 	branch(bneCopyMenuPlane, copyMenuPlane)
@@ -3905,7 +4703,11 @@ func emitProgram(tileBytes int) []byte {
 	b(0xd0, 0)
 	branch(bneHighlightMenuRow, highlightMenuRow)
 	menuPlaneReady := len(p)
-	for _, at := range []int{browserLoadingReadyJump, browserReadyJump, helpPlaneReadyJump} {
+	for _, at := range []int{
+		browserLoadingReadyJump, browserReadyJump, helpPlaneReadyJump,
+		settingsPlaneReadyJump, saveFormatPlaneReadyJump,
+		transitionPlaneReadyJump,
+	} {
 		jump(at, menuPlaneReady)
 	}
 	menuUploadJump := len(p)
@@ -4122,7 +4924,7 @@ func emitProgram(tileBytes int) []byte {
 	discardLeadingSpace := len(p)
 	branch(beqDiscardLeadingSpace, discardLeadingSpace)
 	b(0xe8) // discard spaces at the beginning of a visual line
-	b(0x4c, byte(0x8000+drawLoop), byte((0x8000+drawLoop)>>8))
+	jmpTo(drawLoop)
 	drawCharacter := len(p)
 	branch(bneDrawCharacter, drawCharacter)
 	branch(braDrawCharacter, drawCharacter)
@@ -4297,9 +5099,9 @@ func emitProgram(tileBytes int) []byte {
 	b(0x05, 0x54) // ORA $54 (rich-style tile-id page bit, 0 when no shape override applies)
 	b(0x99, 0x00, 0x10, 0xe8, 0xc8, 0xe6, 0x0a, 0xa5, 0x0a, 0xc9, 0x1e)
 	b(0xf0, 0x03)
-	b(0x4c, byte(0x8000+drawLoop), byte((0x8000+drawLoop)>>8))
+	jmpTo(drawLoop)
 	b(0x64, 0x0a)
-	b(0x4c, byte(0x8000+drawLoop), byte((0x8000+drawLoop)>>8))
+	jmpTo(drawLoop)
 	newline := len(p)
 	jump(newlineJump, newline)
 	jump(jmpNewlineAt, newline)
@@ -4315,10 +5117,10 @@ func emitProgram(tileBytes int) []byte {
 	b(0x64, 0x0a)
 	newlineDone := len(p)
 	branch(beqNewlineDone, newlineDone)
-	b(0x4c, byte(0x8000+drawLoop), byte((0x8000+drawLoop)>>8))
+	jmpTo(drawLoop)
 	screenFull := len(p)
 	jump(screenFull2Jump, screenFull)
-	p[screenFullJump+1], p[screenFullJump+2] = byte(0x8000+screenFull), byte((0x8000+screenFull)>>8)
+	patch16(screenFullJump, screenFull)
 	b(0xa5, 0x56) // LDA $56 (true caret already found?)
 	bneScreenFullAlreadyFound := len(p)
 	b(0xd0, 0)
@@ -4326,7 +5128,7 @@ func emitProgram(tileBytes int) []byte {
 	drawCursor := len(p)
 	branch(bneScreenFullAlreadyFound, drawCursor)
 	jump(drawCursor2Jump, drawCursor)
-	p[drawCursorJump+1], p[drawCursorJump+2] = byte(0x8000+drawCursor), byte((0x8000+drawCursor)>>8)
+	patch16(drawCursorJump, drawCursor)
 	// Only swap the glyph tile at the caret cell; leave $1200,Y (attribute)
 	// untouched. This used to unconditionally stamp documentBaseAttr here,
 	// which was harmless only because the caret bug above always misplaced
@@ -4509,7 +5311,7 @@ func emitProgram(tileBytes int) []byte {
 	// getbits8: four reads return two inverted, LSB-first bits each.
 	get8 := len(p)
 	for _, at := range []int{get8Call1, get8Call2} {
-		p[at+1], p[at+2] = byte(0x8000+get8), byte((0x8000+get8)>>8)
+		patch16(at, get8)
 	}
 	b(0x64, 0x07, 0xa2, 0x04)
 	bits8Loop := len(p)
@@ -4523,7 +5325,7 @@ func emitProgram(tileBytes int) []byte {
 
 	// getbits4: identical electrical reads, shifted down to a nibble.
 	get4 := len(p)
-	p[get4Call+1], p[get4Call+2] = byte(0x8000+get4), byte((0x8000+get4)>>8)
+	patch16(get4Call, get4)
 	b(0x64, 0x07, 0xa2, 0x02)
 	bits4Loop := len(p)
 	b(0xea, 0xea, 0xea, 0xea, 0xea, 0xea, 0xea)
@@ -4533,32 +5335,65 @@ func emitProgram(tileBytes int) []byte {
 	b(0xd0, 0)
 	branch(bneBits4, bits4Loop)
 	b(0xa5, 0x07, 0x49, 0xff, 0x4a, 0x4a, 0x4a, 0x4a, 0x60)
-	return p
+
+	// Interrupt landing pad. Every vector except RESET points here. It used to
+	// point at $8000 -- the reset entry -- so a stray BRK, or NMI the first time
+	// anyone sets $4200, would re-run init from scratch on top of a live
+	// document rather than returning to what it interrupted.
+	irqStub := len(p)
+	b(0x40) // RTI
+	return p, irqStub
 }
 
 func build() ([]byte, int) {
 	tilemap, tiles := encode(scene())
-	program := emitProgram(len(tiles))
+	program, irqStub := emitProgram(len(tiles))
 	menu := mainMenuPlane()
-	browser := browserLoadingPlane()
+	transition := transitionPlane()
 	browserReady := browserReadyPlane()
 	help := helpPlane()
-	if len(program) > menuOffset || menuOffset+len(menu) > browserOffset ||
-		browserOffset+len(browser) > browserReadyOffset ||
-		browserReadyOffset+len(browserReady) > helpOffset ||
-		helpOffset+len(help) > paletteOffset ||
-		paletteOffset+128 > tilemapOffset ||
-		tilemapOffset+2048 > tilesOffset || tilesOffset+len(tiles) > scanMapOffset ||
-		scanMapOffset+256 > 0x7fc0 {
-		panic(fmt.Sprintf("cartridge layout overflow: program=%#x palette=%#x tilemap=%#x tiles-end=%#x scan-map=%#x header=%#x",
-			len(program), paletteOffset, tilemapOffset, tilesOffset+len(tiles), scanMapOffset, 0x7fc0))
+	settings := settingsPlane()
+	saveFormat := saveFormatPlane()
+	// Region layout, checked per bank. Each entry must fit before the next one
+	// starts; the final bound in each bank is the reserved window that closes it.
+	for _, region := range []struct {
+		name  string
+		start int
+		size  int
+		limit int
+	}{
+		// Bank 0: program, then the scan map, then the v3 extended header.
+		{"program", 0, len(program), scanMapOffset},
+		{"scan map", scanMapOffset, 256, 0x7fb0},
+		// Bank 1: fixed pages, then the variable tile blob.
+		{"palette", paletteOffset, 128, tilemapOffset},
+		{"tilemap", tilemapOffset, 2048, menuOffset},
+		{"menu plane", menuOffset, len(menu), browserOffset},
+		{"browser plane", browserOffset, len(transition), browserReadyOffset},
+		{"browser-ready plane", browserReadyOffset, len(browserReady), helpOffset},
+		{"help plane", helpOffset, len(help), settingsOffset},
+		{"settings plane", settingsOffset, len(settings), saveFormatOffset},
+		{"save-format plane", saveFormatOffset, len(saveFormat), tilesOffset},
+		{"PPU tiles", tilesOffset, len(tiles), bank1Limit},
+	} {
+		if region.start+region.size > region.limit {
+			panic(fmt.Sprintf("cartridge layout overflow: %s at %#x is %d bytes, %d past its %#x limit",
+				region.name, region.start, region.size,
+				region.start+region.size-region.limit, region.limit))
+		}
+		if region.start/0x8000 != (region.start+region.size-1)/0x8000 {
+			panic(fmt.Sprintf("%s at %#x spans a bank boundary; DMA and absolute reads cannot follow it",
+				region.name, region.start))
+		}
 	}
 	rom := make([]byte, romSize)
 	copy(rom, program)
 	copy(rom[menuOffset:], menu)
-	copy(rom[browserOffset:], browser)
+	copy(rom[browserOffset:], transition)
 	copy(rom[browserReadyOffset:], browserReady)
 	copy(rom[helpOffset:], help)
+	copy(rom[settingsOffset:], settings)
+	copy(rom[saveFormatOffset:], saveFormat)
 	scanMap := xbandScanMap()
 	copy(rom[scanMapOffset:], scanMap[:])
 	copy(rom[tilemapOffset:], tilemap)
@@ -4587,27 +5422,67 @@ func build() ([]byte, int) {
 	for i, v := range pal {
 		binary.LittleEndian.PutUint16(rom[paletteOffset+i*2:], v)
 	}
+	// v3 extended header at $ffb0. Setting the developer ID below to $33 is
+	// precisely what tells a loader these sixteen bytes are real, and they were
+	// never written -- readers got whatever the scan-map tail happened to leave
+	// behind. Order is maker code, game code, six reserved bytes, expansion
+	// flash size, expansion RAM size, special version, chipset subtype.
+	x := 0x7fb0
+	copy(rom[x:x+2], []byte("FW"))
+	copy(rom[x+2:x+6], []byte("FWTR"))
+
 	h := 0x7fc0
 	copy(rom[h:h+21], []byte("FAIRYWRITER SNES     "))
-	rom[h+0x15] = 0x20
+	rom[h+0x15] = 0x20 // 001smmmm: s=0 SlowROM, mmmm=0 LoROM
 	rom[h+0x16] = 0x02 // ROM + RAM + battery
-	rom[h+0x17] = 5
-	rom[h+0x18] = 5 // 32 KiB SRAM hosts backend state and the bring-up fallback
-	rom[h+0x19] = 1
-	rom[h+0x1a] = 0x33
+	rom[h+0x17] = 6    // 1<<6 KiB = 64 KiB ROM
+	rom[h+0x18] = 5    // 32 KiB SRAM hosts backend state and the bring-up fallback
+	rom[h+0x19] = 1    // NTSC / North America
+	rom[h+0x1a] = 0x33 // developer ID $33 => the v3 extended header above is present
+	rom[h+0x1b] = 0    // ROM version, written explicitly rather than left implicit
+
+	// Vectors. Everything except RESET lands on the RTI stub; RESET enters the
+	// init path at the start of the program. Native vectors live at $ffe0-$ffef
+	// and emulation vectors at $fff0-$ffff; the unused slots in both tables stay
+	// pointed at the stub so a spurious entry returns instead of running data.
+	stub := loromAddr(irqStub)
 	for off := 0x7fe0; off < 0x8000; off += 2 {
-		binary.LittleEndian.PutUint16(rom[off:], 0x8000)
+		binary.LittleEndian.PutUint16(rom[off:], stub)
 	}
-	binary.LittleEndian.PutUint16(rom[0x7ffc:], 0x8000)
-	binary.LittleEndian.PutUint16(rom[0x7fdc:], 0)
-	binary.LittleEndian.PutUint16(rom[0x7fde:], 0)
+	binary.LittleEndian.PutUint16(rom[0x7ffc:], loromAddr(0)) // RESET
+
+	// Reserved header-scoring windows. snes_other.c does not read the map-mode
+	// byte to pick a mapper: it scores every candidate header location the image
+	// is large enough to contain and derives the mapping from where the winner
+	// sits (`location < 0x9000 ? LoROM : HiROM`). At 64 KiB that means $81c0 and
+	// $ffc0 are now probed, and either one outscoring the real header at $7fc0
+	// would silently load this cartridge as HiROM. Zeros score about -16 against
+	// the real header's 47. The windows start 0x10 early because readHeader
+	// reaches back that far for the v3 extended fields.
+	for _, window := range [][2]int{{0x81b0, 0x8200}, {bank1Limit, romSize}} {
+		for i := window[0]; i < window[1]; i++ {
+			if rom[i] != 0 {
+				panic(fmt.Sprintf("reserved header-scoring window %#x-%#x is not zero at %#x; "+
+					"a rival header there can make the loader map this cartridge as HiROM",
+					window[0], window[1], i))
+			}
+		}
+	}
+
+	// Canonical checksum: the sum is taken with the checksum field reading
+	// $0000 and its complement reading $ffff, so the pair cancels itself out.
+	// Zeroing both -- as this did -- lands exactly 0x1fe low, which this
+	// emulator accepts (it only checks the pair sums to $ffff) and a real
+	// verifier rejects.
+	binary.LittleEndian.PutUint16(rom[0x7fdc:], 0xffff)
+	binary.LittleEndian.PutUint16(rom[0x7fde:], 0x0000)
 	var sum uint32
 	for _, v := range rom {
 		sum += uint32(v)
 	}
 	check := uint16(sum)
 	binary.LittleEndian.PutUint16(rom[0x7fde:], check)
-	binary.LittleEndian.PutUint16(rom[0x7fdc:], ^check)
+	binary.LittleEndian.PutUint16(rom[0x7fdc:], check^0xffff)
 	return rom, len(tiles) / 32
 }
 

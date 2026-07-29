@@ -23,25 +23,62 @@ FairyWriter is a native app that presents a source-generated SNES cartridge runt
   unconditional per-event disk traffic.
 - The host centers on the primary display and does not re-grab focus after
   deactivation. Platform window management belongs to the operating system.
-- A close synchronously persists the existing recovery payload before accepting
-  the event. The cartridge's recovery plane remains the visible restore UI.
+- Close, New, Open, Recent, session switching, and Recovery share one
+  cartridge-owned Checkpoint/Save/Discard/Cancel transition. The host accepts a
+  transition only after the selected durable operation succeeds.
 - The executable accepts zero or one initial document path. It maps keys into
-  the XBAND scan path; Page Up, Page Down, F2, and F3 are not host shortcuts.
+  the XBAND scan path; Page Up, Page Down, F2, F3, and F4 are not host shortcuts.
 - F2 enters cartridge mode `$0f`, a static 30x8 controls plane. `$0313` stores
   the exact origin mode. F1 or Backspace restores it, including the menu/browser
   state and menu selection; help is not a host-drawn dialog.
+- F3 enters the cartridge-owned persistence settings plane. F4 enters the
+  cartridge-owned Find plane.
 
 ## Production configuration and platform gate
 
 - `FAIRYWRITER_DEVELOPMENT_UI=OFF` and
   `FAIRYWRITER_DEVELOPER_TOOLS=OFF` define the shipping build on every platform.
-- Production regression expectation is 7/7. Enabling the retired development
-  presentation surface adds three tests, for 10/10.
+- Production regression expectation is 10/10. `fairywriter_persistence` also runs
+  all 670 examples from the vendored GFM conformance corpus, and
+  `fairywriter_persistence_process_e2e` launches fresh production processes for
+  ODT, DOCX, RTF, Markdown, and crash recovery. Enabling the retired development
+  presentation surface adds three tests, for 13/13.
+- `fairywriter_cartridge_conformance` runs `tools/fairywriter-romcheck` against
+  the built `.sfc`. It exists because the vendored emulator is lenient where real
+  loaders are not: it never reads the map-mode byte (it infers LoROM vs HiROM
+  from which candidate header location scores highest, `snes_other.c:169`) and it
+  accepts any checksum pair summing to `$ffff`. The checker enforces the
+  canonical checksum, map mode agreeing with the header's position, vectors
+  resolving into the cartridge, and — the one that will matter as the ROM grows —
+  that no rival header location can outscore the real one at `$7fc0`.
 - Linux x86_64 targets Qt 6.8.3; Windows x64 targets Qt 6.8; macOS uses the
   installed arm64 Qt. Platform packaging may deploy libraries differently, but
   all three run the same cartridge/bridge/document implementation.
 - Automated macOS/container evidence does not establish Windows runtime,
-  macOS-Intel support, or real mouse/keyboard/recovery acceptance.
+  macOS-Intel support, or packaged-app mouse/keyboard/dialog acceptance.
+
+## Persistence ownership
+
+- `DocumentEngine` owns a viewport revision and a separate content generation.
+  Cursor movement, selection, search, and scrolling advance only presentation
+  state; text and formatting changes advance content generation.
+- `DocumentPersistence` owns typed load/save/save-as/checkpoint/autosave
+  outcomes, full size/mtime/SHA-256 fingerprints, conflict decisions, and
+  independent checksummed `.fwrecover` generations.
+- The live `QTextDocument` stays on the UI thread. Persistence captures an
+  immutable snapshot and submits every filesystem read, parse/encode, hash,
+  sync, commit, session marker, and recovery rotation to one FIFO worker.
+  Transitions synchronously wait for that worker's typed durable result.
+- New documents and first Save default to ODT. Save As offers ODT, DOCX, RTF,
+  and Markdown. Existing FODT and plain text remain compatibility formats.
+- New-file writes stage beside the destination before a no-replace rename.
+  Existing files use atomic replacement with direct-write fallback disabled.
+- Timed persistence begins with the first content change after the last durable
+  state. The defaults are Save + Recovery, one minute, and five retained
+  generations; zero retained copies disables all timed persistence.
+- Markdown source is authoritative UTF-8. The pinned cmark-gfm parser validates
+  GFM while links, images, raw HTML, front matter, and destinations remain inert
+  document data.
 
 ## Mailbox model (active)
 

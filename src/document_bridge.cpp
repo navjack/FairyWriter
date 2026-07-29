@@ -7,7 +7,9 @@
 
 namespace FairyWriter {
 
-DocumentBridge::DocumentBridge() {
+DocumentBridge::DocumentBridge(QString recovery_root)
+	: m_persistence(m_engine, std::move(recovery_root))
+{
 	if (SessionStore::path().isEmpty()) SessionStore::setPath(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/sessions"));
 	publish();
 }
@@ -48,7 +50,7 @@ bool DocumentBridge::switchSession(FileCatalog& catalog, const QString& id) {
 	if (session.id.isEmpty()) return false;
 	if (!session.files.isEmpty()) {
 		const QString path = session.files.value(qBound(0, session.active, session.files.size() - 1));
-		if (!QFileInfo::exists(path) || !m_engine.load(path)) return false;
+		if (!QFileInfo::exists(path) || !m_persistence.load(path).succeeded()) return false;
 		catalog.registerPath(path);
 	}
 	m_session_id = id;
@@ -93,7 +95,7 @@ bool DocumentBridge::submit(const MailboxRecord& command) { return m_commands.pu
 bool DocumentBridge::openFile(FileCatalog& catalog, const QString& id) {
 	const FileEntry* file = catalog.entry(id);
 	if (!file || file->directory) return false;
-	if (!m_engine.load(file->absolutePath)) {
+	if (!m_persistence.load(file->absolutePath).succeeded()) {
 		MailboxRecord event;
 		event.kind = EventOpenFailed;
 		event.revision = m_engine.revision();
@@ -102,7 +104,7 @@ bool DocumentBridge::openFile(FileCatalog& catalog, const QString& id) {
 		return m_events.push(event);
 	}
 	catalog.noteOpened(id);
-	return publish() && publishStructureSuggestion();
+	return publishPersistenceSettings() && publish() && publishStructureSuggestion();
 }
 
 bool DocumentBridge::publishFilePage(const QVector<FileEntry>& files,
@@ -149,8 +151,18 @@ bool DocumentBridge::publishFilePage(const QVector<FileEntry>& files,
 }
 
 bool DocumentBridge::listFiles(FileCatalog& catalog, const QString& parentId,
-	bool showHidden, std::size_t offset) {
-	return publishFilePage(catalog.list(parentId, showHidden), offset, 1);
+	bool showHidden, std::size_t offset, std::optional<DocumentFormat> format) {
+	QVector<FileEntry> files = catalog.list(parentId, showHidden);
+	if (format.has_value()) {
+		const QString extension = documentFormatExtension(*format);
+		files.erase(std::remove_if(files.begin(), files.end(),
+			[&extension](const FileEntry& file) {
+				return !file.directory
+					&& QFileInfo(file.name).suffix().compare(
+						extension, Qt::CaseInsensitive) != 0;
+			}), files.end());
+	}
+	return publishFilePage(files, offset, 1);
 }
 
 bool DocumentBridge::listRecentFiles(FileCatalog& catalog, std::size_t offset) {
@@ -159,6 +171,11 @@ bool DocumentBridge::listRecentFiles(FileCatalog& catalog, std::size_t offset) {
 
 bool DocumentBridge::listRoots(FileCatalog& catalog, std::size_t offset) {
 	return publishFilePage(catalog.roots(), offset, 2);
+}
+
+bool DocumentBridge::publishRecoveryPage(const QVector<FileEntry>& records,
+	std::size_t offset) {
+	return publishFilePage(records, offset, 4);
 }
 
 /*
@@ -182,7 +199,8 @@ bool DocumentBridge::publishRecoveryAvailable(const QString& format) {
 }
 
 bool DocumentBridge::recover(const QString& path, const QString& originalFilename) {
-	if (!m_engine.recover(path, originalFilename)) return false;
+	Q_UNUSED(originalFilename);
+	if (!m_persistence.recover(path).succeeded()) return false;
 	MailboxRecord event;
 	event.kind = EventRecoveryRestored;
 	event.revision = m_engine.revision();
@@ -200,13 +218,20 @@ bool DocumentBridge::saveAs(FileCatalog& catalog, const QString& id, bool overwr
 		event.payload.assign(reinterpret_cast<const std::uint8_t*>(bytes.constData()), reinterpret_cast<const std::uint8_t*>(bytes.constData() + bytes.size()));
 		return m_events.push(event);
 	}
-	return m_engine.save(file->absolutePath) && publish();
+	const PersistenceResult result = m_persistence.saveAs(file->absolutePath, true);
+	return result.succeeded()
+		? (publishPersistenceSettings() && publish())
+		: publishPersistenceFailure(result);
 }
 
 bool DocumentBridge::saveAsNew(FileCatalog& catalog, const QString& parentId, const QString& name) {
-	const QString id = catalog.createFile(parentId, name);
+	const QString path = catalog.newFilePath(parentId, name);
+	if (path.isEmpty()) return false;
+	const PersistenceResult result = m_persistence.saveAs(path, false);
+	if (!result.succeeded()) return publishPersistenceFailure(result);
+	const QString id = catalog.registerPath(path);
 	const FileEntry* file = catalog.entry(id);
-	if (!file || !m_engine.save(file->absolutePath)) return false;
+	if (!file) return false;
 	MailboxRecord event;
 	event.kind = EventFileEntry;
 	event.revision = m_engine.revision();
@@ -221,7 +246,57 @@ bool DocumentBridge::saveAsNew(FileCatalog& catalog, const QString& parentId, co
 	for (int i = 0; i < 8; ++i) event.payload.push_back(static_cast<std::uint8_t>(modified >> (i * 8)));
 	event.payload.insert(event.payload.end(), reinterpret_cast<const std::uint8_t*>(id_bytes.constData()), reinterpret_cast<const std::uint8_t*>(id_bytes.constData() + id_bytes.size()));
 	event.payload.insert(event.payload.end(), reinterpret_cast<const std::uint8_t*>(name_bytes.constData()), reinterpret_cast<const std::uint8_t*>(name_bytes.constData() + name_bytes.size()));
-	return m_events.push(event) && publish();
+	return m_events.push(event) && publishPersistenceSettings() && publish();
+}
+
+bool DocumentBridge::publishPersistenceFailure(const PersistenceResult& result) {
+	MailboxRecord event;
+	event.revision = m_engine.revision();
+	switch (result.error) {
+	case PersistenceError::NeedsSaveAs:
+		event.kind = EventSaveAsRequired;
+		break;
+	case PersistenceError::ExternalConflict:
+	case PersistenceError::AlreadyExists:
+		event.kind = EventSaveConflict;
+		break;
+	case PersistenceError::ReadOnly:
+		event.kind = EventReadOnly;
+		break;
+	default:
+		event.kind = EventPersistenceFailed;
+		break;
+	}
+	event.payload.push_back(static_cast<std::uint8_t>(result.error));
+	const QByteArray detail = result.detail.toUtf8().left(240);
+	event.payload.insert(event.payload.end(),
+		reinterpret_cast<const std::uint8_t*>(detail.constData()),
+		reinterpret_cast<const std::uint8_t*>(detail.constData() + detail.size()));
+	return m_events.push(event);
+}
+
+bool DocumentBridge::publishPersistenceSettings() {
+	const PersistenceSettings& settings = m_persistence.settings();
+	DocumentFormat format = DocumentFormat::Odt;
+	documentFormatFromName(m_engine.format(), format);
+	MailboxRecord event;
+	event.kind = EventPersistenceSettings;
+	event.revision = m_engine.revision();
+	event.payload = {
+		static_cast<std::uint8_t>(settings.mode),
+		settings.interval_minutes,
+		settings.recovery_copies,
+		static_cast<std::uint8_t>(m_engine.markdownSourceMode() ? 1 : 0),
+		static_cast<std::uint8_t>(format)
+	};
+	return m_events.push(event);
+}
+
+bool DocumentBridge::publishTransitionRequired() {
+	MailboxRecord event;
+	event.kind = EventTransitionRequired;
+	event.revision = m_engine.revision();
+	return m_events.push(event);
 }
 
 bool DocumentBridge::createDirectory(FileCatalog& catalog, const QString& parentId, const QString& name) {
@@ -269,6 +344,24 @@ bool DocumentBridge::pump() {
 	MailboxRecord command;
 	if (!m_commands.pop(command)) return false;
 	const bool current = mailboxRevisionMatches(command, m_engine.revision());
+	if (current && command.kind == CommandGetPersistenceSettings) {
+		return publishPersistenceSettings();
+	}
+	if (current && command.kind == CommandSetPersistenceSettings) {
+		if (command.payload.size() != 3 || command.payload[0] > 1) return false;
+		PersistenceSettings settings = m_persistence.settings();
+		settings.mode = static_cast<PersistenceSettings::AutosaveMode>(
+			command.payload[0]);
+		settings.interval_minutes = std::max<std::uint8_t>(1, command.payload[1]);
+		settings.recovery_copies = command.payload[2];
+		m_persistence.setSettings(settings);
+		return publishPersistenceSettings();
+	}
+	if (current && command.kind == CommandSetMarkdownView) {
+		if (command.payload.size() != 1 || command.payload[0] > 1) return false;
+		m_engine.setMarkdownSourceMode(command.payload[0] != 0);
+		return publishPersistenceSettings() && publish();
+	}
 	if (current && command.kind == CommandSetWordGoal) {
 		if (command.payload.size() != 4) return false;
 		m_word_goal = static_cast<std::uint32_t>(command.payload[0]) |
@@ -322,6 +415,11 @@ bool DocumentBridge::pump() {
 		if (!m_events.push(copied)) return false;
 		return publish();
 	}
+	if (current && command.kind == DocumentEngine::Save) {
+		const PersistenceResult result = m_persistence.save();
+		if (!result.succeeded() && !publishPersistenceFailure(result)) return false;
+		return publish();
+	}
 	// Everything from here is a real editing or caret command, so any scroll the
 	// user was holding is over and the window snaps back to the caret.
 	if (current) m_scroll_anchor.reset();
@@ -338,12 +436,6 @@ bool DocumentBridge::pump() {
 		put32(1, static_cast<std::uint32_t>(m_engine.cursor().selectionStart()));
 		put32(5, static_cast<std::uint32_t>(m_engine.cursor().selectionEnd()));
 		if (!m_events.push(result)) return false;
-	}
-	if (current && !applied && command.kind == DocumentEngine::Save) {
-		MailboxRecord conflict;
-		conflict.kind = m_engine.isReadOnly() ? EventReadOnly : EventSaveConflict;
-		conflict.revision = m_engine.revision();
-		if (!m_events.push(conflict)) return false;
 	}
 	if (!applied && !current) {
 		MailboxRecord conflict;

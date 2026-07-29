@@ -1,4 +1,4 @@
-name: Linux production gate
+name: Production persistence gates
 
 on:
   push:
@@ -22,3 +22,26 @@ jobs:
         run: ./scripts/bootstrap-snesrecomp.sh
       - name: Build, test, and audit AppImage
         run: ./packaging/linux/build-linux.sh
+
+  macos-arm64:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install native build dependencies
+        run: brew install cmake ninja qt go python
+      - name: Prepare pinned SNES runtime
+        run: ./scripts/bootstrap-snesrecomp.sh
+      - name: Build and run the 10-test production gate
+        run: |
+          cmake_path="$(brew --prefix cmake)/bin/cmake"
+          qt_path="$(brew --prefix qt)"
+          "${cmake_path}" -S . -B build-ci -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="${qt_path}" \
+            -DFAIRYWRITER_DEVELOPMENT_UI=OFF \
+            -DFAIRYWRITER_DEVELOPER_TOOLS=OFF \
+            -DBUILD_TESTING=ON
+          "${cmake_path}" --build build-ci --parallel
+          QT_QPA_PLATFORM=offscreen ctest \
+            --test-dir build-ci --output-on-failure

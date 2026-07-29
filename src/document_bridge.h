@@ -22,6 +22,10 @@ public:
 	// the caret stays where it is, and the user places it by clicking in the
 	// scrolled view like any other click.
 	static constexpr std::uint16_t CommandScrollToFraction = 0x0110;
+	static constexpr std::uint16_t CommandGetPersistenceSettings = 0x0111;
+	static constexpr std::uint16_t CommandSetPersistenceSettings = 0x0112;
+	static constexpr std::uint16_t CommandSetMarkdownView = 0x0113;
+	static constexpr std::uint16_t CommandTransitionDecision = 0x0114;
 	static constexpr std::uint32_t CommandScrollTrackTravel = 226;
 	static constexpr std::uint16_t CommandStatistics = 0x0105;
 	static constexpr std::uint16_t CommandSetWordGoal = 0x010b;
@@ -47,17 +51,26 @@ public:
 	static constexpr std::uint16_t EventSaveConflict = 0x8207;
 	static constexpr std::uint16_t EventReadOnly = 0x8208;
 	static constexpr std::uint16_t EventOpenFailed = 0x8209;
-	DocumentBridge();
+	static constexpr std::uint16_t EventSaveAsRequired = 0x8210;
+	static constexpr std::uint16_t EventPersistenceFailed = 0x8211;
+	static constexpr std::uint16_t EventPersistenceSettings = 0x8212;
+	static constexpr std::uint16_t EventTransitionRequired = 0x8213;
+	explicit DocumentBridge(QString recovery_root = QString());
 	DocumentEngine& engine() noexcept { return m_engine; }
 	const DocumentEngine& engine() const noexcept { return m_engine; }
+	DocumentPersistence& persistence() noexcept { return m_persistence; }
+	const DocumentPersistence& persistence() const noexcept { return m_persistence; }
 	bool submit(const MailboxRecord& command);
 	bool pump();
 	bool openFile(FileCatalog& catalog, const QString& id);
 	static constexpr std::size_t FilePageSize = 7;
 	bool listFiles(FileCatalog& catalog, const QString& parentId = QString(),
-		bool showHidden = false, std::size_t offset = 0);
+		bool showHidden = false, std::size_t offset = 0,
+		std::optional<DocumentFormat> format = std::nullopt);
 	bool listRecentFiles(FileCatalog& catalog, std::size_t offset = 0);
 	bool listRoots(FileCatalog& catalog, std::size_t offset = 0);
+	bool publishRecoveryPage(const QVector<FileEntry>& records,
+		std::size_t offset = 0);
 	bool publishRecoveryAvailable(const QString& format);
 	bool recover(const QString& path, const QString& originalFilename = QString());
 	bool saveAs(FileCatalog& catalog, const QString& id, bool overwriteConfirmed = false);
@@ -65,6 +78,9 @@ public:
 	bool createDirectory(FileCatalog& catalog, const QString& parentId, const QString& name);
 	bool publishStatistics();
 	bool publishGoalProgress();
+	bool publishPersistenceFailure(const PersistenceResult& result);
+	bool publishPersistenceSettings();
+	bool publishTransitionRequired();
 	bool listSessions();
 	bool createSession(const QString& name);
 	bool switchSession(FileCatalog& catalog, const QString& id);
@@ -77,6 +93,7 @@ private:
 	bool publishFilePage(const QVector<FileEntry>& files, std::size_t offset,
 		std::uint8_t source);
 	DocumentEngine m_engine;
+	DocumentPersistence m_persistence;
 	MailboxRing m_commands{MailboxLayout::CommandBytes};
 	MailboxRing m_events{MailboxLayout::EventBytes};
 	ViewportSlots m_viewports;

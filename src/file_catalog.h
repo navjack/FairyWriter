@@ -28,6 +28,9 @@ public:
 	QVector<FileEntry> roots();
 	QString registerPath(const QString& path);
 	QString createDirectory(const QString& parentId, const QString& name);
+	// Resolves a safe, non-existing target without creating a placeholder. The
+	// persistence layer commits the complete file first, then registers it.
+	QString newFilePath(const QString& parentId, const QString& name) const;
 	QString createFile(const QString& parentId, const QString& name);
 	void noteOpened(const QString& id);
 	QVector<FileEntry> recentFiles() const;

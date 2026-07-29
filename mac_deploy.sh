@@ -64,6 +64,8 @@ staged_app="${volume_root}/FairyWriter.app"
 mkdir -p "${volume_root}" "${release_root}"
 cp -R "${source_app}" "${staged_app}"
 cp "${source_root}/COPYING" "${volume_root}/COPYING"
+cp "${source_root}/third_party/cmark-gfm/COPYING" \
+	"${volume_root}/CMARK-GFM-LICENSE"
 cp "${source_root}/TESTING.md" "${volume_root}/TESTING.md"
 
 # macdeployqt otherwise copies every image/text/accessibility plugin installed

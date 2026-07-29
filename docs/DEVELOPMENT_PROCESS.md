@@ -56,7 +56,7 @@ Agentic assistance was used throughout the engineering process, including:
 
 - studying the inherited FocusWriter 1.9.0 document and persistence code;
 - designing and implementing the cartridge/host ownership boundary;
-- generating the 32 KiB LoROM image from source;
+- generating the 64 KiB LoROM image from source;
 - implementing 65816 editor, rendering, menu, help, caret, selection, proofing,
   formatting, scrolling, and input paths;
 - integrating the XBAND keyboard and Super NES Mouse protocols into the

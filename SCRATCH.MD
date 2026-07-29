@@ -99,6 +99,10 @@ public commit after each platform's real production and package audit passes.
   ZIP root. Platform install ownership is now explicit: Windows installs only
   the root executable for `windeployqt`; Unix alone owns desktop files, icons,
   manpages, translations, and AppStream metadata.
+- The next native compile exposed one hidden transitive include:
+  `tests/snes_machine_tests.cpp` used `std::string`/`std::to_string` without
+  including `<string>`. MSVC rejected it correctly; the test now owns its direct
+  standard-library dependency.
 - The repository has no existing tag or GitHub Release. The intended first
   public package is a `v0.1.0` prerelease containing only the three packages and
   their checksum sidecars from one green post-merge `main` run.

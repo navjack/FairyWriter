@@ -93,6 +93,12 @@ public commit after each platform's real production and package audit passes.
   same pinned `snesrecomp`, and runs `packaging/windows/build-windows.ps1`.
   That script owns the complete build, 10-test production gate, Qt deployment,
   version/content audit, ZIP, and checksum.
+- The first native configure exposed that the shared non-Apple install block
+  made Windows require Unix Gettext/AppStream tooling and would have staged the
+  executable under `bin/` while the Windows package contract requires it at the
+  ZIP root. Platform install ownership is now explicit: Windows installs only
+  the root executable for `windeployqt`; Unix alone owns desktop files, icons,
+  manpages, translations, and AppStream metadata.
 - The repository has no existing tag or GitHub Release. The intended first
   public package is a `v0.1.0` prerelease containing only the three packages and
   their checksum sidecars from one green post-merge `main` run.

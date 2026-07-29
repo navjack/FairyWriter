@@ -554,11 +554,7 @@ if(APPLE)
 
 	find_library(APPKIT AppKit)
 	target_link_libraries(fairywriter PRIVATE ${APPKIT})
-elseif(WIN32)
-	# windeployqt consumes this minimal install tree. Tester packaging supplies
-	# the Qt runtime and COPYING beside the executable.
-	install(TARGETS fairywriter RUNTIME DESTINATION .)
-else()
+elseif(NOT WIN32)
 	find_package(PkgConfig REQUIRED)
 	pkg_check_modules(Hunspell REQUIRED IMPORTED_TARGET hunspell)
 
@@ -645,6 +641,11 @@ if(APPLE)
 			VERBATIM
 		)
 	endif()
+elseif(WIN32)
+	# windeployqt consumes this minimal install tree. Tester packaging supplies
+	# the Qt runtime, licenses, and testing guide beside the executable.
+	set(datadir ".")
+	install(TARGETS fairywriter RUNTIME DESTINATION .)
 else()
 	file(RELATIVE_PATH datadir ${CMAKE_INSTALL_FULL_BINDIR} ${CMAKE_INSTALL_FULL_DATADIR}/fairywriter)
 

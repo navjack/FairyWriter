@@ -16,6 +16,8 @@ int main() {
 	expect(!ring.pop(out), "empty ring rejects pop");
 	MailboxRecord large; large.payload.resize(61, 0xaa);
 	expect(!ring.push(large), "record larger than available ring is rejected");
+	MailboxRecord exactly_full; exactly_full.payload.resize(60, 0xaa);
+	expect(!ring.push(exactly_full), "ring reserves one byte so equal indices cannot mean full");
 	MailboxRecord a; a.kind=1; a.payload.resize(10, 1);
 	MailboxRecord b; b.kind=2; b.payload.resize(10, 2);
 	expect(ring.push(a) && ring.push(b), "two records fit");
@@ -24,6 +26,20 @@ int main() {
 	expect(ring.push(c), "wrapped record fits");
 	expect(ring.pop(out) && out.kind==2, "second record remains ordered after wrap");
 	expect(ring.pop(out) && out.kind==3 && out.payload[0]==3, "wrapped payload is intact");
+	MailboxRing exported_events(96);
+	MailboxRecord event_a; event_a.kind = 20; event_a.payload.resize(3, 1);
+	MailboxRecord event_b; event_b.kind = 21; event_b.payload.resize(5, 2);
+	expect(exported_events.push(event_a) && exported_events.push(event_b),
+		"host event records fit before consumer acknowledgement");
+	const std::size_t after_event_a = 20 + event_a.payload.size();
+	expect(!exported_events.consumeTo(after_event_a - 1)
+		&& exported_events.used() == 48,
+		"consumer acknowledgement must land on a complete record boundary");
+	expect(exported_events.consumeTo(after_event_a)
+		&& exported_events.used() == 25,
+		"consumer acknowledgement retires exactly the acknowledged record");
+	expect(exported_events.pop(out) && out.kind == event_b.kind,
+		"unacknowledged event remains available after host synchronization");
 	in.revision = 41;
 	expect(!FairyWriter::mailboxRevisionMatches(in, 42), "stale mutation is rejected by revision");
 	expect(FairyWriter::mailboxRevisionMatches(in, 41), "current mutation matches revision");

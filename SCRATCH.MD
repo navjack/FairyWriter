@@ -9,7 +9,7 @@
 > because some entries are historical. Move superseded detail into the archive
 > instead of deleting the file.
 
-## Current resume point — 2026-07-28
+## Current resume point — 2026-07-29
 
 ### Product and ownership invariants
 
@@ -19,6 +19,13 @@
   selection, menus, and status/position rendering.
 - `DocumentEngine` and the host bridge own authoritative document/file state,
   undo/redo, recovery, statistics, and viewport metadata.
+- A document transition is complete only after the immutable content snapshot
+  and its recovery state have produced a typed durable result. The UI thread
+  owns the live document; one FIFO persistence worker owns filesystem reads,
+  hashes, encoding, sync, atomic commit, and recovery rotation.
+- New documents are ODT. Save As offers ODT, DOCX, RTF, and Markdown; FODT and
+  plain text remain compatibility formats. Markdown source is authoritative
+  UTF-8 and is parsed by the pinned vendored cmark-gfm snapshot.
 - The SRAM mailbox is the authority boundary. Keyboard input reaches the
   cartridge through the XBAND controller-port-2 path.
 - Production has one visual identity and one resident cartridge glyph set.
@@ -60,15 +67,62 @@
   friend's SNES-word-processor inspiration, the human-directed agentic workflow,
   and the disclosed Claude, Gemini, and ChatGPT model families used.
 - `build-arm64` is the one active native build directory.
-- `build-arm64/FairyWriter.app` is the freshly built production app. The
-  top-level `FairyWriter.app` has been synchronized from it after the complete
-  green macOS artifact gate; both pass strict signature/version/arm64 checks.
+- `build-arm64/FairyWriter.app` is the current production app. The ignored
+  top-level `FairyWriter.app` was not synchronized during this persistence pass.
 - `release-linux-x86_64/FairyWriter-0.1.0-x86_64.AppImage` is the canonical
-  Linux artifact and is fresh from the complete Qt 6.8.3 container gate.
+  Linux artifact and must be treated as fresh only when its hash matches the
+  current evidence below.
 - `ideas/` remains ignored personal reference artwork. It was deliberately kept
   during repository cleanup because it is creative source material.
+- `plan.md` was already modified when this implementation turn began and
+  contains the user-authored durable persistence plan. Preserve that boundary;
+  all other persistence changes listed by `git status` belong to this pass.
 
-### Completed in the latest pass (three-platform tester readiness)
+### Completed in the latest pass (durable persistence and Markdown)
+
+Invariant: viewport activity cannot make a document dirty, and no Save, Save
+As, recovery restore, autosave, close, or document replacement can complete
+without a durable typed result for one immutable content generation.
+
+- `DocumentEngine` now has separate viewport revisions, content generations,
+  content hashes, format identity, immutable snapshots, and full
+  size/mtime/SHA-256 file fingerprints. Cursor movement, selection, Find, and
+  scrolling do not advance content or create recovery.
+- `DocumentPersistence` is the single production coordinator. It captures the
+  live document on the UI thread and submits all filesystem work to one ordered
+  worker. Current-file and confirmed-overwrite saves hash before encoding and
+  again immediately before commit.
+- New files use same-directory staging, complete write + file sync, a no-replace
+  rename, and directory sync. Existing files use `QSaveFile` with direct-write
+  fallback disabled. Corrupt/unsupported loads parse into a temporary document
+  before active state changes.
+- Checksummed, independent `.fwrecover` generations include document identity,
+  path/format, canonical rich state or Markdown source, cursor/anchor, sequence,
+  content hash, timestamp, and primary fingerprint. Rotation, adjacent
+  deduplication, A-B-A history, pinned manual checkpoints, corrupt-newest
+  fallback, matching-primary history, and automatic-primary conflict shutdown
+  are implemented.
+- F3 owns Save + Recovery / Recovery Only, 1-255 minute intervals, 0-255
+  retained copies, Recovery History, and Markdown Rendered/Source. Close, New,
+  Open, Recent, session replacement, and recovery share the cartridge-owned
+  Checkpoint/Save/Discard/Cancel transition.
+- First Save enters the ODT-default cartridge format/location flow. Save As
+  offers ODT/DOCX/RTF/Markdown and enforces `.md`; `.markdown` opens as
+  Markdown. The pinned cmark-gfm tag `0.29.0.gfm.13`, commit
+  `587a12bb54d95ac37241377e6ddc93ea0e45439b`, is vendored for offline builds.
+- Production now has 9 tests. The process test launches the actual production
+  executable, types and formats through the cartridge input path, saves and
+  relaunches ODT/DOCX/RTF/Markdown, edits Markdown in Rendered and Source mode,
+  exits uncleanly after a checkpoint, restores through the cartridge, saves,
+  and verifies the result from a third process.
+- The real process test exposed and fixed two transport bugs that isolated
+  component tests had missed: the host was replaying acknowledged event bytes,
+  and the cartridge event cursor's high byte overlapped the retained-copy
+  setting. Event acknowledgements now retire only complete host-owned records,
+  the byte ring reserves one byte so full and empty cannot alias, and the guest
+  cursor uses dedicated scratch at `$036b/$036c`.
+
+### Completed in the previous pass (three-platform tester readiness)
 
 Invariant: the production configuration is the same cartridge, bridge, document
 engine, and seven real tests on macOS arm64, Linux x86_64, and Windows x64.
@@ -448,70 +502,35 @@ and without the fix and confirming the new test fails then passes.
 ### Current validation evidence
 
 - `GO111MODULE=off go test ./tools/fairywriter-rom` passes.
-- Native `ctest --test-dir build-arm64 --output-on-failure` passes 10/10 with
-  the new SNES-machine regressions, now also covering a click below row 8, the
-  optimistic cursor agreeing with the published position, and the guest cursor's
-  high byte surviving a keystroke: word-fit addition overflow, out-of-plane
-  word-wrap padding, mid-document caret placement, caret-on-active-selection-edge,
-  and eight wrap-aware vertical-movement cases (Down/Up one wrapped row, Up on
-  row 0 falling back to semantic MoveUp, shift+Down extending, clamping onto a
-  short line, sticky column surviving that short line, a horizontal move clearing
-  the sticky column, resolution past cell 255, and the pointer publishing a real
-  click offset).
-- `fairywriter_xband_end_to_end` passes 10 consecutive repeat runs after all
-  three fixes, so none of them disturbed input/render timing.
-- Each of the three fixes was verified in both directions: the ROM was rebuilt
-  with the fix removed and the corresponding new test observed to fail with its
-  specific diagnostic, then rebuilt with the fix and observed to pass. (The
-  selection-edge caret test shares the mid-document caret test's mechanism and
-  is guarded by it — the mid-document test returns first on a broken ROM.)
-- The scrollbar is covered on both sides. Host: the view anchors off the caret,
-  the caret does not move, the out-of-view flag is set and then cleared by
-  placing the caret, and typing releases the scroll. Cartridge: a track press
-  publishes the expected thumb, a drag that leaves the thin track keeps scrolling
-  instead of becoming a text selection (verified to fail as a selection when the
-  drag-arm flag is disabled), an unchanged thumb does not republish, and the
-  caret is suppressed and restored by the out-of-view flag. A framebuffer dump
-  confirmed the thumb tracks the pointer across the track at both ends and centre.
-- `FairyWriter.app` was rebuilt and re-synced from `build-arm64/FairyWriter.app`
-  after the gate; both pass `codesign --verify --deep --strict`, the executable
-  is arm64, and `--version` reports `FairyWriter 0.1.0`.
-- Containerized Ubuntu/x86_64 tests pass 10/10; the AppImage passes version,
-  X11, Wayland, ROM/scratch exclusion, and retired-font leak checks.
-- `build-arm64/FairyWriter.app` and the synced top-level app pass strict deep
-  ad-hoc signature verification.
-- Canonical AppImage SHA-256:
-  `81bb878256067acd2a03deada7288dd340901bdbb23323b2fd16f77c012b704a`.
+- `git diff --check` passes.
+- Final native Release `ctest --test-dir build-arm64 --output-on-failure`
+  passes **9/9** in 8.65 seconds. The persistence gate reports all **670/670**
+  vendored GFM examples passing, and the actual-cartridge process lifecycle
+  passes for ODT, DOCX, RTF, Markdown, and unclean checkpoint recovery. The
+  tested macOS arm64 executable SHA-256 is
+  `75b5218fa95ea43aa6e8a33d0f7e5dc4d230933a3ae45773a7f89e657814a986`.
+- The direct SNES machine regression and mailbox regression pass, including the
+  recovery-history UI, complete event acknowledgement, ring wrap, and
+  full-versus-empty index invariant.
+- The final Linux Qt 6.8.3 container rebuild from the ordered-worker source
+  passes **9/9** in 21.33 seconds. The resulting AppImage passes `--version`,
+  X11 and Wayland bounded launches, ROM/scratch exclusion, and package audits.
+  It includes the project and cmark-gfm licenses plus the current tester guide.
+- Fresh Linux x86_64 AppImage:
+  `878ce2e8d41d93a090b3a18f57ca0ac203bd765a546423042e469784aca3bdf4`.
+  The adjacent `.sha256` file matches this payload.
 
 ### Next actions
 
-1. **Manual verification of the signed app against the real ODT fixture.** This
-   is now the single outstanding acceptance gap, and it has grown a lot of
-   specific things worth looking at, all of which changed under automated proof
-   but none of which have been seen by a human:
-   - the caret is visible with the cursor parked mid-document and while
-     shift+arrowing (it demonstrably was not, at all, before these passes);
-   - clicking with the mouse puts the caret where you clicked, rather than at
-     the start of the viewport;
-   - `Up`/`Down` track the wrapped lines you can actually see, hold their column
-     across a short line, and still scroll at the top and bottom edges;
-   - no stale lower-row cells after a long-to-short viewport change, and the
-     position thumb travels start-to-end.
-2. Conclusively verify existing toolbar behavior before expanding alignment or
-   list scope.
-3. The F1/SAVE/BACK hint bar is gone with the footer. If its discoverability
-   turns out to matter, the top status row (CHAPTER / WORDS) is the only place
-   left with room, and it is already busy.
-4. The scrollbar has not been seen by a human yet. A framebuffer dump confirms the
-   thumb tracks the pointer across the track, and the host/cartridge halves are
-   covered separately, but the full round trip -- drag, watch the text scroll,
-   click to place the caret -- has only been proven in pieces. Worth being the
-   first thing checked in the manual pass.
-5. Consider auditing the remaining 8-bit arithmetic in `editorDispatch`'s local
-   handlers. `left`/`right`/`home`/`end` still operate on `$00` with 8-bit
-   opcodes, so their optimistic frame is wrong for documents over 255 characters
-   in the same way Up/Down was. Not yet measured, and the host corrects it on the
-   next commit, so this is a polish item rather than a defect report.
+1. Perform the short packaged-app manual smoke on macOS and Linux: first Save,
+   format picker layout, close/relaunch/open, F3 settings/history, forced-exit
+   recovery, and Markdown Rendered/Source. Automated process evidence proves
+   persistence semantics but not final cartridge pixels or packaged input.
+2. Run the Windows builder and equivalent first-launch/manual persistence pass
+   on Windows x64. macOS Intel remains unsupported.
+3. Keep the older long-document caret, scrollbar, wrap, and stale-cell checks in
+   the same human acceptance pass; their automated evidence remains green but
+   does not replace visual inspection.
 
 ### Maintenance checklist for future agents
 

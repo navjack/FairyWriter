@@ -116,15 +116,21 @@ QString FileCatalog::createDirectory(const QString& parentId, const QString& nam
 }
 
 QString FileCatalog::createFile(const QString& parentId, const QString& name) {
+	const QString path = newFilePath(parentId, name);
+	if (path.isEmpty()) return {};
+	QFile file(path);
+	if (!file.open(QIODevice::WriteOnly | QIODevice::NewOnly)) return {};
+	file.close();
+	return registerPath(path);
+}
+
+QString FileCatalog::newFilePath(const QString& parentId, const QString& name) const {
 	const FileEntry* parent = parentId.isEmpty() ? nullptr : entry(parentId);
 	const QString parentPath = parent ? parent->absolutePath : m_root;
 	if (!QFileInfo(parentPath).isDir() || name.isEmpty() || name == QLatin1String(".") || name == QLatin1String("..") || containsPathSeparator(name)) return {};
 	const QString path = QDir(parentPath).filePath(name);
 	if (!withinRoot(path) || QFileInfo::exists(path)) return {};
-	QFile file(path);
-	if (!file.open(QIODevice::WriteOnly)) return {};
-	file.close();
-	return registerPath(path);
+	return path;
 }
 
 void FileCatalog::noteOpened(const QString& id) {

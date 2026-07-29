@@ -429,6 +429,11 @@ int main(int argc, char** argv) {
 	const QString readonly_id = readonly_catalog.registerPath(readonly_path);
 	FairyWriter::DocumentBridge readonly_bridge;
 	expect(readonly_bridge.openFile(readonly_catalog, readonly_id), "bridge loads read-only fixture");
+	MailboxRecord settings_event;
+	expect(readonly_bridge.events().pop(settings_event)
+			&& settings_event.kind
+				== FairyWriter::DocumentBridge::EventPersistenceSettings,
+		"open publishes current persistence and format settings");
 	MailboxRecord readonly_save; readonly_save.kind = DocumentEngine::Save; readonly_save.revision = readonly_bridge.engine().revision();
 	expect(readonly_bridge.submit(readonly_save) && readonly_bridge.pump(), "bridge processes read-only save command");
 	MailboxRecord readonly_event;
@@ -448,6 +453,10 @@ int main(int argc, char** argv) {
 	const auto open_id = open_entries.front().id;
 	FairyWriter::DocumentBridge open_bridge;
 	expect(open_bridge.openFile(bridge_catalog, open_id) && open_bridge.engine().text() == "opened", "bridge opens catalog entry by opaque ID");
+	expect(open_bridge.events().pop(settings_event)
+			&& settings_event.kind
+				== FairyWriter::DocumentBridge::EventPersistenceSettings,
+		"open refreshes the cartridge format default");
 	expect(open_bridge.listRecentFiles(bridge_catalog), "bridge lists recently opened opaque files");
 	MailboxRecord recent_event;
 	expect(open_bridge.events().pop(recent_event) && recent_event.kind == FairyWriter::DocumentBridge::EventFileEntry, "recent file listing emits standard file metadata events");
@@ -486,11 +495,19 @@ int main(int argc, char** argv) {
 	const std::vector<std::uint8_t> expected_overwrite_id(reinterpret_cast<const std::uint8_t*>(save_as_id_bytes.constData()), reinterpret_cast<const std::uint8_t*>(save_as_id_bytes.constData() + save_as_id_bytes.size()));
 	expect(open_bridge.events().pop(overwrite_event) && overwrite_event.kind == FairyWriter::DocumentBridge::EventOverwriteRequired && overwrite_event.payload == expected_overwrite_id, "overwrite request carries only the opaque ID");
 	expect(open_bridge.saveAs(bridge_catalog, save_as_id, true), "confirmed bridge save overwrites through opaque catalog ID");
+	expect(open_bridge.events().pop(settings_event)
+			&& settings_event.kind
+				== FairyWriter::DocumentBridge::EventPersistenceSettings,
+		"Save As refreshes the current format setting");
 	QFile saved_as(save_as_path);
 	const QByteArray saved_as_bytes = saved_as.open(QIODevice::ReadOnly) ? saved_as.readAll() : QByteArray();
 	expect(saved_as_bytes == "!opened", "save-as commits target atomically");
 	FairyWriter::DocumentBridge conflict_bridge;
 	expect(conflict_bridge.openFile(bridge_catalog, save_as_id), "bridge loads conflict fixture");
+	expect(conflict_bridge.events().pop(settings_event)
+			&& settings_event.kind
+				== FairyWriter::DocumentBridge::EventPersistenceSettings,
+		"conflict fixture consumes its open-format event");
 	QThread::msleep(10);
 	QFile conflict_change(save_as_path);
 	expect(conflict_change.open(QIODevice::Append), "bridge conflict fixture opens for external mutation");
@@ -502,6 +519,10 @@ int main(int argc, char** argv) {
 	expect(open_bridge.saveAsNew(bridge_catalog, QString(), QStringLiteral("new-save.txt")), "bridge creates and saves a new opaque filename");
 	MailboxRecord new_save_event;
 	expect(open_bridge.events().pop(new_save_event) && new_save_event.kind == FairyWriter::DocumentBridge::EventFileEntry, "new save-as publishes the created file entry");
+	expect(open_bridge.events().pop(settings_event)
+			&& settings_event.kind
+				== FairyWriter::DocumentBridge::EventPersistenceSettings,
+		"new Save As refreshes the current format setting");
 	QFile new_saved(bridge_files.filePath(QStringLiteral("new-save.txt")));
 	expect(new_saved.open(QIODevice::ReadOnly) && new_saved.readAll() == "!opened", "new save-as target contains the document");
 	const QString recovery_path = bridge_files.filePath(QStringLiteral("recovery.txt"));

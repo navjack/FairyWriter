@@ -65,7 +65,8 @@ returns to the screen you came from.
   editing meanings.
 - F1 or Escape opens/closes the cartridge menu.
 - F2 opens/closes Help.
-- F3 opens Find.
+- F3 opens Save and Recovery settings.
+- F4 opens Find.
 
 On macOS, either Command or Control works for the shortcuts below. On Linux and
 Windows, use Control.
@@ -115,10 +116,26 @@ Pass that path to FairyWriter when launching, then check:
 6. Press F2, then return with both F1 and Backspace. Help should return to the
    exact document/menu/browser screen it came from.
 7. Toggle bold, italic, underline, and alignment with both keyboard and mouse.
-8. Save with Ctrl/Command+S and reopen the document.
-9. Make an unsaved edit, close the window, relaunch, and accept
-   **RECOVERY AVAILABLE / ENTER RESTORES**.
-10. Confirm no debug log is created during an ordinary run.
+8. Create a new document and save it. First Save must open **SAVE AS FORMAT**
+   with ODT selected, then the cartridge file browser. Save without typing an
+   extension and confirm FairyWriter creates a non-empty `.odt`.
+9. Close FairyWriter normally, launch a fresh process, open that ODT, and verify
+   both text and formatting. Repeat Save As/relaunch for DOCX, RTF, and Markdown;
+   Markdown must use `.md`.
+10. In a Markdown document, use F3 to switch between Rendered and Source. Raw
+    HTML, destinations, and front matter must remain inert; no link, script,
+    style, local image, or network image may execute or load.
+11. Make an unsaved edit, choose Close, and exercise the cartridge-owned
+    **CHECKPOINT / SAVE / DISCARD / CANCEL** screen. Cancel must return to the
+    document. Checkpoint must allow the transition only after recovery is
+    durable.
+12. Relaunch after a checkpoint or forced termination, accept
+    **RECOVERY AVAILABLE / ENTER RESTORES**, verify the restored document is
+    dirty, save it, close, and verify it again from a third fresh process.
+13. In F3 settings, verify Recovery Only and Save + Recovery, the 1–255 minute
+    interval, the 0–255 retained-copy range, and Recovery History. A copy count
+    of 0 must stop timed writes while explicit Save and Checkpoint still work.
+14. Confirm no debug log is created during an ordinary run.
 
 ## Files and recovery
 
@@ -129,6 +146,12 @@ use the operating system's per-application data directory:
 - Windows: `%LOCALAPPDATA%\FairyWriter`
 - Linux: `$XDG_DATA_HOME/FairyWriter`, or `~/.local/share/FairyWriter` when
   `XDG_DATA_HOME` is unset
+
+New documents and first Save default to ODT. Save As offers ODT, DOCX, RTF, and
+Markdown; existing FODT and plain-text documents remain load/save compatible.
+Primary replacements and recovery generations are committed atomically. If a
+filesystem cannot provide the required same-filesystem replacement semantics,
+FairyWriter reports the failure and leaves the prior primary file intact.
 
 Recent-file configuration uses:
 

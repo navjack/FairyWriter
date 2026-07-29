@@ -4,8 +4,10 @@
 
 #include <QApplication>
 #include <QCloseEvent>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
+#include <QHash>
 #include <QImage>
 #include <QClipboard>
 #include <QFileInfo>
@@ -21,8 +23,10 @@
 #include <QStandardPaths>
 
 #include <deque>
+#include <cstdlib>
 #include <cstdint>
 #include <memory>
+#include <utility>
 
 namespace {
 struct Scan { std::uint8_t code = 0; bool extended = false; bool shifted = false; };
@@ -101,6 +105,7 @@ Scan scanForKey(int key)
 	// help card; see xbandScanMap in tools/fairywriter-rom/main.go.
 	case Qt::Key_F2: return {0x06};
 	case Qt::Key_F3: return {0x04};
+	case Qt::Key_F4: return {0x0c};
 	case Qt::Key_Exclam: return {0x16, false, true}; case Qt::Key_At: return {0x1e, false, true};
 	case Qt::Key_NumberSign: return {0x26, false, true}; case Qt::Key_Dollar: return {0x25, false, true};
 	case Qt::Key_Percent: return {0x2e, false, true}; case Qt::Key_AsciiCircum: return {0x36, false, true};
@@ -134,18 +139,116 @@ std::uint8_t shiftedSymbolScan(std::uint8_t code)
 }
 }
 
+#ifdef FAIRYWRITER_PERSISTENCE_TESTING
+int runPersistenceE2eChild(const QStringList& arguments)
+{
+	if (arguments.size() != 5) return 90;
+	const QString operation = arguments.at(1);
+	const QString path = QFileInfo(arguments.at(3)).absoluteFilePath();
+	const QString recovery_root = QFileInfo(arguments.at(4)).absoluteFilePath();
+	const QString expected = QStringLiteral("FairyWriter process lifecycle ")
+		+ arguments.at(2);
+
+	FairyWriter::DocumentBridge bridge(recovery_root);
+	bridge.persistence().beginSession();
+	FairyWriter::FileCatalog catalog(QFileInfo(path).absolutePath());
+
+	if (operation == QLatin1String("create")) {
+		FairyWriter::MailboxRecord insert;
+		insert.kind = FairyWriter::DocumentEngine::InsertText;
+		insert.revision = bridge.engine().revision();
+		const QByteArray text = expected.toUtf8();
+		insert.payload.assign(
+			reinterpret_cast<const std::uint8_t*>(text.constData()),
+			reinterpret_cast<const std::uint8_t*>(text.constData() + text.size()));
+		if (!bridge.submit(insert) || !bridge.pump()) return 91;
+
+		FairyWriter::MailboxRecord select;
+		select.kind = FairyWriter::DocumentEngine::SelectAll;
+		select.revision = bridge.engine().revision();
+		if (!bridge.submit(select) || !bridge.pump()) return 92;
+		FairyWriter::MailboxRecord bold;
+		bold.kind = FairyWriter::DocumentEngine::ToggleBold;
+		bold.revision = bridge.engine().revision();
+		if (!bridge.submit(bold) || !bridge.pump()) return 93;
+
+		if (!bridge.saveAsNew(catalog, QString(), QFileInfo(path).fileName())) return 94;
+		bridge.persistence().markCleanShutdown();
+		return QFileInfo(path).size() > 0 ? 0 : 95;
+	}
+
+	if (operation == QLatin1String("load")) {
+		const QString id = catalog.registerPath(path);
+		if (id.isEmpty() || !bridge.openFile(catalog, id)) return 96;
+		if (bridge.engine().text() != expected || bridge.engine().isDirty()) return 97;
+		if (arguments.at(2) != QLatin1String("crash")) {
+			QTextCursor cursor(bridge.engine().document());
+			cursor.setPosition(qMin(1, bridge.engine().document()->characterCount() - 1));
+			if (cursor.charFormat().fontWeight() != QFont::Bold) return 98;
+		}
+		bridge.persistence().markCleanShutdown();
+		return 0;
+	}
+
+	if (operation == QLatin1String("crash")) {
+		FairyWriter::PersistenceSettings settings = bridge.persistence().settings();
+		settings.mode = FairyWriter::PersistenceSettings::AutosaveMode::RecoveryOnly;
+		settings.recovery_copies = 5;
+		bridge.persistence().setSettings(settings);
+		FairyWriter::MailboxRecord insert;
+		insert.kind = FairyWriter::DocumentEngine::InsertText;
+		insert.revision = bridge.engine().revision();
+		const QByteArray text = expected.toUtf8();
+		insert.payload.assign(
+			reinterpret_cast<const std::uint8_t*>(text.constData()),
+			reinterpret_cast<const std::uint8_t*>(text.constData() + text.size()));
+		if (!bridge.submit(insert) || !bridge.pump()) return 99;
+		const FairyWriter::PersistenceResult checkpoint =
+			bridge.persistence().checkpoint(false);
+		if (!checkpoint.succeeded()) return 100;
+		QTextStream(stdout) << checkpoint.path << '\n';
+		QTextStream(stdout).flush();
+		std::_Exit(23);
+	}
+
+	if (operation == QLatin1String("restore")) {
+		const QVector<FairyWriter::RecoveryRecord> candidates =
+			bridge.persistence().recoveryPromptCandidates();
+		if (candidates.isEmpty()
+			|| !bridge.persistence().recover(candidates.front().path).succeeded()
+			|| !bridge.engine().isDirty()
+			|| bridge.engine().text() != expected) {
+			return 101;
+		}
+		const FairyWriter::PersistenceResult saved =
+			bridge.persistence().saveAs(path, false);
+		if (!saved.succeeded()) return 102;
+		bridge.persistence().markCleanShutdown();
+		return 0;
+	}
+
+	return 103;
+}
+#endif
+
 class RecompPlayer final : public QOpenGLWidget
 {
 public:
-	explicit RecompPlayer(const QByteArray& rom)
+	explicit RecompPlayer(const QByteArray& rom,
+		QString catalog_root = QDir::homePath(),
+		QString recovery_root = QString())
 		: m_machine(fairy_snes_create(reinterpret_cast<const std::uint8_t*>(rom.constData()),
 			static_cast<std::size_t>(rom.size())), fairy_snes_destroy)
+		, m_bridge(std::move(recovery_root))
+		, m_catalog(std::move(catalog_root))
 	{
 		if (!m_machine) {
 			reportFatal(QStringLiteral("The SNES runtime rejected the built-in FairyWriter cartridge."));
 			return;
 		}
 		resetMailboxSram();
+		m_bridge.publishPersistenceSettings();
+		m_bridge.persistence().beginSession();
 		discoverRecovery();
 		setWindowTitle(QStringLiteral("FairyWriter"));
 		setWindowIcon(QIcon(QStringLiteral(":/icons/fairywriter.png")));
@@ -170,12 +273,56 @@ public:
 		m_timer.setInterval(17);
 		connect(&m_timer, &QTimer::timeout, this, [this] { advanceFrame(); });
 		m_timer.start();
-		m_recovery_timer.setInterval(30000);
-		connect(&m_recovery_timer, &QTimer::timeout, this, [this] { autosaveRecovery(); });
-		m_recovery_timer.start();
+		m_recovery_timer.setSingleShot(true);
+		m_recovery_timer.setInterval(
+			static_cast<int>(m_bridge.persistence().settings().interval_minutes)
+			* 60 * 1000);
+		connect(&m_recovery_timer, &QTimer::timeout, this,
+			[this] { autosaveRecovery(false); });
+		m_observed_document_id = m_bridge.engine().documentId();
+		m_observed_content_generation = m_bridge.engine().contentGeneration();
 	}
 
 	bool isValid() const { return m_machine != nullptr; }
+
+#ifdef FAIRYWRITER_PERSISTENCE_TESTING
+	bool persistenceTestFrames(int count)
+	{
+		if (!m_machine || count < 0) return false;
+		for (int frame = 0; frame < count; ++frame) advanceFrame();
+		return m_machine != nullptr;
+	}
+
+	bool persistenceTestScan(std::uint8_t code, bool pressed,
+		bool extended = false)
+	{
+		return m_machine
+			&& fairy_snes_key_event(m_machine.get(), code, pressed, extended);
+	}
+
+	bool persistenceTestMouse(std::int8_t dx, std::int8_t dy, bool left)
+	{
+		if (!m_machine) return false;
+		fairy_snes_mouse_event(m_machine.get(), dx, dy, left, false);
+		return true;
+	}
+
+	std::uint8_t persistenceTestWram(std::uint32_t address) const
+	{
+		return m_machine ? fairy_snes_debug_wram(m_machine.get(), address) : 0;
+	}
+
+	std::uint8_t persistenceTestBus(std::uint32_t address) const
+	{
+		return m_machine
+			? fairy_snes_debug_bus_read(m_machine.get(), address) : 0;
+	}
+
+	FairyWriter::DocumentBridge& persistenceTestBridge() noexcept
+	{
+		return m_bridge;
+	}
+#endif
 
 	// Opens a document named on the command line, which is also how a desktop
 	// file association or a drag onto the app icon arrives. The catalog owns
@@ -222,17 +369,25 @@ protected:
 		}
 		return QOpenGLWidget::eventFilter(watched, event);
 	}
-	// Closing the window used to discard everything typed since the last
-	// 30-second autosave tick, with no prompt. Flushing recovery here means the
-	// worst case is zero lost work, and the cartridge's own
-	// "RECOVERY AVAILABLE / ENTER RESTORES" screen offers it back on next
-	// launch -- so no host-drawn dialog is needed and the cartridge keeps
-	// ownership of the visible UI.
+	// A dirty close is a document transition, exactly like New, Open, Recent,
+	// session switching, and Recovery. The cartridge owns the shared
+	// Checkpoint/Save/Discard/Cancel decision; this event is accepted only after
+	// that decision has produced its required durable result.
 	void closeEvent(QCloseEvent* event) override
 	{
 		m_recovery_timer.stop();
-		autosaveRecovery();
-		QOpenGLWidget::closeEvent(event);
+		if (m_allow_close || !m_bridge.engine().isDirty()) {
+			m_bridge.persistence().markCleanShutdown();
+			event->accept();
+			return;
+		}
+		event->ignore();
+		if (!m_transition_requested) {
+			m_transition_requested = true;
+			m_pending_close = true;
+			m_bridge.publishTransitionRequired();
+		}
+		return;
 	}
 	void showEvent(QShowEvent* event) override
 	{
@@ -259,25 +414,203 @@ protected:
 private:
 	void discoverRecovery()
 	{
-		const QDir directory(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation));
-		const QFileInfoList files = directory.entryInfoList(QStringList{QStringLiteral("*.recovery.*")}, QDir::Files, QDir::Time);
-		if (!files.isEmpty()) m_recovery_path = files.front().absoluteFilePath();
+		bool had_corrupt = false;
+		m_recovery_records =
+			m_bridge.persistence().recoveryPromptCandidates(&had_corrupt);
+		m_recovery_path = m_recovery_records.isEmpty()
+			? QString() : m_recovery_records.front().path;
+		if (!m_recovery_records.isEmpty()) {
+			m_bridge.publishRecoveryAvailable(
+				FairyWriter::documentFormatName(
+					m_recovery_records.front().snapshot.format));
+		}
+		if (had_corrupt) {
+			FairyWriter::PersistenceResult warning;
+			warning.error = FairyWriter::PersistenceError::CorruptRecovery;
+			warning.detail = QStringLiteral(
+				"One or more recovery generations were corrupt; the newest valid generation remains available.");
+			m_bridge.publishPersistenceFailure(warning);
+		}
 	}
 
-	void autosaveRecovery()
+	void publishRecoveryHistory(std::size_t offset)
+	{
+		m_recovery_records = m_bridge.persistence().recoveryRecords();
+		m_recovery_tokens.clear();
+		QVector<FairyWriter::FileEntry> entries;
+		entries.reserve(m_recovery_records.size());
+		for (const FairyWriter::RecoveryRecord& record : m_recovery_records) {
+			const QByteArray digest = QCryptographicHash::hash(
+				record.path.toUtf8(), QCryptographicHash::Sha256).toHex().left(24);
+			const QString token = QString::fromLatin1(digest);
+			m_recovery_tokens.insert(token, record.path);
+
+			QString title = record.snapshot.filename.isEmpty()
+				? QStringLiteral("UNTITLED")
+				: QFileInfo(record.snapshot.filename).completeBaseName();
+			QString resident_title;
+			resident_title.reserve(8);
+			for (const QChar character : title.toUpper()) {
+				if (resident_title.size() == 8) break;
+				const ushort scalar = character.unicode();
+				resident_title += scalar >= 0x20 && scalar <= 0x7e
+					? character : QLatin1Char('?');
+			}
+			if (resident_title.isEmpty()) resident_title = QStringLiteral("UNTITLED");
+
+			QString status;
+			if (record.matches_primary) {
+				status = QStringLiteral("SAVED");
+			} else if (record.transition_resolved) {
+				status = QStringLiteral("HISTORY");
+			} else {
+				status = record.snapshot.filename.isEmpty()
+					|| record.primary_fingerprint.sameContent(
+						record.current_primary_fingerprint)
+					? QStringLiteral("UNSAVED")
+					: QStringLiteral("CONFLICT");
+			}
+
+			FairyWriter::FileEntry entry;
+			entry.id = token;
+			entry.name = QStringLiteral("%1 %2 %3")
+				.arg(record.created.toLocalTime().toString(
+					QStringLiteral("MM-dd HH:mm")),
+					resident_title, status).left(29);
+			entry.writable = true;
+			entry.size = record.snapshot.rich_html.size()
+				+ record.snapshot.markdown_source.size();
+			entry.modified = record.created;
+			entries.push_back(std::move(entry));
+		}
+		m_bridge.publishRecoveryPage(entries, offset);
+	}
+
+	void autosaveRecovery(bool manual)
+	{
+		if (!m_bridge.engine().isDirty()) return;
+		const FairyWriter::PersistenceResult result = manual
+			? m_bridge.persistence().checkpoint(true)
+			: m_bridge.persistence().timedAutosave();
+		if (!result.succeeded()
+			&& result.error != FairyWriter::PersistenceError::Disabled) {
+			m_bridge.publishPersistenceFailure(result);
+		}
+		m_recovery_records = m_bridge.persistence().recoveryRecords();
+		m_recovery_path = m_recovery_records.isEmpty()
+			? QString() : m_recovery_records.front().path;
+		m_observed_content_generation = m_bridge.engine().contentGeneration();
+	}
+
+	void armAutosave()
 	{
 		const auto& engine = m_bridge.engine();
-		if (!engine.isDirty()) {
-			if (!m_recovery_path.isEmpty()) QFile::remove(m_recovery_path);
-			m_recovery_path.clear();
+		if (engine.documentId() != m_observed_document_id) {
+			m_recovery_timer.stop();
+			m_observed_document_id = engine.documentId();
+			m_observed_content_generation = engine.contentGeneration();
 			return;
 		}
-		QDir directory(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation));
-		if (directory.path().isEmpty() || !directory.mkpath(QStringLiteral("."))) return;
-		const QString base = engine.filename().isEmpty() ? QStringLiteral("untitled") : QFileInfo(engine.filename()).completeBaseName();
-		const QString format = engine.format().isEmpty() ? QStringLiteral("odt") : engine.format();
-		const QString path = directory.filePath(base + QStringLiteral(".recovery.") + format);
-		if (engine.writeRecovery(path)) m_recovery_path = path;
+		if (engine.contentGeneration() == m_observed_content_generation) return;
+		m_observed_content_generation = engine.contentGeneration();
+		if (m_bridge.persistence().settings().recovery_copies == 0
+			|| m_recovery_timer.isActive()) {
+			return;
+		}
+		m_recovery_timer.setInterval(
+			static_cast<int>(m_bridge.persistence().settings().interval_minutes)
+			* 60 * 1000);
+		m_recovery_timer.start();
+	}
+
+	static bool replacesDocument(std::uint16_t kind)
+	{
+		return kind == FairyWriter::DocumentEngine::NewDocument
+			|| kind == FairyWriter::DocumentBridge::CommandOpenFile
+			|| kind == FairyWriter::DocumentBridge::CommandSwitchSession
+			|| kind == FairyWriter::DocumentBridge::CommandRecover;
+	}
+
+	void requestTransition(const FairyWriter::MailboxRecord& command)
+	{
+		m_pending_transition = command;
+		m_transition_requested = true;
+		m_bridge.publishTransitionRequired();
+	}
+
+	void finishTransition()
+	{
+		m_waiting_transition_save = false;
+		m_transition_requested = false;
+		if (m_pending_close) {
+			m_pending_close = false;
+			m_allow_close = true;
+			m_bridge.persistence().markCleanShutdown();
+			QTimer::singleShot(0, this, [this] { close(); });
+			return;
+		}
+		if (m_pending_transition.has_value()) {
+			const FairyWriter::MailboxRecord command = *m_pending_transition;
+			m_pending_transition.reset();
+			m_transition_bypass = true;
+			m_commands.push(command);
+		}
+	}
+
+	void handleTransitionDecision(const FairyWriter::MailboxRecord& command)
+	{
+		if (!m_transition_requested || command.payload.size() != 1
+			|| command.payload[0] > 3) {
+			return;
+		}
+		const std::uint8_t decision = command.payload[0];
+		if (decision == 3) {
+			m_pending_transition.reset();
+			m_pending_close = false;
+			m_waiting_transition_save = false;
+			m_transition_requested = false;
+			armAutosave();
+			return;
+		}
+		if (decision == 0) {
+			const FairyWriter::PersistenceResult checkpoint =
+				m_bridge.persistence().checkpoint(true);
+			if (!checkpoint.succeeded()) {
+				m_bridge.publishPersistenceFailure(checkpoint);
+				return;
+			}
+			finishTransition();
+			return;
+		}
+		if (decision == 1) {
+			const FairyWriter::PersistenceResult saved =
+				m_bridge.persistence().save();
+			if (!saved.succeeded()) {
+				if (saved.error == FairyWriter::PersistenceError::NeedsSaveAs) {
+					m_waiting_transition_save = true;
+				}
+				m_bridge.publishPersistenceFailure(saved);
+				return;
+			}
+			finishTransition();
+			return;
+		}
+		// Discard retains prior generations as explicit history, but resolves
+		// their startup-prompt state before the document is replaced or closed.
+		const FairyWriter::PersistenceResult discarded =
+			m_bridge.persistence().discardRecoveryCandidates();
+		if (!discarded.succeeded()) {
+			m_bridge.publishPersistenceFailure(discarded);
+			return;
+		}
+		finishTransition();
+	}
+
+	void continueTransitionAfterSave()
+	{
+		if (m_waiting_transition_save && !m_bridge.engine().isDirty()) {
+			finishTransition();
+		}
 	}
 
 	struct PendingKey {
@@ -361,7 +694,7 @@ private:
 		if (fairy_snes_run_frame(m_machine.get())) return true;
 		m_timer.stop();
 		m_recovery_timer.stop();
-		autosaveRecovery();
+		autosaveRecovery(true);
 		reportFatal(QStringLiteral("The SNES runtime stopped unexpectedly.\n"
 			"Any unsaved work has been written to a recovery file and will be "
 			"offered the next time FairyWriter starts."));
@@ -404,6 +737,7 @@ private:
 					QStringLiteral("FairyWriter could not open:\n%1").arg(path));
 			}
 		}
+		armAutosave();
 		if (debugLogEnabled() && ((m_frameCounter % 120) == 0)) {
 			debugKeyLog(QStringLiteral("frame sample p0=%1 p1=%2 p2=%3 cursor=%4 len=%5 c0=%6 mode=%7 key=%8 cmdP=%9 cmdC=%10")
 				.arg(words ? words[0] : 0).arg(words ? words[1] : 0).arg(words ? words[2] : 0)
@@ -435,6 +769,27 @@ private:
 
 	void pumpMailbox()
 	{
+		// The host owns event bytes and the producer index; the cartridge owns
+		// only the consumer index. Retire acknowledged complete records before
+		// processing commands that may publish more events. Importing SRAM event
+		// bytes here would replay old records and could overwrite events produced
+		// during this frame.
+		const std::size_t eventConsumer = sram16(8);
+		if (eventConsumer != m_eventRead) {
+			if (m_bridge.events().consumeTo(eventConsumer)) {
+				m_eventRead = eventConsumer;
+			} else {
+				std::array<std::uint8_t, FairyWriter::MailboxLayout::EventBytes> currentEvents{};
+				std::size_t currentRead = 0;
+				std::size_t currentWrite = 0;
+				m_bridge.events().exportRaw(currentEvents.data(), currentEvents.size(),
+					currentRead, currentWrite);
+				m_eventRead = currentRead;
+				m_eventWrite = currentWrite;
+				setSram16(8, static_cast<std::uint16_t>(currentRead));
+			}
+		}
+
 		std::array<std::uint8_t, FairyWriter::MailboxLayout::CommandBytes> commandBytes{};
 		for (std::size_t i = 0; i < commandBytes.size(); ++i) commandBytes[i] = sramByte(FairyWriter::MailboxLayout::CommandOffset + i);
 		const std::size_t producer = sram16(2);
@@ -448,33 +803,90 @@ private:
 			}
 			FairyWriter::MailboxRecord command;
 			while (m_commands.pop(command)) {
+				if (command.kind
+					== FairyWriter::DocumentBridge::CommandTransitionDecision) {
+					handleTransitionDecision(command);
+					continue;
+				}
+				if (replacesDocument(command.kind)
+					&& m_bridge.engine().isDirty()
+					&& !m_transition_bypass) {
+					if (!m_transition_requested) requestTransition(command);
+					continue;
+				}
+				if (m_transition_bypass) m_transition_bypass = false;
 				if (command.kind == FairyWriter::DocumentBridge::CommandListFiles || command.kind == FairyWriter::DocumentBridge::CommandOpenFile || command.kind == FairyWriter::DocumentBridge::CommandSaveAs || command.kind == FairyWriter::DocumentBridge::CommandSaveAsNew || command.kind == FairyWriter::DocumentBridge::CommandCreateDirectory || command.kind == FairyWriter::DocumentBridge::CommandStatistics || command.kind == FairyWriter::DocumentBridge::CommandRecentFiles || command.kind == FairyWriter::DocumentBridge::CommandListRoots || command.kind == FairyWriter::DocumentBridge::CommandListRecovery || command.kind == FairyWriter::DocumentBridge::CommandRecover || command.kind == FairyWriter::DocumentBridge::CommandListSessions || command.kind == FairyWriter::DocumentBridge::CommandSwitchSession) {
 					const QByteArray payload(reinterpret_cast<const char*>(command.payload.data()), static_cast<qsizetype>(command.payload.size()));
 					const QString id = QString::fromUtf8(payload);
 					if (command.revision == m_bridge.engine().revision()) {
 						if (command.kind == FairyWriter::DocumentBridge::CommandListSessions) m_bridge.listSessions();
 						else if (command.kind == FairyWriter::DocumentBridge::CommandSwitchSession) m_bridge.switchSession(m_catalog, id);
-						else if (command.kind == FairyWriter::DocumentBridge::CommandListFiles) m_bridge.listFiles(m_catalog, id, (command.flags & 1) != 0, ((command.flags >> 8) & 0xff) * FairyWriter::DocumentBridge::FilePageSize);
+						else if (command.kind == FairyWriter::DocumentBridge::CommandListFiles) {
+							std::optional<FairyWriter::DocumentFormat> format;
+							switch ((command.flags >> 1) & 0x7) {
+							case 1: format = FairyWriter::DocumentFormat::Odt; break;
+							case 2: format = FairyWriter::DocumentFormat::Docx; break;
+							case 3: format = FairyWriter::DocumentFormat::Rtf; break;
+							case 4: format = FairyWriter::DocumentFormat::Markdown; break;
+							default: break;
+							}
+							m_bridge.listFiles(m_catalog, id, (command.flags & 1) != 0,
+								((command.flags >> 8) & 0xff)
+									* FairyWriter::DocumentBridge::FilePageSize,
+								format);
+						}
 						else if (command.kind == FairyWriter::DocumentBridge::CommandOpenFile) m_bridge.openFile(m_catalog, id);
 						else if (command.kind == FairyWriter::DocumentBridge::CommandSaveAs) m_bridge.saveAs(m_catalog, id, (command.flags & 1) != 0);
 						else if (command.kind == FairyWriter::DocumentBridge::CommandSaveAsNew) {
 							const int separator = payload.indexOf('\0');
-							if (separator >= 0) m_bridge.saveAsNew(m_catalog, QString::fromUtf8(payload.left(separator)), QString::fromUtf8(payload.mid(separator + 1)));
+							if (separator >= 0) {
+								const bool saved = m_bridge.saveAsNew(m_catalog,
+									QString::fromUtf8(payload.left(separator)),
+									QString::fromUtf8(payload.mid(separator + 1)));
+#ifdef FAIRYWRITER_PERSISTENCE_TESTING
+								if (!saved) {
+									qWarning("Save As New rejected parent '%s' name '%s'",
+										payload.left(separator).constData(),
+										payload.mid(separator + 1).constData());
+								}
+#endif
+							}
 						}
 						else if (command.kind == FairyWriter::DocumentBridge::CommandStatistics) m_bridge.publishStatistics();
 						else if (command.kind == FairyWriter::DocumentBridge::CommandRecentFiles) m_bridge.listRecentFiles(m_catalog, ((command.flags >> 8) & 0xff) * FairyWriter::DocumentBridge::FilePageSize);
 						else if (command.kind == FairyWriter::DocumentBridge::CommandListRoots) m_bridge.listRoots(m_catalog, ((command.flags >> 8) & 0xff) * FairyWriter::DocumentBridge::FilePageSize);
 						else if (command.kind == FairyWriter::DocumentBridge::CommandListRecovery) {
-							if (!m_recovery_path.isEmpty() && QFileInfo::exists(m_recovery_path)) m_bridge.publishRecoveryAvailable(m_recovery_path.section(QLatin1Char('.'), -1));
+							publishRecoveryHistory(
+								((command.flags >> 8) & 0xff)
+									* FairyWriter::DocumentBridge::FilePageSize);
 						} else if (command.kind == FairyWriter::DocumentBridge::CommandRecover) {
 							const QByteArray token(reinterpret_cast<const char*>(command.payload.data()), static_cast<qsizetype>(command.payload.size()));
-							if (token == QByteArrayLiteral("current") && !m_recovery_path.isEmpty()) m_bridge.recover(m_recovery_path);
+							const QString selected = QString::fromUtf8(token);
+							if (token == QByteArrayLiteral("current")
+								&& !m_recovery_path.isEmpty()) {
+								m_bridge.recover(m_recovery_path);
+							} else if (m_recovery_tokens.contains(selected)) {
+								m_bridge.recover(m_recovery_tokens.value(selected));
+							}
 						}
 						else {
 							const int separator = payload.indexOf('\0');
 							if (separator >= 0) m_bridge.createDirectory(m_catalog, QString::fromUtf8(payload.left(separator)), QString::fromUtf8(payload.mid(separator + 1)));
 						}
+						if (command.kind == FairyWriter::DocumentBridge::CommandSaveAs
+							|| command.kind == FairyWriter::DocumentBridge::CommandSaveAsNew) {
+							continueTransitionAfterSave();
+						}
 					}
+#ifdef FAIRYWRITER_PERSISTENCE_TESTING
+					else if (command.kind
+						== FairyWriter::DocumentBridge::CommandSaveAsNew) {
+						qWarning("Save As New revision mismatch guest=%llu host=%llu",
+							static_cast<unsigned long long>(command.revision),
+							static_cast<unsigned long long>(
+								m_bridge.engine().revision()));
+					}
+#endif
 				} else {
 					m_bridge.submit(command);
 					m_bridge.pump();
@@ -487,18 +899,6 @@ private:
 		}
 
 		std::array<std::uint8_t, FairyWriter::MailboxLayout::EventBytes> eventBytes{};
-		for (std::size_t i = 0; i < eventBytes.size(); ++i) eventBytes[i] = sramByte(FairyWriter::MailboxLayout::EventOffset + i);
-		const std::size_t eventRead = sram16(8);
-		if (eventRead != m_eventRead) {
-			m_eventRead = eventRead;
-			if (!m_bridge.events().importRaw(eventBytes.data(), m_eventRead, m_eventWrite)) {
-				m_bridge.events().clear();
-				m_eventRead = 0;
-				m_eventWrite = 0;
-				setSram16(6, 0);
-				setSram16(8, 0);
-			}
-		}
 		std::size_t read = 0, write = 0;
 		m_bridge.events().exportRaw(eventBytes.data(), eventBytes.size(), read, write);
 		for (std::size_t i = 0; i < eventBytes.size(); ++i) setSramByte(FairyWriter::MailboxLayout::EventOffset + i, eventBytes[i]);
@@ -632,20 +1032,331 @@ private:
 	QTimer m_timer;
 	QTimer m_recovery_timer;
 	FairyWriter::DocumentBridge m_bridge;
-	FairyWriter::FileCatalog m_catalog{QDir::homePath()};
+	FairyWriter::FileCatalog m_catalog;
 	FairyWriter::MailboxRing m_commands{FairyWriter::MailboxLayout::CommandBytes};
 	std::size_t m_commandRead = 0;
 	std::size_t m_eventRead = 0;
 	std::size_t m_eventWrite = 0;
 	bool m_capsLock = false;
+	bool m_allow_close = false;
+	bool m_pending_close = false;
+	bool m_transition_requested = false;
+	bool m_transition_bypass = false;
+	bool m_waiting_transition_save = false;
+	std::optional<FairyWriter::MailboxRecord> m_pending_transition;
 	bool m_bootstrapViewportCommitPending = true;
 	QString m_recovery_path;
+	QVector<FairyWriter::RecoveryRecord> m_recovery_records;
+	QHash<QString, QString> m_recovery_tokens;
+	QUuid m_observed_document_id;
+	std::uint64_t m_observed_content_generation = 0;
 	// A document named on the command line, held until the cartridge has booted
 	// far enough to keep a committed viewport. See openDocument().
 	QString m_pending_document;
 	static constexpr std::uint64_t PendingDocumentFrame = 30;
 	std::uint64_t m_frameCounter = 0;
 };
+
+#ifdef FAIRYWRITER_PERSISTENCE_TESTING
+namespace {
+
+bool persistenceTap(RecompPlayer& player, std::uint8_t code,
+	bool extended = false)
+{
+	return player.persistenceTestScan(code, true, extended)
+		&& player.persistenceTestFrames(5)
+		&& player.persistenceTestScan(code, false, extended)
+		&& player.persistenceTestFrames(2);
+}
+
+bool persistenceType(RecompPlayer& player, const QString& text)
+{
+	for (const QChar character : text) {
+		int key = 0;
+		if (character >= QLatin1Char('a') && character <= QLatin1Char('z')) {
+			key = Qt::Key_A + character.unicode() - QLatin1Char('a').unicode();
+		} else if (character == QLatin1Char(' ')) {
+			key = Qt::Key_Space;
+		} else {
+			return false;
+		}
+		const Scan scan = scanForKey(key);
+		if (!scan.code || !persistenceTap(player, scan.code, scan.extended)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+bool persistenceSelectAllAndBold(RecompPlayer& player)
+{
+	// Select the single cartridge line with the physical Shift+Home sequence,
+	// then click the cartridge's [B] toolbar button. Both commands cross the
+	// XBAND/mouse -> guest mailbox path used by an ordinary session.
+	if (!player.persistenceTestScan(0x12, true)
+		|| !player.persistenceTestFrames(2)
+		|| !persistenceTap(player, 0x6c, true)
+		|| !player.persistenceTestScan(0x12, false)
+		|| !player.persistenceTestFrames(2)
+		|| !player.persistenceTestMouse(51, -101, false)
+		|| !player.persistenceTestFrames(4)
+		|| !player.persistenceTestMouse(0, 0, true)
+		|| !player.persistenceTestFrames(8)
+		|| !player.persistenceTestMouse(0, 0, false)
+		|| !player.persistenceTestFrames(3)) {
+		return false;
+	}
+	return true;
+}
+
+bool persistenceOpenSaveMenu(RecompPlayer& player)
+{
+	if (!persistenceTap(player, 0x05)
+		|| player.persistenceTestWram(0x031d) != 1) {
+		qWarning("F1 save menu failed mode=%u key=%u",
+			player.persistenceTestWram(0x031d),
+			player.persistenceTestWram(0x000f));
+		return false;
+	}
+	int selected = player.persistenceTestWram(0x031e);
+	while (selected > 2) {
+		if (!persistenceTap(player, 0x75, true)) return false;
+		--selected;
+	}
+	while (selected < 2) {
+		if (!persistenceTap(player, 0x72, true)) return false;
+		++selected;
+	}
+	return persistenceTap(player, 0x5a);
+}
+
+bool persistenceSaveAsNew(RecompPlayer& player, int format_row,
+	const QString& base_name)
+{
+	if (!persistenceOpenSaveMenu(player)) return false;
+	if (player.persistenceTestWram(0x031d) != 0x11) {
+		qWarning("first Save did not reach format picker mode=%u",
+			player.persistenceTestWram(0x031d));
+		return false;
+	}
+	for (int row = 0; row < format_row; ++row) {
+		if (!persistenceTap(player, 0x72, true)) return false;
+	}
+	if (!persistenceTap(player, 0x5a)
+		|| player.persistenceTestWram(0x031d) != 6) {
+		qWarning("format selection failed mode=%u",
+			player.persistenceTestWram(0x031d));
+		return false;
+	}
+	if (!persistenceTap(player, 0x5a)
+		|| player.persistenceTestWram(0x031d) != 6) {
+		qWarning("save root selection failed mode=%u",
+			player.persistenceTestWram(0x031d));
+		return false;
+	}
+	if (!persistenceTap(player, 0x31)
+		|| player.persistenceTestWram(0x031d) != 0x0a) {
+		qWarning("new filename mode failed mode=%u",
+			player.persistenceTestWram(0x031d));
+		return false;
+	}
+	if (!persistenceType(player, base_name)
+		|| !persistenceTap(player, 0x5a)
+		|| !player.persistenceTestFrames(5)) return false;
+	return true;
+}
+
+bool persistenceSaveNamed(RecompPlayer& player)
+{
+	return persistenceOpenSaveMenu(player)
+		&& player.persistenceTestFrames(5)
+		&& !player.persistenceTestBridge().engine().isDirty();
+}
+
+} // namespace
+
+int runPersistenceCartridgeE2eChild(const QStringList& arguments)
+{
+	if (arguments.size() != 5) return 110;
+	const QString operation = arguments.at(1);
+	const QString format = arguments.at(2);
+	const QFileInfo requestedPath(arguments.at(3));
+	const QString canonicalParent = requestedPath.dir().canonicalPath();
+	const QString path = QDir(canonicalParent.isEmpty()
+			? requestedPath.absolutePath()
+			: canonicalParent)
+		.filePath(requestedPath.fileName());
+	const QString recovery_root = QFileInfo(arguments.at(4)).absoluteFilePath();
+	const QString catalog_root = QFileInfo(path).absolutePath();
+	const QByteArray rom(
+		reinterpret_cast<const char*>(FairyWriter::cartridgeImage()),
+		static_cast<qsizetype>(FairyWriter::cartridgeImageSize()));
+
+	int format_row = -1;
+	if (format == QLatin1String("odt") || format == QLatin1String("crash")) {
+		format_row = 0;
+	} else if (format == QLatin1String("docx")) {
+		format_row = 1;
+	} else if (format == QLatin1String("rtf")) {
+		format_row = 2;
+	} else if (format == QLatin1String("md")) {
+		format_row = 3;
+	}
+	if (format_row < 0) return 111;
+
+	const QString expected = format == QLatin1String("crash")
+		? QStringLiteral("fairywriter cartridge recovery")
+		: QStringLiteral("fairywriter cartridge lifecycle ") + format;
+
+	if (operation == QLatin1String("create")) {
+		RecompPlayer player(rom, catalog_root, recovery_root);
+		if (!player.isValid()) return 112;
+		if (!player.persistenceTestFrames(6)) return 122;
+		if (!persistenceType(player, expected)) return 123;
+		if (!persistenceSelectAllAndBold(player)) return 124;
+		if (!persistenceSaveAsNew(player, format_row,
+				QFileInfo(path).completeBaseName())) {
+			qWarning("cartridge save-as failed in mode %u, menu row %u",
+				player.persistenceTestWram(0x031d),
+				player.persistenceTestWram(0x031e));
+			qWarning("command producer=%u consumer=%u last kind=%02x%02x count=%u",
+				player.persistenceTestBus(0x700002)
+					| (player.persistenceTestBus(0x700003) << 8),
+				player.persistenceTestBus(0x700004)
+					| (player.persistenceTestBus(0x700005) << 8),
+				player.persistenceTestBus(0x700103),
+				player.persistenceTestBus(0x700102),
+				player.persistenceTestBus(0x700104)
+					| (player.persistenceTestBus(0x700105) << 8));
+				qWarning("event producer=%u consumer=%u count=%u/%u base=%u/%u",
+					player.persistenceTestBus(0x700006)
+						| (player.persistenceTestBus(0x700007) << 8),
+					player.persistenceTestBus(0x700008)
+						| (player.persistenceTestBus(0x700009) << 8),
+					player.persistenceTestWram(0x0323),
+					player.persistenceTestWram(0x0324),
+					player.persistenceTestWram(0x032a),
+					player.persistenceTestWram(0x032b));
+			qWarning("engine filename '%s' dirty=%d text=%lld",
+				qPrintable(player.persistenceTestBridge().engine().filename()),
+				player.persistenceTestBridge().engine().isDirty() ? 1 : 0,
+				static_cast<long long>(
+					player.persistenceTestBridge().engine().text().size()));
+			QByteArray tail;
+			for (std::uint32_t at = 700; at < 795; ++at) {
+				tail.push_back(static_cast<char>(
+					player.persistenceTestBus(0x700100 + at)));
+				}
+				qWarning("command tail %s", tail.toHex().constData());
+				QByteArray eventHead;
+				for (std::uint32_t at = 0; at < 80; ++at) {
+					eventHead.push_back(static_cast<char>(
+						player.persistenceTestBus(0x702100 + at)));
+				}
+				qWarning("event head %s", eventHead.toHex().constData());
+				return 125;
+		}
+		if (player.persistenceTestBridge().engine().isDirty()) return 126;
+		if (QFileInfo(path).size() <= 0) return 127;
+
+		if (format == QLatin1String("md")) {
+			// Exercise the cartridge-owned Rendered/Source setting, edit exact
+			// UTF-8 source, then save the named primary through the menu.
+			if (!persistenceTap(player, 0x04)) return 113;
+			for (int row = 0; row < 4; ++row) {
+				if (!persistenceTap(player, 0x72, true)) return 113;
+			}
+			if (!persistenceTap(player, 0x74, true)
+				|| !player.persistenceTestBridge().engine().markdownSourceMode()
+				|| !persistenceTap(player, 0x04)
+				|| !persistenceTap(player, 0x69, true)
+				|| !persistenceTap(player, 0x5a)
+				|| !persistenceType(player, QStringLiteral("source"))
+				|| !persistenceSaveNamed(player)
+				|| !player.persistenceTestBridge().engine().markdownSource()
+					.contains(QByteArrayLiteral("source"))) {
+				return 113;
+			}
+		}
+		player.persistenceTestBridge().persistence().markCleanShutdown();
+		return 0;
+	}
+
+	if (operation == QLatin1String("load")) {
+		RecompPlayer player(rom, catalog_root, recovery_root);
+		if (!player.isValid()) return 114;
+		player.openDocument(path);
+		if (!player.persistenceTestFrames(40)
+			|| player.persistenceTestBridge().engine().filename() != path
+			|| player.persistenceTestBridge().engine().isDirty()
+			|| !player.persistenceTestBridge().engine().text().contains(expected)) {
+			qWarning("cartridge load failed file='%s' expected='%s' actual='%s' dirty=%d",
+				qPrintable(player.persistenceTestBridge().engine().filename()),
+				qPrintable(expected),
+				qPrintable(player.persistenceTestBridge().engine().text()),
+				player.persistenceTestBridge().engine().isDirty() ? 1 : 0);
+			return 115;
+		}
+		if (format != QLatin1String("crash")) {
+			QTextCursor cursor(
+				player.persistenceTestBridge().engine().document());
+			cursor.setPosition(qMin(1,
+				player.persistenceTestBridge().engine().document()
+					->characterCount() - 1));
+			if (cursor.charFormat().fontWeight() != QFont::Bold) return 116;
+		}
+		if (format == QLatin1String("md")
+			&& !player.persistenceTestBridge().engine().text()
+				.contains(QStringLiteral("source"))) {
+			return 117;
+		}
+		player.persistenceTestBridge().persistence().markCleanShutdown();
+		return 0;
+	}
+
+	if (operation == QLatin1String("crash")) {
+		RecompPlayer player(rom, catalog_root, recovery_root);
+		if (!player.isValid() || !player.persistenceTestFrames(6)
+			|| !persistenceType(player, expected)) {
+			return 118;
+		}
+		FairyWriter::PersistenceSettings settings =
+			player.persistenceTestBridge().persistence().settings();
+		settings.mode =
+			FairyWriter::PersistenceSettings::AutosaveMode::RecoveryOnly;
+		settings.recovery_copies = 5;
+		player.persistenceTestBridge().persistence().setSettings(settings);
+		const FairyWriter::PersistenceResult checkpoint =
+			player.persistenceTestBridge().persistence().checkpoint(false);
+		if (!checkpoint.succeeded()) return 119;
+		QTextStream(stdout) << checkpoint.path << '\n';
+		QTextStream(stdout).flush();
+		std::_Exit(23);
+	}
+
+	if (operation == QLatin1String("restore")) {
+		RecompPlayer player(rom, catalog_root, recovery_root);
+		if (!player.isValid() || !player.persistenceTestFrames(8)
+			|| player.persistenceTestWram(0x031d) != 0x0b
+			|| player.persistenceTestWram(0x0337) != 0x04
+			|| !persistenceTap(player, 0x5a)
+			|| !player.persistenceTestFrames(5)
+			|| !player.persistenceTestBridge().engine().isDirty()
+			|| !player.persistenceTestBridge().engine().text().contains(expected)
+			|| !persistenceTap(player, 0x5a)
+			|| !persistenceSaveAsNew(player, 0,
+				QFileInfo(path).completeBaseName())
+			|| player.persistenceTestBridge().engine().isDirty()
+			|| QFileInfo(path).size() <= 0) {
+			return 120;
+		}
+		player.persistenceTestBridge().persistence().markCleanShutdown();
+		return 0;
+	}
+
+	return 121;
+}
+#endif
 
 int fairywriter_run_embedded_snes(int argc, char** argv)
 {
@@ -660,6 +1371,18 @@ int fairywriter_run_embedded_snes(int argc, char** argv)
 		QTextStream(stdout) << "FairyWriter " VERSIONSTR "\n";
 		return 0;
 	}
+#ifdef FAIRYWRITER_PERSISTENCE_TESTING
+	if (argc >= 2
+		&& QString::fromLocal8Bit(argv[1]) == QStringLiteral("--persistence-e2e-child")) {
+		return runPersistenceE2eChild(application.arguments().mid(1));
+	}
+	if (argc >= 2
+		&& QString::fromLocal8Bit(argv[1])
+			== QStringLiteral("--persistence-cartridge-e2e-child")) {
+		return runPersistenceCartridgeE2eChild(
+			application.arguments().mid(1));
+	}
+#endif
 	// One optional document path. Dragging a file onto the app or opening one
 	// through a file association used to make the process exit with usage text.
 	QString document;

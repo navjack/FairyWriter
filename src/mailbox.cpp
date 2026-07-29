@@ -128,6 +128,29 @@ MailboxRing::MailboxRing(std::size_t capacity) : m_storage(capacity) {}
 std::size_t MailboxRing::used() const noexcept { return m_used; }
 std::size_t MailboxRing::freeSpace() const noexcept { return m_storage.size() - m_used; }
 void MailboxRing::clear() noexcept { m_read = m_write = m_used = 0; }
+bool MailboxRing::consumeTo(std::size_t read) {
+	if (m_storage.empty() || read >= m_storage.size()) return false;
+	if (read == m_read) return true;
+
+	std::size_t cursor = m_read;
+	std::size_t remaining = m_used;
+	std::size_t consumed = 0;
+	while (remaining >= HeaderSize) {
+		if (read16(cursor) != MailboxProtocol) return false;
+		const std::size_t count = read16(cursor + 4);
+		const std::size_t record_size = HeaderSize + count;
+		if (record_size > remaining) return false;
+		cursor = (cursor + record_size) % m_storage.size();
+		remaining -= record_size;
+		consumed += record_size;
+		if (cursor == read) {
+			m_read = cursor;
+			m_used -= consumed;
+			return true;
+		}
+	}
+	return false;
+}
 bool MailboxRing::importRaw(const std::uint8_t* bytes, std::size_t read, std::size_t write) {
 	if (!bytes || m_storage.empty() || read >= m_storage.size() || write >= m_storage.size()) return false;
 	std::copy(bytes, bytes + m_storage.size(), m_storage.begin());
@@ -151,7 +174,10 @@ void MailboxRing::write32(std::size_t o, std::uint32_t v) noexcept { write16(o,v
 void MailboxRing::write64(std::size_t o, std::uint64_t v) noexcept { write32(o,v); write32(o+4,v>>32); }
 
 bool MailboxRing::push(const MailboxRecord& r) {
-	if (m_storage.empty() || r.protocol != MailboxProtocol || r.payload.size() > 0xffff || HeaderSize + r.payload.size() > freeSpace()) return false;
+	// Keep one byte unused so equal indices always mean empty. Without this
+	// invariant, a completely full exported ring is indistinguishable from an
+	// empty ring to the process on the other side of the mailbox.
+	if (m_storage.empty() || r.protocol != MailboxProtocol || r.payload.size() > 0xffff || HeaderSize + r.payload.size() >= freeSpace()) return false;
 	const auto n = HeaderSize + r.payload.size();
 	write16(m_write, r.protocol); write16(m_write+2, r.kind); write16(m_write+4, static_cast<std::uint16_t>(r.payload.size()));
 	write16(m_write+6, r.flags); write32(m_write+8, r.sequence); write64(m_write+12, r.revision);

@@ -32,6 +32,13 @@ if [[ ${1:-} != --inside-container ]]; then
 		--volume "${output_root}:/out" \
 		fairywriter-linux-x86_64 \
 		/src/packaging/linux/build-linux.sh --inside-container
+	# Docker Desktop's bind mount can reject chmod from the Linux guest even
+	# though the mapped uid owns the files on macOS. Copy in-container, then set
+	# the tester-document modes from the host filesystem that owns the mount.
+	chmod 0644 \
+		"${output_root}/COPYING" \
+		"${output_root}/CMARK-GFM-LICENSE" \
+		"${output_root}/TESTING.md"
 	exit 0
 fi
 
@@ -140,6 +147,7 @@ fi
 	cd "$(dirname "${artifact}")"
 	sha256sum "$(basename "${artifact}")" > "$(basename "${artifact}").sha256"
 )
-install -m 0644 /src/COPYING /out/COPYING
-install -m 0644 /src/TESTING.md /out/TESTING.md
+cp /src/COPYING /out/COPYING
+cp /src/third_party/cmark-gfm/COPYING /out/CMARK-GFM-LICENSE
+cp /src/TESTING.md /out/TESTING.md
 echo "Created ${artifact}"

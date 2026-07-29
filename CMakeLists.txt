@@ -6,6 +6,7 @@ cmake_minimum_required(VERSION 3.16)
 
 # Configure project
 project(fairywriter VERSION 0.1.0 LANGUAGES CXX)
+enable_language(C)
 
 set(project_copyright "2008-2026 Graeme Gott and FairyWriter contributors")
 
@@ -33,6 +34,31 @@ endif()
 find_package(Qt6 6.8 REQUIRED COMPONENTS ${fairywriter_qt_components})
 find_package(ZLIB REQUIRED)
 include(GNUInstallDirs)
+
+# Pinned, repository-owned GFM parser. Only the two static libraries are built;
+# upstream programs, manuals and tests stay out of the FairyWriter product gate.
+set(CMARK_TESTS OFF CACHE BOOL "" FORCE)
+set(CMARK_STATIC ON CACHE BOOL "" FORCE)
+set(CMARK_SHARED OFF CACHE BOOL "" FORCE)
+set(CMARK_LIB_FUZZER OFF CACHE BOOL "" FORCE)
+set(CMARK_FUZZ_QUADRATIC OFF CACHE BOOL "" FORCE)
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+add_subdirectory(third_party/cmark-gfm EXCLUDE_FROM_ALL)
+add_library(fairywriter_markdown INTERFACE)
+target_compile_definitions(fairywriter_markdown INTERFACE
+	CMARK_GFM_STATIC_DEFINE
+	CMARK_GFM_EXTENSIONS_STATIC_DEFINE
+)
+target_include_directories(fairywriter_markdown INTERFACE
+	${CMAKE_CURRENT_SOURCE_DIR}/third_party/cmark-gfm/src
+	${CMAKE_CURRENT_SOURCE_DIR}/third_party/cmark-gfm/extensions
+	${CMAKE_CURRENT_BINARY_DIR}/third_party/cmark-gfm/src
+	${CMAKE_CURRENT_BINARY_DIR}/third_party/cmark-gfm/extensions
+)
+target_link_libraries(fairywriter_markdown INTERFACE
+	libcmark-gfm-extensions_static
+	libcmark-gfm_static
+)
 
 # The visible FairyWriter product is a source-owned SNES cartridge. Keep its
 # generation explicit and ROM-free; the desktop backend will consume this
@@ -150,6 +176,8 @@ qt_add_executable(fairywriter
 	src/document.h
 	src/cartridge_image.h
 	src/document_engine.h
+	src/document_persistence.h
+	src/markdown_codec.h
 	src/document_bridge.h
 	src/document_cache.h
 	src/document_watcher.h
@@ -228,6 +256,8 @@ qt_add_executable(fairywriter
 	src/daily_progress_label.cpp
 	src/document.cpp
 	src/document_engine.cpp
+	src/document_persistence.cpp
+	src/markdown_codec.cpp
 	src/document_bridge.cpp
 	src/document_cache.cpp
 	src/document_watcher.cpp
@@ -303,6 +333,10 @@ else()
 		src/cartridge_image.h
 		src/document_engine.h
 		src/document_engine.cpp
+		src/document_persistence.h
+		src/document_persistence.cpp
+		src/markdown_codec.h
+		src/markdown_codec.cpp
 		src/document_bridge.h
 		src/document_bridge.cpp
 		src/document_writer.h
@@ -403,6 +437,8 @@ if(EXISTS "${FAIRYWRITER_SNESRECOMP_ROOT}/runner/src/snes/interp816.c")
 			src/document_bridge.cpp
 			src/session_store.cpp
 			src/document_engine.cpp
+			src/document_persistence.cpp
+			src/markdown_codec.cpp
 			src/document_writer.cpp
 			src/file_catalog.cpp
 			src/mailbox.cpp
@@ -420,6 +456,7 @@ if(EXISTS "${FAIRYWRITER_SNESRECOMP_ROOT}/runner/src/snes/interp816.c")
 		target_include_directories(fairywriter_xband_player PRIVATE src src/fileformats src/3rdparty/qtzip)
 		target_link_libraries(fairywriter_xband_player PRIVATE
 			fairywriter_cartridge_image fairywriter_snes_machine
+			fairywriter_markdown
 			Qt6::Core Qt6::Gui Qt6::OpenGLWidgets Qt6::Widgets ZLIB::ZLIB)
 		set_target_properties(fairywriter_xband_player PROPERTIES
 			OUTPUT_NAME "FairyWriter-XBAND"
@@ -466,6 +503,7 @@ endif()
 if(FAIRYWRITER_DEVELOPMENT_UI)
 	target_link_libraries(fairywriter PRIVATE
 		fairywriter_cartridge_image
+		fairywriter_markdown
 		Qt6::Concurrent
 		Qt6::Core
 		Qt6::Gui
@@ -479,6 +517,7 @@ else()
 	target_link_libraries(fairywriter PRIVATE
 		fairywriter_cartridge_image
 		fairywriter_snes_machine
+		fairywriter_markdown
 		Qt6::Core
 		Qt6::Gui
 		Qt6::OpenGLWidgets
@@ -630,6 +669,8 @@ set_property(SOURCE src/main.cpp APPEND PROPERTY COMPILE_DEFINITIONS FAIRYWRITER
 # Keep presentation invariants testable without a window system or Qt event loop.
 include(CTest)
 if(BUILD_TESTING)
+	target_compile_definitions(fairywriter PRIVATE
+		FAIRYWRITER_PERSISTENCE_TESTING=1)
 	find_package(Qt6 REQUIRED COMPONENTS Test)
 	if(FAIRYWRITER_GO_EXECUTABLE)
 		add_test(
@@ -663,6 +704,8 @@ if(BUILD_TESTING)
 		src/document_bridge.cpp
 		src/session_store.cpp
 		src/document_engine.cpp
+		src/document_persistence.cpp
+		src/markdown_codec.cpp
 		src/file_catalog.cpp
 		src/document_writer.cpp
 		src/mailbox.cpp
@@ -697,10 +740,55 @@ if(BUILD_TESTING)
 	add_dependencies(fairywriter_document_engine_tests
 		fairywriter_public_test_fixture)
 	target_include_directories(fairywriter_document_engine_tests PRIVATE src src/fileformats src/3rdparty/qtzip)
-	target_link_libraries(fairywriter_document_engine_tests PRIVATE Qt6::Core Qt6::Gui ZLIB::ZLIB)
+	target_link_libraries(fairywriter_document_engine_tests PRIVATE
+		fairywriter_markdown Qt6::Core Qt6::Gui ZLIB::ZLIB)
 	add_test(NAME fairywriter_document_engine
 		COMMAND fairywriter_document_engine_tests
 			"${fairywriter_public_test_fixture}")
+
+	add_executable(fairywriter_persistence_tests
+		tests/persistence_tests.cpp
+		src/document_engine.cpp
+		src/document_persistence.cpp
+		src/document_writer.cpp
+		src/markdown_codec.cpp
+		src/mailbox.cpp
+		src/fileformats/docx_reader.cpp
+		src/fileformats/docx_writer.cpp
+		src/fileformats/format_manager.cpp
+		src/fileformats/odt_reader.cpp
+		src/fileformats/odt_writer.cpp
+		src/fileformats/rtf_reader.cpp
+		src/fileformats/rtf_tokenizer.cpp
+		src/fileformats/rtf_writer.cpp
+		src/fileformats/txt_reader.cpp
+		src/3rdparty/qtzip/qtzip.cpp
+		src/text_codec.cpp
+	)
+	target_include_directories(fairywriter_persistence_tests PRIVATE
+		src src/fileformats src/3rdparty/qtzip)
+	target_link_libraries(fairywriter_persistence_tests PRIVATE
+		fairywriter_markdown Qt6::Core Qt6::Gui ZLIB::ZLIB)
+	find_package(Python3 REQUIRED COMPONENTS Interpreter)
+	add_dependencies(fairywriter_persistence_tests cmark-gfm)
+	add_test(NAME fairywriter_persistence
+		COMMAND "${CMAKE_COMMAND}"
+			-DFAIRYWRITER_PYTHON=${Python3_EXECUTABLE}
+			-DFAIRYWRITER_GFM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/third_party/cmark-gfm/test/spec_tests.py
+			-DFAIRYWRITER_GFM_SPEC=${CMAKE_CURRENT_SOURCE_DIR}/third_party/cmark-gfm/test/spec.txt
+			-DFAIRYWRITER_CMARK=$<TARGET_FILE:cmark-gfm>
+			-DFAIRYWRITER_PERSISTENCE_TEST=$<TARGET_FILE:fairywriter_persistence_tests>
+			-P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunPersistenceGate.cmake")
+
+	add_executable(fairywriter_persistence_process_tests
+		tests/persistence_process_e2e.cpp)
+	target_link_libraries(fairywriter_persistence_process_tests PRIVATE Qt6::Core)
+	add_test(NAME fairywriter_persistence_process_e2e
+		COMMAND fairywriter_persistence_process_tests $<TARGET_FILE:fairywriter>)
+	set_tests_properties(fairywriter_persistence_process_e2e PROPERTIES
+		ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+		TIMEOUT 180)
+
 	add_executable(fairywriter_file_catalog_tests tests/file_catalog_tests.cpp src/file_catalog.cpp)
 	target_include_directories(fairywriter_file_catalog_tests PRIVATE src)
 	target_link_libraries(fairywriter_file_catalog_tests PRIVATE Qt6::Core)

@@ -9,7 +9,11 @@ build_root=${FAIRYWRITER_MAC_BUILD:-"${source_root}/build-arm64"}
 release_root=${FAIRYWRITER_MAC_OUTPUT:-"${source_root}/release-macos-arm64"}
 qt_root=${QTDIR:-/opt/homebrew/opt/qt}
 cmake_bin=${FAIRYWRITER_CMAKE:-/opt/homebrew/bin/cmake}
-version=0.1.0
+version=$(tr -d '\r\n' < "${source_root}/VERSION")
+if [[ ! ${version} =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+	echo "VERSION must contain one MAJOR.MINOR.PATCH number." >&2
+	exit 1
+fi
 artifact_basename="FairyWriter-${version}-macos-arm64.dmg"
 artifact="${release_root}/${artifact_basename}"
 

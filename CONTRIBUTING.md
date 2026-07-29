@@ -30,6 +30,9 @@ cartridge UI with native lookalikes.
 Do not commit ROM files, packaged applications, personal documents, private
 artwork, credentials, or generated build directories.
 
+Public releases follow [VERSIONING.md](VERSIONING.md). Do not edit version
+numbers independently in package scripts or metadata; `VERSION` owns them.
+
 ## Pull requests
 
 Keep each pull request focused and explain:

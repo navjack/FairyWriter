@@ -1,4 +1,4 @@
-# FairyWriter 0.1 tester guide
+# FairyWriter tester guide
 
 FairyWriter is a native desktop application running a source-generated SNES
 word-processor cartridge. The 256x224 interface, menus, help, caret, selection,
@@ -13,7 +13,7 @@ bug.
 
 ### macOS (Apple Silicon)
 
-1. Open `FairyWriter-0.1.0-macos-arm64.dmg`.
+1. Open the `FairyWriter-*-macos-arm64.dmg` tester package.
 2. Copy `FairyWriter.app` to Applications.
 3. Control-click or right-click the copied app, choose **Open**, then choose
    **Open** again. This is the normal first-launch path for an unsigned build.
@@ -28,7 +28,7 @@ This artifact is Apple-Silicon-only. Intel macOS has not been built or tested.
 
 ### Windows 10/11 x64
 
-1. Extract `FairyWriter-0.1.0-windows-x64.zip` completely.
+1. Extract the `FairyWriter-*-windows-x64.zip` tester package completely.
 2. Run `fairywriter.exe` from the extracted folder.
 3. If Microsoft Defender SmartScreen appears, choose **More info**, then
    **Run anyway**.
@@ -42,14 +42,14 @@ a real Windows x64 machine.
 Make the AppImage executable and run it:
 
 ```sh
-chmod +x FairyWriter-0.1.0-x86_64.AppImage
-./FairyWriter-0.1.0-x86_64.AppImage
+chmod +x FairyWriter-*-x86_64.AppImage
+./FairyWriter-*-x86_64.AppImage
 ```
 
 If FUSE is unavailable, AppImage's extraction fallback may be used:
 
 ```sh
-./FairyWriter-0.1.0-x86_64.AppImage --appimage-extract-and-run
+./FairyWriter-*-x86_64.AppImage --appimage-extract-and-run
 ```
 
 ## Controls
@@ -181,7 +181,7 @@ FAIRYWRITER_DEBUG_LOG=1 /Applications/FairyWriter.app/Contents/MacOS/FairyWriter
 Linux:
 
 ```sh
-FAIRYWRITER_DEBUG_LOG=1 ./FairyWriter-0.1.0-x86_64.AppImage
+FAIRYWRITER_DEBUG_LOG=1 ./FairyWriter-*-x86_64.AppImage
 ```
 
 Windows PowerShell:

@@ -5,10 +5,20 @@
 cmake_minimum_required(VERSION 3.16)
 
 # Configure project
-project(fairywriter VERSION 0.1.0 LANGUAGES CXX)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" fairywriter_version)
+string(STRIP "${fairywriter_version}" fairywriter_version)
+if(NOT fairywriter_version MATCHES "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$")
+	message(FATAL_ERROR "VERSION must contain one MAJOR.MINOR.PATCH number")
+endif()
+project(fairywriter VERSION "${fairywriter_version}" LANGUAGES CXX)
 enable_language(C)
 
 set(project_copyright "2008-2026 Graeme Gott and FairyWriter contributors")
+configure_file(
+	resources/unix/fairywriter.1.in
+	${CMAKE_CURRENT_BINARY_DIR}/fairywriter.1
+	@ONLY
+)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -462,8 +472,8 @@ if(EXISTS "${FAIRYWRITER_SNESRECOMP_ROOT}/runner/src/snes/interp816.c")
 			OUTPUT_NAME "FairyWriter-XBAND"
 			MACOSX_BUNDLE_GUI_IDENTIFIER "io.github.navjack.FairyWriter.XBAND"
 			MACOSX_BUNDLE_BUNDLE_NAME "FairyWriter XBAND"
-			MACOSX_BUNDLE_BUNDLE_VERSION "0.1.0"
-			MACOSX_BUNDLE_SHORT_VERSION_STRING "0.1.0"
+			MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+			MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
 		)
 	endif()
 	add_executable(fairywriter_snes_machine_tests
@@ -665,7 +675,8 @@ else()
 		install(DIRECTORY resources/themes DESTINATION ${CMAKE_INSTALL_DATADIR}/fairywriter)
 		install(FILES resources/symbols/symbols1700.dat DESTINATION ${CMAKE_INSTALL_DATADIR}/fairywriter)
 	endif()
-	install(FILES resources/unix/fairywriter.1 DESTINATION ${CMAKE_INSTALL_MANDIR}/man1 COMPONENT doc)
+	install(FILES ${CMAKE_CURRENT_BINARY_DIR}/fairywriter.1
+		DESTINATION ${CMAKE_INSTALL_MANDIR}/man1 COMPONENT doc)
 
 	include(cmake/TranslateMetainfo.cmake)
 	process_and_install_metainfo(PO_DIR ${CMAKE_SOURCE_DIR}/resources/unix/po)

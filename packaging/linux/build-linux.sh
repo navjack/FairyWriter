@@ -5,7 +5,12 @@
 set -euo pipefail
 
 source_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-artifact_basename=FairyWriter-0.1.0-x86_64.AppImage
+version=$(tr -d '\r\n' < "${source_root}/VERSION")
+if [[ ! ${version} =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+	echo "VERSION must contain one MAJOR.MINOR.PATCH number." >&2
+	exit 1
+fi
+artifact_basename="FairyWriter-${version}-x86_64.AppImage"
 
 if [[ ${1:-} != --inside-container ]]; then
 	if ! command -v docker >/dev/null 2>&1; then

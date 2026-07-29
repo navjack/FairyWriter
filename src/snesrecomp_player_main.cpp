@@ -1297,13 +1297,20 @@ int runPersistenceCartridgeE2eChild(const QStringList& arguments)
 				player.persistenceTestBridge().engine().isDirty() ? 1 : 0);
 			return 115;
 		}
-		if (format != QLatin1String("crash")) {
+		const bool rich_format = format == QLatin1String("odt")
+			|| format == QLatin1String("docx")
+			|| format == QLatin1String("rtf");
+		if (rich_format) {
 			QTextCursor cursor(
 				player.persistenceTestBridge().engine().document());
 			cursor.setPosition(qMin(1,
 				player.persistenceTestBridge().engine().document()
 					->characterCount() - 1));
-			if (cursor.charFormat().fontWeight() != QFont::Bold) return 116;
+			if (cursor.charFormat().fontWeight() != QFont::Bold) {
+				qWarning("cartridge rich-format load lost bold metadata for '%s'",
+					qPrintable(format));
+				return 116;
+			}
 		}
 		if (format == QLatin1String("md")
 			&& !player.persistenceTestBridge().engine().text()

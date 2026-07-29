@@ -168,6 +168,10 @@ QVector<FileEntry> FileCatalog::list(const QString& parentId, bool show_hidden) 
 	QFileInfoList infos = QDir(parent).entryInfoList(QDir::AllEntries | QDir::NoDotAndDotDot | (show_hidden ? QDir::Hidden : QDir::Filter(0)), QDir::NoSort);
 	QVector<FileEntry> result;
 	for (const QFileInfo& info : infos) {
+		// A leading dot is the portable document-browser convention for a
+		// hidden entry. QDir::Hidden covers the native filesystem attribute,
+		// which is a separate property on Windows.
+		if (!show_hidden && info.fileName().startsWith(QLatin1Char('.'))) continue;
 		const QString id = registerPath(info.absoluteFilePath());
 		if (id.isEmpty()) continue;
 		result.push_back(*entry(id));

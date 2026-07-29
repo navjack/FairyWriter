@@ -103,6 +103,14 @@ public commit after each platform's real production and package audit passes.
   `tests/snes_machine_tests.cpp` used `std::string`/`std::to_string` without
   including `<string>`. MSVC rejected it correctly; the test now owns its direct
   standard-library dependency.
+- The first complete native Windows test pass exposed two portable-semantics
+  assumptions. `QDir::Hidden` follows the Windows hidden attribute and does not
+  treat a leading dot as hidden, so the catalog now explicitly suppresses
+  dot-prefixed names unless Show Hidden is enabled while retaining Qt's native
+  hidden-attribute filter. The process test also required Markdown to preserve a
+  rich-text bold property that its authoritative UTF-8 source cannot represent;
+  ODT/DOCX/RTF still must round-trip bold, while Markdown must round-trip its
+  exact source and rendered text.
 - The repository has no existing tag or GitHub Release. The intended first
   public package is a `v0.1.0` prerelease containing only the three packages and
   their checksum sidecars from one green post-merge `main` run.

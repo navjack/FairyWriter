@@ -32,7 +32,7 @@ jobs:
         run: brew install cmake ninja qt go python
       - name: Prepare pinned SNES runtime
         run: ./scripts/bootstrap-snesrecomp.sh
-      - name: Build and run the 9-test production gate
+      - name: Build and run the 10-test production gate
         run: |
           cmake_path="$(brew --prefix cmake)/bin/cmake"
           qt_path="$(brew --prefix qt)"

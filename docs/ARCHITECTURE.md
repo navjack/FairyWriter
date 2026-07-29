@@ -12,8 +12,9 @@ accesses the user's files directly.
 
 ## From source to application
 
-`tools/fairywriter-rom` is a deterministic Go program that emits a 32 KiB
-LoROM image. It assembles the cartridge program, resident font, palettes,
+`tools/fairywriter-rom` is a deterministic Go program that emits a 64 KiB
+two-bank LoROM image. Bank 0 holds the 65816 program and the XBAND scan map;
+bank 1 holds the palette, tilemap, static planes and PPU tiles. It assembles the cartridge program, resident font, palettes,
 tilemaps, scene artwork, and startup vectors directly into bytes. Tests inspect
 the generated machine code and data contracts.
 

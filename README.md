@@ -9,7 +9,7 @@ The project is now open for development. It is usable enough for focused
 testing, but it is not yet a stable general release. Expect missing features,
 rough edges, and file-format limitations.
 
-No commercial ROM or copyrighted game data is included. The 32 KiB FairyWriter
+No commercial ROM or copyrighted game data is included. The 64 KiB FairyWriter
 cartridge is generated from source during every build and embedded in the
 application.
 

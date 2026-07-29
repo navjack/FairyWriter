@@ -42,9 +42,10 @@
 
 ### Active working tree
 
-- Branch: `agent/add-showcase-video`, published as PR #1 against GitHub
-  `navjack/FairyWriter` `main`. Local `codex/public-main` tracks the public
-  default branch.
+- Branch: `codex/persistence-rom-hardening`, based directly on current public
+  `origin/main` (`b4c48d0`). It contains only the two user-authorized local
+  hardening commits plus their reconciliation; it is safe to push as a new
+  branch without force. The already-merged showcase branch remains untouched.
 - The local branch retains the full private development history. That history
   contains old packaged applications and must not be pushed. Public GitHub
   `main` was created as a new root from the sanitized source tree, leaving all
@@ -67,16 +68,39 @@
   friend's SNES-word-processor inspiration, the human-directed agentic workflow,
   and the disclosed Claude, Gemini, and ChatGPT model families used.
 - `build-arm64` is the one active native build directory.
-- `build-arm64/FairyWriter.app` is the current production app. The ignored
-  top-level `FairyWriter.app` was not synchronized during this persistence pass.
-- `release-linux-x86_64/FairyWriter-0.1.0-x86_64.AppImage` is the canonical
-  Linux artifact and must be treated as fresh only when its hash matches the
-  current evidence below.
+- `build-arm64/FairyWriter.app` is the current validated production app. The
+  ignored top-level `FairyWriter.app` was not synchronized during this
+  source/push-readiness pass.
+- `release-linux-x86_64/FairyWriter-0.1.0-x86_64.AppImage` predates the 64 KiB
+  cartridge and is stale against current source. The Linux CI/container gate
+  must rebuild it; do not publish the existing payload as current.
 - `ideas/` remains ignored personal reference artwork. It was deliberately kept
   during repository cleanup because it is creative source material.
-- `plan.md` was already modified when this implementation turn began and
-  contains the user-authored durable persistence plan. Preserve that boundary;
-  all other persistence changes listed by `git status` belong to this pass.
+- `plan.md` contains the user-authored durable persistence plan and is committed
+  as part of the first hardening change.
+
+### Completed in the latest pass (persistence/ROM reconciliation)
+
+Invariant: only public history reaches GitHub, resolved recovery history must
+not masquerade as unfinished work, and the generated cartridge must obey real
+SNES loader conventions rather than the vendored emulator's leniencies.
+
+- The two agent commits were transplanted from the already-merged showcase tip
+  onto current `origin/main`. Its tree matched the squash-merged public commit
+  byte-for-byte, so the new branch contains no private-history merge base and
+  needs no force push.
+- Recovery format version 2 records an explicit resolved-transition bit.
+  Successful primary saves and explicit Discard decisions retain every older
+  generation in Recovery History but remove them from startup candidates. A
+  later checkpoint is the sole unresolved candidate. Version-1 records remain
+  readable and conservatively unresolved.
+- The cartridge is now a canonical 64 KiB, two-bank LoROM. Bank-aware address
+  helpers own program/data translation, the checksum is canonical, non-RESET
+  vectors land on RTI, DB is explicit at reset, the advertised v3 header exists,
+  and rival header-scoring windows cannot outscore the real `$7fc0` header.
+- `fairywriter_cartridge_conformance` raises the production gate to 10 tests.
+  The macOS CI label, active status, historical tile-capacity notes, changelog,
+  and durable handoff now agree with that combined state.
 
 ### Completed in the latest pass (durable persistence and Markdown)
 
@@ -110,7 +134,8 @@ without a durable typed result for one immutable content generation.
   offers ODT/DOCX/RTF/Markdown and enforces `.md`; `.markdown` opens as
   Markdown. The pinned cmark-gfm tag `0.29.0.gfm.13`, commit
   `587a12bb54d95ac37241377e6ddc93ea0e45439b`, is vendored for offline builds.
-- Production now has 9 tests. The process test launches the actual production
+- Persistence contributes two tests; ROM conformance brings production to 10.
+  The process test launches the actual production
   executable, types and formats through the cartridge input path, saves and
   relaunches ODT/DOCX/RTF/Markdown, edits Markdown in Rendered and Source mode,
   exits uncleanly after a checkpoint, restores through the cartridge, saves,
@@ -375,9 +400,10 @@ Four defects had to be fixed first; each was blocking:
    latent version of the same bug; the `branch()` helper panics instead.**
 
 The cartridge static-data layout moved another `+0x100` (cumulative `+0x500`)
-to fit the shared resolve subroutine and vertical movement. After the later help
-plane shift and current deterministic rebuild, the image uses 554 tiles and has
-76 slots left before `scanMapOffset`.
+to fit the shared resolve subroutine and vertical movement. The later help-plane
+shift filled all 554 PPU tile slots in the historical 32 KiB layout. The current
+64 KiB layout has 889 cartridge slots before its rival-header reservation, with
+VRAM still imposing the real 1024-tile ceiling.
 
 ### Completed in the previous pass (editing correctness)
 
@@ -501,34 +527,45 @@ and without the fix and confirming the new test fails then passes.
 
 ### Current validation evidence
 
-- `GO111MODULE=off go test ./tools/fairywriter-rom` passes.
-- `git diff --check` passes.
+- Go tests pass for both `tools/fairywriter-rom` and
+  `tools/fairywriter-romcheck`.
+- Working-tree `git diff --check` passes. The combined public diff also passes
+  when the byte-faithful upstream cmark-gfm snapshot is excluded; its original
+  whitespace is intentionally not normalized.
 - Final native Release `ctest --test-dir build-arm64 --output-on-failure`
-  passes **9/9** in 8.65 seconds. The persistence gate reports all **670/670**
+  passes **10/10** in 7.96 seconds. The persistence gate reports all **670/670**
   vendored GFM examples passing, and the actual-cartridge process lifecycle
   passes for ODT, DOCX, RTF, Markdown, and unclean checkpoint recovery. The
   tested macOS arm64 executable SHA-256 is
-  `75b5218fa95ea43aa6e8a33d0f7e5dc4d230933a3ae45773a7f89e657814a986`.
+  `a641b34b6bcc1b4b09b26e75702124ccdadd9b88948e94a529d8d8cf0d3a0543`;
+  the refreshed embedded-source ROM SHA-256 is
+  `a5d33e380d54618fa56418b40a13c3000d0cb578cb1b06eb69373320353dd363`.
+- The conformance checker reports the declared LoROM header at score 47 and
+  both probed rivals at -16. The focused timing-sensitive XBAND gate passes 10
+  consecutive runs.
 - The direct SNES machine regression and mailbox regression pass, including the
   recovery-history UI, complete event acknowledgement, ring wrap, and
   full-versus-empty index invariant.
-- The final Linux Qt 6.8.3 container rebuild from the ordered-worker source
-  passes **9/9** in 21.33 seconds. The resulting AppImage passes `--version`,
+- The prior Linux Qt 6.8.3 container rebuild from the ordered-worker source
+  passed **9/9** in 21.33 seconds. Its AppImage passed `--version`,
   X11 and Wayland bounded launches, ROM/scratch exclusion, and package audits.
-  It includes the project and cmark-gfm licenses plus the current tester guide.
-- Fresh Linux x86_64 AppImage:
+  It includes the project and cmark-gfm licenses plus the tester guide, but it
+  predates the conformance commit and is not a current artifact.
+- Historical Linux x86_64 AppImage:
   `878ce2e8d41d93a090b3a18f57ca0ac203bd765a546423042e469784aca3bdf4`.
   The adjacent `.sha256` file matches this payload.
 
 ### Next actions
 
-1. Perform the short packaged-app manual smoke on macOS and Linux: first Save,
+1. Push `codex/persistence-rom-hardening` and require the GitHub macOS and Linux
+   production gates to pass before merging.
+2. Perform the short packaged-app manual smoke on macOS and Linux: first Save,
    format picker layout, close/relaunch/open, F3 settings/history, forced-exit
    recovery, and Markdown Rendered/Source. Automated process evidence proves
    persistence semantics but not final cartridge pixels or packaged input.
-2. Run the Windows builder and equivalent first-launch/manual persistence pass
+3. Run the Windows builder and equivalent first-launch/manual persistence pass
    on Windows x64. macOS Intel remains unsupported.
-3. Keep the older long-document caret, scrollbar, wrap, and stale-cell checks in
+4. Keep the older long-document caret, scrollbar, wrap, and stale-cell checks in
    the same human acceptance pass; their automated evidence remains green but
    does not replace visual inspection.
 

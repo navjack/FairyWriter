@@ -680,6 +680,20 @@ if(BUILD_TESTING)
 		)
 		set_tests_properties(fairywriter_cartridge_contract PROPERTIES
 			WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/tools/fairywriter-rom")
+		# The contract test checks what the builder produces; this checks that
+		# the produced image is a conformant SNES cartridge. The distinction
+		# matters because the vendored emulator is lenient in exactly the places
+		# real loaders are not -- it ignores the map-mode byte entirely and
+		# accepts any checksum pair that sums to $ffff.
+		add_test(
+			NAME fairywriter_cartridge_conformance
+			COMMAND "${CMAKE_COMMAND}" -E env GO111MODULE=off
+				"${FAIRYWRITER_GO_EXECUTABLE}" run
+				"${CMAKE_CURRENT_SOURCE_DIR}/tools/fairywriter-romcheck/main.go"
+				"${fairywriter_cartridge}"
+		)
+		set_tests_properties(fairywriter_cartridge_conformance PROPERTIES
+			DEPENDS fairywriter_cartridge_contract)
 	endif()
 	if(TARGET fairywriter_snes_machine_tests AND FAIRYWRITER_GO_EXECUTABLE)
 		add_test(NAME fairywriter_xband_end_to_end

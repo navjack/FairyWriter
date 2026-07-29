@@ -38,11 +38,19 @@ FairyWriter is a native app that presents a source-generated SNES cartridge runt
 
 - `FAIRYWRITER_DEVELOPMENT_UI=OFF` and
   `FAIRYWRITER_DEVELOPER_TOOLS=OFF` define the shipping build on every platform.
-- Production regression expectation is 9/9. `fairywriter_persistence` also runs
+- Production regression expectation is 10/10. `fairywriter_persistence` also runs
   all 670 examples from the vendored GFM conformance corpus, and
   `fairywriter_persistence_process_e2e` launches fresh production processes for
   ODT, DOCX, RTF, Markdown, and crash recovery. Enabling the retired development
-  presentation surface adds three tests, for 12/12.
+  presentation surface adds three tests, for 13/13.
+- `fairywriter_cartridge_conformance` runs `tools/fairywriter-romcheck` against
+  the built `.sfc`. It exists because the vendored emulator is lenient where real
+  loaders are not: it never reads the map-mode byte (it infers LoROM vs HiROM
+  from which candidate header location scores highest, `snes_other.c:169`) and it
+  accepts any checksum pair summing to `$ffff`. The checker enforces the
+  canonical checksum, map mode agreeing with the header's position, vectors
+  resolving into the cartridge, and — the one that will matter as the ROM grows —
+  that no rival header location can outscore the real one at `$7fc0`.
 - Linux x86_64 targets Qt 6.8.3; Windows x64 targets Qt 6.8; macOS uses the
   installed arm64 Qt. Platform packaging may deploy libraries differently, but
   all three run the same cartridge/bridge/document implementation.

@@ -5,6 +5,28 @@ It is derived from FocusWriter 1.9.0 by Graeme Gott. The substantial upstream
 document-format, persistence, and desktop foundations remain credited and
 licensed under GPL-3.0-or-later.
 
+## Creative origin and direction
+
+The FairyWriter concept, product direction, and design decisions came from Jack
+Mangano. A friend provided the original inspiration by wanting a word processor
+with an SNES look. Jack's solution was to make the interface a real,
+source-generated SNES word-processor cartridge rather than a desktop
+approximation.
+
+## Agentic coding assistance
+
+FairyWriter was developed with extensive agentic LLM coding assistance:
+
+- Claude Fable, Opus, and Sonnet
+- Gemini Flash and Pro
+- ChatGPT 5.6 Luna, Terra, and Sol
+
+These systems assisted with implementation, investigation, testing,
+documentation, packaging, and repository preparation under human direction.
+They are tools rather than project authors or copyright holders. See
+[How FairyWriter was developed](docs/DEVELOPMENT_PROCESS.md) for the complete
+disclosure.
+
 ## FocusWriter developers
 
 - Graeme Gott

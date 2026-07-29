@@ -35,13 +35,20 @@
 
 ### Active working tree
 
-- Branch: `codex/public-main`, tracking GitHub `navjack/FairyWriter` `main`.
+- Branch: `agent/add-showcase-video`, published as PR #1 against GitHub
+  `navjack/FairyWriter` `main`. Local `codex/public-main` tracks the public
+  default branch.
 - The local branch retains the full private development history. That history
   contains old packaged applications and must not be pushed. Public GitHub
   `main` was created as a new root from the sanitized source tree, leaving all
   private local history and branches intact.
-- Local captures, documents, packaged applications, and the ignored
-  `FairyWriter/` artifact directory remain untracked and untouched.
+- Local documents, packaged applications, and the ignored `FairyWriter/`
+  artifact directory remain untracked and untouched. The user-authorized demo
+  was converted to a repository-owned H.264 MP4 at
+  `docs/media/fairywriter-showcase.mp4`; its ignored root original remains
+  untouched. GitHub user attachment
+  `a06ba6ba-a1b1-4a51-b539-9e3d4f51a4fd` supplies the inline README player
+  because ordinary repository video links do not render as players.
 - The former private ODT fixture has been removed from the publishable source.
   `tools/public-test-fixture` now generates a deterministic substantial ODT for
   the same production import/edit/round-trip test.
@@ -49,6 +56,9 @@
   Mouse patch replaces the previous dependency on a neighboring dirty checkout.
 - Public-facing README, architecture/build/contribution/security/license
   indexes, GitHub templates, and Linux CI are published.
+- `docs/DEVELOPMENT_PROCESS.md` records Jack Mangano's creative ownership, the
+  friend's SNES-word-processor inspiration, the human-directed agentic workflow,
+  and the disclosed Claude, Gemini, and ChatGPT model families used.
 - `build-arm64` is the one active native build directory.
 - `build-arm64/FairyWriter.app` is the freshly built production app. The
   top-level `FairyWriter.app` has been synchronized from it after the complete
@@ -93,12 +103,17 @@ Platform packaging may differ; product behavior and ownership may not.
   reader/edit/save/reopen coverage without publishing that content.
 
 Current automated evidence: the sanitized public tree passes Gitleaks with no
-findings and contains no loose ROMs, documents, captures, packages, or files
-over 5 MiB. A fresh public dependency bootstrap is idempotent. macOS ROM
-generator tests, the focused XBAND regression, and production `ctest` **7/7**
-pass against that dependency. GitHub Actions run `30408040731` independently
-passed the Linux Qt 6.8.3 container build, production **7/7**, AppImage version,
-X11, Wayland, and ROM/scratch audits. Earlier signed artifact hashes:
+findings and contains no loose ROMs, private documents, packages, or files over
+5 MiB. The one public capture is an explicitly authorized, silent H.264 MP4;
+its SHA-256 is
+`1e7f9af86167cdce30afc5a7a023ab250f5c3ef9092f5b6286e60990b31f0024`.
+GitHub's Markdown renderer produces a real controlled video element for its
+user-attachment URL. A fresh public dependency bootstrap is idempotent. macOS
+ROM generator tests, the focused XBAND regression, and production `ctest`
+**7/7** pass against that dependency. GitHub Actions run `30408040731`
+independently passed the Linux Qt 6.8.3 container build, production **7/7**,
+AppImage version, X11, Wayland, and ROM/scratch audits. Earlier signed artifact
+hashes:
 
 - macOS DMG:
   `181279b216cd28a710394c2e7a1ebccee04b74d55c913b8c94c9035fa2e70a2c`
@@ -112,7 +127,7 @@ input-capturing GUI unattended to close that gap.
 Next concrete action: run the Windows builder and first-launch checks on Windows
 x64, then perform the complete human keyboard/mouse/recovery acceptance
 checklist on actual target systems. Keep public `main` free of private history,
-ROMs, documents, captures, and packaged applications.
+ROMs, documents, unauthorized captures, and packaged applications.
 
 ### Completed in the latest pass (blue document surface)
 

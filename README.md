@@ -13,6 +13,14 @@ No commercial ROM or copyrighted game data is included. The 32 KiB FairyWriter
 cartridge is generated from source during every build and embedded in the
 application.
 
+## Showcase
+
+https://github.com/user-attachments/assets/a06ba6ba-a1b1-4a51-b539-9e3d4f51a4fd
+
+This one-minute, no-audio H.264 MP4 shows the editor in use and its cartridge
+menu. If the inline player is unavailable, [download the showcase
+video](docs/media/fairywriter-showcase.mp4).
+
 ## What works today
 
 - cartridge-owned editor, menus, file browser, help, caret, selection, toolbar,
@@ -85,6 +93,20 @@ preserve and update it when making substantial changes.
 
 Bug reports and development discussion are welcome in
 [GitHub Issues](https://github.com/navjack/FairyWriter/issues).
+
+## Development process and AI disclosure
+
+FairyWriter was conceived and directed by Jack Mangano. The product ideas came
+from Jack, with the initial spark coming from a friend who wanted a word
+processor that looked like it belonged on the SNES. The decisive answer was to
+build the word processor on an actual source-generated SNES cartridge.
+
+Development made extensive use of agentic LLM coding assistance from Claude
+Fable, Opus, and Sonnet; Gemini Flash and Pro; and ChatGPT 5.6 Luna, Terra, and
+Sol. The agents helped implement, investigate, test, document, package, and
+audit the project under human direction. Read
+[How FairyWriter was developed](docs/DEVELOPMENT_PROCESS.md) for the full
+history, workflow, and attribution.
 
 ## Heritage and license
 

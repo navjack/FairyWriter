@@ -4,6 +4,7 @@
 
 - [Project overview](../README.md)
 - [Architecture explainer](ARCHITECTURE.md)
+- [Development history and AI disclosure](DEVELOPMENT_PROCESS.md)
 - [Build instructions](../BUILDING.md)
 - [Contribution guide](../CONTRIBUTING.md)
 - [Tester guide](../TESTING.md)

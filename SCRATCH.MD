@@ -44,8 +44,8 @@
 
 - Branch: `codex/versioning-baseline`, based directly on public `origin/main`
   after the three-platform build PR merged and the `v0.1.0` tester preview was
-  published. Its intended public scope is one deterministic product-version
-  authority and the SemVer/release process from that baseline forward.
+  published. PR 5 carries its one deterministic product-version authority and
+  the SemVer/release process from that baseline forward.
 - Private development branches remain local. Their history contains old
   packaged applications and must not be pushed. Public GitHub `main` was
   created as a new root from the sanitized source tree; neither it nor this
@@ -153,6 +153,10 @@ different application versions.
   AppImage plus checksum. The workflow passes actionlint 1.7.12, both shell
   builders parse, the PowerShell builder parses, and the full branch delta
   passes Gitleaks.
+- PR run `30485226084` passes the complete macOS arm64, Linux x86_64, and
+  Windows x64 package jobs. In particular, native Windows proves that the
+  canonical value reaches MSVC product metadata, the audited ZIP filename, its
+  checksum sidecar, and the dynamically named retained artifact.
 
 ### Completed in the previous pass (persistence/ROM reconciliation)
 
@@ -263,21 +267,20 @@ pass Gitleaks and contain no loose ROMs, private documents, or packaged
 applications in Git. The one public capture is the explicitly authorized,
 silent H.264 MP4 with SHA-256
 `1e7f9af86167cdce30afc5a7a023ab250f5c3ef9092f5b6286e60990b31f0024`.
-Post-merge run `30483999477` passed the 10-test and package gate on macOS arm64,
-Linux x86_64, and Windows x64. The current versioning branch repeats the macOS
-and Linux production package gates locally; native Windows confirmation remains
-the PR CI boundary.
+Post-merge release run `30483999477` passed the 10-test and package gate on
+macOS arm64, Linux x86_64, and Windows x64. Versioning run `30485226084` repeats
+all three native jobs with artifact names and package metadata read from
+`VERSION`.
 
 Still manual/unproved: physical Windows first launch and SmartScreen behavior,
 macOS Intel, signing/notarization identities, and the full real-fixture
 mouse/keyboard/recovery pass on each platform. Do not launch the input-capturing
 GUI unattended to close that gap.
 
-Next concrete action: push the deterministic-versioning branch, require all
-three native package jobs to pass, then merge it. After that, perform the
-complete human keyboard/mouse/recovery acceptance checklist on actual target
-systems. Keep public `main` free of private history, ROMs, documents,
-unauthorized captures, and packaged applications.
+Next concrete action after the deterministic-versioning publication boundary:
+perform the complete human keyboard/mouse/recovery acceptance checklist on
+actual target systems. Keep public `main` free of private history, ROMs,
+documents, unauthorized captures, and packaged applications.
 
 ### Completed in the latest pass (blue document surface)
 

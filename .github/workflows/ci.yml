@@ -1,4 +1,4 @@
-name: Production persistence gates
+name: Three-platform production release gates
 
 on:
   push:
@@ -22,6 +22,16 @@ jobs:
         run: ./scripts/bootstrap-snesrecomp.sh
       - name: Build, test, and audit AppImage
         run: ./packaging/linux/build-linux.sh
+      - name: Retain Linux release package
+        uses: actions/upload-artifact@v6
+        with:
+          name: FairyWriter-0.1.0-linux-x86_64
+          path: |
+            release-linux-x86_64/FairyWriter-0.1.0-x86_64.AppImage
+            release-linux-x86_64/FairyWriter-0.1.0-x86_64.AppImage.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
 
   macos-arm64:
     runs-on: macos-15
@@ -32,16 +42,46 @@ jobs:
         run: brew install cmake ninja qt go python
       - name: Prepare pinned SNES runtime
         run: ./scripts/bootstrap-snesrecomp.sh
-      - name: Build and run the 10-test production gate
+      - name: Build, test, sign, and audit DMG
+        run: ./mac_deploy.sh
+      - name: Retain macOS release package
+        uses: actions/upload-artifact@v6
+        with:
+          name: FairyWriter-0.1.0-macos-arm64
+          path: |
+            release-macos-arm64/FairyWriter-0.1.0-macos-arm64.dmg
+            release-macos-arm64/FairyWriter-0.1.0-macos-arm64.dmg.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  windows-x64:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Qt 6.8.3
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: 6.8.3
+          arch: win64_msvc2022_64
+          cache: true
+      - name: Prepare pinned SNES runtime
+        shell: bash
+        run: ./scripts/bootstrap-snesrecomp.sh
+      - name: Build, test, deploy, and audit ZIP
+        shell: pwsh
         run: |
-          cmake_path="$(brew --prefix cmake)/bin/cmake"
-          qt_path="$(brew --prefix qt)"
-          "${cmake_path}" -S . -B build-ci -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH="${qt_path}" \
-            -DFAIRYWRITER_DEVELOPMENT_UI=OFF \
-            -DFAIRYWRITER_DEVELOPER_TOOLS=OFF \
-            -DBUILD_TESTING=ON
-          "${cmake_path}" --build build-ci --parallel
-          QT_QPA_PLATFORM=offscreen ctest \
-            --test-dir build-ci --output-on-failure
+          ./packaging/windows/build-windows.ps1 `
+            -QtPrefix $env:QT_ROOT_DIR `
+            -VcpkgRoot $env:VCPKG_INSTALLATION_ROOT
+      - name: Retain Windows release package
+        uses: actions/upload-artifact@v6
+        with:
+          name: FairyWriter-0.1.0-windows-x64
+          path: |
+            release-windows-x64/FairyWriter-0.1.0-windows-x64.zip
+            release-windows-x64/FairyWriter-0.1.0-windows-x64.zip.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

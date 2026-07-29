@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.1.0 — tester preview
+
+- Added native macOS arm64, Linux x86_64, and Windows x64 release jobs. Every
+  job runs the production test and package audit before retaining a versioned
+  package and SHA-256 sidecar for release publication.
 - Kept resolved recovery generations as history without presenting them as
   unfinished startup work. A successful primary save or explicit Discard now
   closes the startup-prompt boundary for all older generations, while a later
@@ -27,8 +32,6 @@
 - Made the patched `snesrecomp` dependency reproducible from a fresh clone.
 - Replaced the private long-document ODT test input with a deterministic,
   source-generated public regression fixture.
-
-## 0.1.0 — tester baseline
 
 - Added the source-generated 32 KiB FairyWriter SNES cartridge and embedded
   production host.

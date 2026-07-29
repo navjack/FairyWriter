@@ -206,5 +206,7 @@ Windows). Debug logging is off by default.
 - The resident cartridge font does not provide Unicode/emoji glyph streaming.
 - The artifacts are unsigned, so macOS Gatekeeper and Windows SmartScreen show
   the first-launch warnings documented above.
-- Win64 behavior still needs a real Windows machine pass. macOS Intel is not a
-  supported artifact in this tester round.
+- The Win64 package is compiled, tested, deployed, and audited on a native
+  GitHub-hosted Windows x64 runner, but it still needs a physical-machine
+  input/dialog/recovery pass. macOS Intel is not a supported artifact in this
+  tester round.

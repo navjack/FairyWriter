@@ -69,7 +69,7 @@ Agentic assistance was used throughout the engineering process, including:
   long-document, ODT, recovery, and file-boundary behavior;
 - diagnosing timing-sensitive and register-width defects in the real 65816
   execution path;
-- building and auditing macOS and Linux packages and preparing Windows support;
+- building and auditing macOS, Linux, and Windows packages;
 - maintaining plans, handoffs, status records, architecture documentation, and
   tester instructions;
 - auditing the repository for private material, secrets, built artifacts,

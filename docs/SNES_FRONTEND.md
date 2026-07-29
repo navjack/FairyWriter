@@ -54,8 +54,9 @@ FairyWriter is a native app that presents a source-generated SNES cartridge runt
 - Linux x86_64 targets Qt 6.8.3; Windows x64 targets Qt 6.8; macOS uses the
   installed arm64 Qt. Platform packaging may deploy libraries differently, but
   all three run the same cartridge/bridge/document implementation.
-- Automated macOS/container evidence does not establish Windows runtime,
-  macOS-Intel support, or packaged-app mouse/keyboard/dialog acceptance.
+- Automated macOS, Linux-container, and Windows-runner evidence does not
+  establish physical Windows first launch, macOS-Intel support, or packaged-app
+  mouse/keyboard/dialog acceptance.
 
 ## Persistence ownership
 

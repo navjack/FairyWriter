@@ -491,9 +491,15 @@ qt_add_resources(fairywriter "fairywriter_appicon"
 if(WIN32)
 	# Embed the native executable/taskbar icon as a Win32 resource. The same
 	# artwork is also in the Qt resource above for QWindow::setWindowIcon().
+	configure_file(
+		resources/windows/fairywriter-version.rc.in
+		${CMAKE_CURRENT_BINARY_DIR}/fairywriter-version.rc
+		@ONLY
+	)
 	target_sources(fairywriter PRIVATE
 		resources/windows/fairywriter.rc
 		resources/windows/fairywriter.ico
+		${CMAKE_CURRENT_BINARY_DIR}/fairywriter-version.rc
 	)
 	target_include_directories(fairywriter PRIVATE resources/windows)
 	set_source_files_properties(resources/windows/fairywriter.ico PROPERTIES HEADER_FILE_ONLY TRUE)
@@ -554,11 +560,7 @@ if(APPLE)
 
 	find_library(APPKIT AppKit)
 	target_link_libraries(fairywriter PRIVATE ${APPKIT})
-elseif(WIN32)
-	# windeployqt consumes this minimal install tree. Tester packaging supplies
-	# the Qt runtime and COPYING beside the executable.
-	install(TARGETS fairywriter RUNTIME DESTINATION .)
-else()
+elseif(NOT WIN32)
 	find_package(PkgConfig REQUIRED)
 	pkg_check_modules(Hunspell REQUIRED IMPORTED_TARGET hunspell)
 
@@ -645,6 +647,11 @@ if(APPLE)
 			VERBATIM
 		)
 	endif()
+elseif(WIN32)
+	# windeployqt consumes this minimal install tree. Tester packaging supplies
+	# the Qt runtime, licenses, and testing guide beside the executable.
+	set(datadir ".")
+	install(TARGETS fairywriter RUNTIME DESTINATION .)
 else()
 	file(RELATIVE_PATH datadir ${CMAKE_INSTALL_FULL_BINDIR} ${CMAKE_INSTALL_FULL_DATADIR}/fairywriter)
 

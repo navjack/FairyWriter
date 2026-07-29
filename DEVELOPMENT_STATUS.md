@@ -1,5 +1,19 @@
 # FairyWriter Development Status (Synced 2026-07-29)
 
+## 2026-07-29 three-platform release production
+
+GitHub Actions now runs the complete production and packaging gate natively for
+macOS arm64, Linux x86_64, and Windows x64. macOS emits an audited ad-hoc-signed
+DMG, Linux emits the X11/Wayland-audited AppImage, and Windows uses MSVC 2022,
+Qt 6.8.3, and vcpkg to emit an audited ZIP. Each job retains its versioned
+package and SHA-256 sidecar so one green `main` run can supply a coherent GitHub
+prerelease.
+
+This establishes automated Windows compilation, tests, deployment, version,
+and package-content evidence. It does not replace the first physical Windows
+launch or the manual keyboard, mouse, dialog, and recovery acceptance in
+`TESTING.md`.
+
 ## 2026-07-29 persistence and cartridge reconciliation
 
 The durable-persistence and SNES-conformance changes now share one public
@@ -62,10 +76,10 @@ typed durable result.
   regressions. `fairywriter_persistence_process_e2e` launches the actual
   production executable and drives ordinary cartridge input through
   ODT/DOCX/RTF/Markdown save/relaunch plus unclean checkpoint recovery.
-- A macOS CI production job now accompanies Linux. Automated native macOS and
-  Linux container evidence establishes persistence behavior; packaged
-  mouse/keyboard/dialog layout still requires the short human smoke described
-  in `TESTING.md`.
+- Native macOS, Linux-container, and Windows-x64 CI jobs run the same production
+  implementation. Automated evidence establishes persistence and packaging
+  behavior; packaged mouse/keyboard/dialog layout still requires the short
+  human smoke described in `TESTING.md`.
 - Before the cartridge-conformance commit, the native macOS production gate and
   Qt 6.8.3 Linux container gate both passed **9/9**. That AppImage also passed
   its X11 and Wayland bounded launches; its SHA-256 is
@@ -141,9 +155,9 @@ where the expected count is still 10.
     freshly green build executable and passes strict signing/version/arm64
     checks.
 
-Not yet proved here: Windows compilation/runtime, macOS Intel, or the required
+Not yet proved here: physical Windows first launch, macOS Intel, or the required
 human mouse/keyboard/recovery acceptance pass on any platform. Do not promote
-those items based on source inspection or container evidence.
+those items based on automated runner or container evidence.
 
 ## 2026-07-28 blue document surface
 

@@ -42,10 +42,10 @@
 
 ### Active working tree
 
-- Branch: `codex/record-pr2-merge`, based directly on public `origin/main` after
-  the persistence/ROM hardening merge. It contains only this durable handoff
-  refresh. PR #2 squash-merged `codex/persistence-rom-hardening` into `main` at
-  `050e405` after both required production jobs passed.
+- Branch: `codex/three-platform-release`, based directly on public `origin/main`
+  after the persistence/ROM hardening and durable-handoff merges. Its intended
+  public scope is the native Windows x64 production runner, release-package
+  retention for all three platforms, and the matching tester/status documents.
 - Private development branches remain local. Their history contains old
   packaged applications and must not be pushed. Public GitHub `main` was
   created as a new root from the sanitized source tree; neither it nor this
@@ -71,16 +71,60 @@
 - `build-arm64/FairyWriter.app` is the current validated production app. The
   ignored top-level `FairyWriter.app` was not synchronized during this
   source/push-readiness pass.
-- `release-linux-x86_64/FairyWriter-0.1.0-x86_64.AppImage` predates the 64 KiB
-  cartridge and is stale against current source. GitHub CI rebuilt and audited
-  a fresh AppImage for PR #2, but the local payload remains historical; do not
-  publish it as current.
+- `release-macos-arm64/FairyWriter-0.1.0-macos-arm64.dmg` and
+  `release-linux-x86_64/FairyWriter-0.1.0-x86_64.AppImage` are fresh local
+  rebuilds from the current public source. The release itself must use retained
+  artifacts from one green post-merge GitHub Actions run so Windows and both
+  Unix packages share an exact source commit.
 - `ideas/` remains ignored personal reference artwork. It was deliberately kept
   during repository cleanup because it is creative source material.
 - `plan.md` contains the user-authored durable persistence plan and is committed
   as part of the first hardening change.
 
-### Completed in the latest pass (persistence/ROM reconciliation)
+### Completed in the latest pass (three-platform release production)
+
+Invariant: a public release may use only versioned packages built from one
+public commit after each platform's real production and package audit passes.
+
+- The existing Linux and macOS jobs previously validated builds but discarded
+  their packages. They now retain the AppImage/DMG and SHA-256 sidecars as
+  GitHub Actions artifacts.
+- A native `windows-2022` job installs Qt 6.8.3 for MSVC 2022 x64, prepares the
+  same pinned `snesrecomp`, and runs `packaging/windows/build-windows.ps1`.
+  That script owns the complete build, 10-test production gate, Qt deployment,
+  version/content audit, ZIP, and checksum.
+- The first native configure exposed that the shared non-Apple install block
+  made Windows require Unix Gettext/AppStream tooling and would have staged the
+  executable under `bin/` while the Windows package contract requires it at the
+  ZIP root. Platform install ownership is now explicit: Windows installs only
+  the root executable for `windeployqt`; Unix alone owns desktop files, icons,
+  manpages, translations, and AppStream metadata.
+- The next native compile exposed one hidden transitive include:
+  `tests/snes_machine_tests.cpp` used `std::string`/`std::to_string` without
+  including `<string>`. MSVC rejected it correctly; the test now owns its direct
+  standard-library dependency.
+- The first complete native Windows test pass exposed two portable-semantics
+  assumptions. `QDir::Hidden` follows the Windows hidden attribute and does not
+  treat a leading dot as hidden, so the catalog now explicitly suppresses
+  dot-prefixed names unless Show Hidden is enabled while retaining Qt's native
+  hidden-attribute filter. The process test also required Markdown to preserve a
+  rich-text bold property that its authoritative UTF-8 source cannot represent;
+  ODT/DOCX/RTF still must round-trip bold, while Markdown must round-trip its
+  exact source and rendered text.
+- With all 10 native Windows tests green, staging and `windeployqt` completed.
+  The package audit then exposed that PowerShell does not synchronously capture
+  stdout from a GUI-subsystem executable, leaving the otherwise valid
+  `--version` result empty. Windows now embeds standard `VERSIONINFO` product
+  metadata from the CMake project version, and the package gate reads that
+  native metadata instead of depending on console attachment behavior.
+- The repository has no existing tag or GitHub Release. The intended first
+  public package is a `v0.1.0` prerelease containing only the three packages and
+  their checksum sidecars from one green post-merge `main` run.
+- This is automated build/package evidence, not physical Windows first launch,
+  notarization, code signing identity, or human keyboard/mouse/dialog/recovery
+  acceptance.
+
+### Completed in the previous pass (persistence/ROM reconciliation)
 
 Invariant: only public history reaches GitHub, resolved recovery history must
 not masquerade as unfinished work, and the generated cartridge must obey real
@@ -550,24 +594,27 @@ and without the fix and confirming the new test fails then passes.
 - GitHub Actions run `30480171594` passed both required jobs before PR #2 was
   merged: `macos-arm64` ran the complete 10-test production gate, and
   `linux-x86_64` built, tested, packaged, and audited a fresh AppImage.
-- The prior Linux Qt 6.8.3 container rebuild from the ordered-worker source
-  passed **9/9** in 21.33 seconds. Its AppImage passed `--version`,
-  X11 and Wayland bounded launches, ROM/scratch exclusion, and package audits.
-  It includes the project and cmark-gfm licenses plus the tester guide, but it
-  predates the conformance commit and is not a current artifact.
-- Historical Linux x86_64 AppImage:
-  `878ce2e8d41d93a090b3a18f57ca0ac203bd765a546423042e469784aca3bdf4`.
-  The adjacent `.sha256` file matches this payload.
+- The fresh local macOS packaging gate passed **10/10**, strict ad-hoc signature,
+  arm64/version/dependency/content checks, and DMG verification. Its current DMG
+  SHA-256 is
+  `2ea8b06244fb95386cf0cb11fb51688954dbfe49193bc167d2dad5cf39e12948`.
+- The fresh local Qt 6.8.3 Linux container gate passed **10/10** in 22.42
+  seconds plus `--version`, bounded X11/Wayland launches, and ROM/scratch/package
+  audits. Its current AppImage SHA-256 is
+  `05987a753709a80e48e3a706a9220e868c6ce1ae4c09740055b8c5b4a5b9ffcd`.
 
 ### Next actions
 
-1. Perform the short packaged-app manual smoke on macOS and Linux: first Save,
+1. Push `codex/three-platform-release` and require macOS arm64, Linux x86_64,
+   and Windows x64 production/package jobs to pass before merging.
+2. Wait for the post-merge `main` run, download its six retained package and
+   checksum files, audit them, and publish the `v0.1.0` GitHub prerelease.
+3. Perform the short packaged-app manual smoke on macOS, Linux, and Windows:
+   first Save,
    format picker layout, close/relaunch/open, F3 settings/history, forced-exit
    recovery, and Markdown Rendered/Source. Automated process evidence proves
    persistence semantics but not final cartridge pixels or packaged input.
-2. Run the Windows builder and equivalent first-launch/manual persistence pass
-   on Windows x64. macOS Intel remains unsupported.
-3. Keep the older long-document caret, scrollbar, wrap, and stale-cell checks in
+4. Keep the older long-document caret, scrollbar, wrap, and stale-cell checks in
    the same human acceptance pass; their automated evidence remains green but
    does not replace visual inspection.
 

@@ -78,7 +78,8 @@ int main(int argc, char** argv)
 			QStringLiteral("load"), format, path, recovery
 		});
 		expect(loaded.status == QProcess::NormalExit && loaded.code == 0,
-			"second fresh process loads saved text and formatting", &loaded);
+			"second fresh process loads the saved format's real semantics",
+			&loaded);
 	}
 
 	const QString crash_path = temporary.filePath(QStringLiteral("recovered.odt"));

@@ -82,9 +82,10 @@ Copy-Item -LiteralPath (Join-Path $SourceRoot "third_party\\cmark-gfm\\COPYING")
     -Destination (Join-Path $StageRoot "CMARK-GFM-LICENSE")
 Copy-Item -LiteralPath (Join-Path $SourceRoot "TESTING.md") -Destination $StageRoot
 
-$ReportedVersion = (& $Executable --version | Out-String).Trim()
-if ($LASTEXITCODE -ne 0 -or $ReportedVersion -ne "FairyWriter $Version") {
-    throw "Staged tester executable reported '$ReportedVersion', expected 'FairyWriter $Version'"
+$VersionInfo = (Get-Item -LiteralPath $Executable).VersionInfo
+if ($VersionInfo.ProductName -ne "FairyWriter" -or
+        $VersionInfo.ProductVersion -ne $Version) {
+    throw "Staged tester executable metadata reported '$($VersionInfo.ProductName) $($VersionInfo.ProductVersion)', expected 'FairyWriter $Version'"
 }
 $Forbidden = Get-ChildItem -LiteralPath $StageRoot -Recurse -File |
     Where-Object { $_.Extension -in @(".sfc", ".smc") -or $_.Name -eq "SCRATCH.MD" }

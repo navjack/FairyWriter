@@ -31,8 +31,8 @@ video](docs/media/fairywriter-showcase.mp4).
   saves;
 - ODT, DOCX, RTF, HTML, and plain-text document paths inherited and adapted
   from FocusWriter;
-- macOS arm64 and Linux x86_64 builds, plus Windows x64 source and packaging
-  support awaiting its first physical-host acceptance pass;
+- macOS arm64, Linux x86_64, and Windows x64 release packages built by the same
+  three-platform production gate; Windows still awaits physical-host acceptance;
 - real cartridge/runtime, mailbox, document, recovery, and packaging tests.
 
 The fixed 256x224 virtual screen and cartridge ownership of all visible UI are

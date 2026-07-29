@@ -66,8 +66,9 @@ Run the bootstrap from Git Bash, then package from PowerShell:
   -VcpkgRoot C:\vcpkg
 ```
 
-Windows packaging is source-ready but still requires its first real Windows
-build and acceptance pass.
+The GitHub Windows x64 job runs this same MSVC build, production test gate,
+deployment, package audit, and checksum path. The resulting ZIP still requires
+its first physical-machine acceptance pass.
 
 ## Useful options
 

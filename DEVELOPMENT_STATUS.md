@@ -1,5 +1,153 @@
 # FairyWriter Development Status (Synced 2026-07-29)
 
+`VERSION` is `0.2.0`. Per `VERSIONING.md`, new user-visible behavior and
+substantial cartridge changes take the MINOR position before 1.0: this release
+adds independent style combinations and rendered paragraph alignment on top of
+the browser row-selection fix. The number is claimed here in source; the tag and
+its assets only exist once the three native package jobs pass on a merged commit.
+
+## 2026-07-29 rich style combinations and paragraph alignment
+
+Bold, italic and underline are independent properties of a character, but the
+cartridge had four glyph pages and picked one shape by priority, so underline hid
+bold and bold hid italic and holding two of them showed only one. The three style
+bits are now the glyph page index itself — bit 0 in the tilemap character byte,
+bits 1-2 in the attribute byte's tile-id bits — which removed the priority chain
+rather than extending it. Eight full ASCII-aligned pages would need 32 KiB of
+character data against a 28,208-byte budget, so a styled page stores printable
+ASCII only while keeping its 128-id VRAM stride, and the scene art moved into the
+styled pages' unreferenced control-character slots: 835 tiles of 881, with 1022
+the highest BG1 id used. Underline also moved to the palette's pale blue and
+stops a column short of the cell edge, because full-width ink white on the one
+row that touches the next line read as a bar rather than an underline.
+
+Paragraph alignment is now rendered. Left, centre and right place each visual
+line on its own width, so a wrapped centred paragraph is centred line by line,
+and the space a line broke at no longer counts toward that width. Alignment is
+applied by translating each finished row inside the plane instead of laying it
+out pre-shifted: a line's width is only known once the line ends, and the wrap
+decisions that produced it must not depend on where it is then placed. The caret
+follows the row it moves, and `resolveCellCommand` — the one path the pointer and
+wrap-aware Up/Down share — converts a visible cell back into layout space, so
+clicking or arrowing into a centred line lands on the character under the
+pointer. Justify renders as left.
+
+Three defects here were found by rendering the frame and reading the plane back
+rather than by reading the code: the wrap padding loop re-entered at the label
+that applied the shift, finishing the same row once per padded cell; the row
+bookkeeping clobbered the index register the row move needed; and the trailing
+space at a wrap point was counted as part of the line. Coverage pins the tilemap
+bytes for all eight combinations, that all eight draw distinct pixels through the
+real machine, and alignment's plane rows, shift table, caret and click
+resolution. Production remains 10/10.
+
+## 2026-07-29 browser row selection
+
+Manual macOS acceptance confirmed saving and then found that Open did nothing.
+The cartridge's Enter handler read the per-row flags and opaque-ID-length
+tables, which hold one byte per visible row, using the 32-byte stride of the
+opaque-ID table. Row 0 aliased to the correct byte, which is why every existing
+test and the Recent list — whose newest file is row 0 — passed. On any lower
+row the handler read another row's bytes and emitted an empty or truncated ID
+that the host could not resolve, while the cartridge had already returned to the
+document. Folders are listed ahead of documents, so an ordinary Open almost
+never lands on row 0. Selecting a folder below the first row failed identically,
+and mouse clicks share the same handler. Both readers now use the row index and
+only the ID copy loop keeps the shifted one.
+
+Two smaller load defects went with it. An opaque ID the catalog cannot resolve
+now reaches the cartridge as `EventOpenFailed` instead of disappearing, so a
+failed open explains itself. Opening a document, restoring recovery, or
+switching sessions no longer forces the previous document's scrollbar anchor
+onto the new document, which could open a file at its end.
+
+Coverage follows the reported flow. The machine test drives a multi-row page and
+asserts that the second folder row and the third file row each carry their own
+opaque ID; the process test adds a `browse` child that walks the real production
+binary through F1, Open, the root, the row the document actually occupies, and
+Enter, then verifies the loaded document. Both fail against the previous
+cartridge. Production remains 10/10.
+
+Both local packages were rebuilt after this fix. The Ubuntu 22.04 container
+AppImage (SHA-256
+`99a00273dc29e9128f395c7ff0cc172cdbe13c4f8af434c111aae6d380b9a312`) passes
+clean-environment version, every-plugin `ldd`, X11, Wayland and content audits;
+it carries the browser fix and predates the style/alignment work above. The macOS
+DMG was then rebuilt again at that later revision (SHA-256
+`8993e37e66f56d2a3e3eaa66b8363a012797335bf22cf3a784ffea480475e741`), passing its
+signature, arm64-only, version, developer-path, content and disk-image audits;
+from the mounted image, that app's own cartridge saved an ODT and a second fresh
+process browsed to the document's actual row and opened it. Both supersede the
+earlier `389b87d9…` and `53f45ba5…` packages. There is no post-fix Windows
+package, and no human Linux or Windows GUI pass.
+
+## 2026-07-29 manual release-failure hardening
+
+Manual acceptance found that the published tester preview was not ready for
+promotion. The macOS first-Save browser did not explain that N creates a file,
+and it retained a second, stale copy of the last entered folder after Back. The
+current browser parent is now the sole save-destination authority. Root and
+folder screens explicitly distinguish “choose a folder” from “press N,” and
+machine coverage proves that Back changes the eventual Save As New parent.
+
+The original filename screen also copied the ready-browser plane and painted
+three labels over its uncleared rows. Filename entry is now a complete
+cartridge-owned modal: a bordered 24-cell field owns the lower panel, the title
+card carries Save context, and the formatting card becomes stacked Save and
+Cancel buttons. Name/Save/Cancel share one focus byte; Tab and arrows move its
+visible highlight, Enter activates it, typing returns to the field, and all
+three regions are mouse targets. The Qt key bridge now carries Tab and keypad
+Enter into the XBAND path. The Super NES Mouse retains a press edge until the
+next controller latch, so a desktop press+release inside one 60 Hz frame cannot
+erase the click.
+
+The first packaged relaunch exposed a second persistence defect. Recent stored
+only opaque catalog IDs, which a new process could not resolve until an
+unrelated folder browse happened to register the same files. Host settings now
+store private canonical paths and use them to validate and rebuild fresh opaque
+IDs at startup; filesystem paths still never cross the cartridge mailbox.
+Regression coverage asks for Recent before any directory listing can mask the
+failure.
+
+Both the rebuilt macOS app and the mounted replacement DMG passed live
+first-Save acceptance through the home folder: Tab highlighted Save, a fast
+mouse Cancel dismissed the modal, and a fast mouse Save created a valid
+non-empty ODT at the selected path. The packaged app was fully quit and
+relaunched; Recent immediately listed the file without a folder browse, and
+Enter reopened it. Both temporary ODTs were verified as healthy OpenDocument
+ZIPs and moved to Trash. This is real packaged macOS GUI acceptance, not
+Windows or Linux evidence.
+
+The host no longer maps an unknown opaque parent ID to the catalog root. Invalid
+and read-only save targets produce a cartridge-visible persistence result, and
+successful Save As/Save As New operations enter Recent Files.
+
+The exact published Windows x64 executable reproduces exit code 53 under
+CrossOver because `z.dll` is absent from the ZIP. vcpkg had copied the DLL
+beside the build-tree executable, but the staging install copied only the EXE.
+The packager now stages the resolved application-local DLL set and launches the
+staged executable with only Windows system directories on PATH before zipping.
+This source-side repair still requires the native Windows package job and a
+human Windows first-launch pass.
+
+The exact published Linux AppImage passes its checksum, version audit, and
+bounded X11 launch, but fails a clean Wayland launch. The package copied two
+Wayland platform plugins after dependency deployment, and its former gate
+inherited the builder's Qt paths. The packager now copies the complete Qt
+Wayland client plugin set, deploys that tree's dependency closure, rejects
+unresolved plugin libraries, and runs version/X11/Wayland audits with builder
+Qt paths removed. The fresh replacement AppImage passes 10/10 plus clean
+version, plugin dependency, X11, Wayland, and content audits; its SHA-256 is
+`53f45ba5f1cefb2bcdedebbd8d0ca6ca477ca6bb6a03c295de3498073b9f16d3`.
+
+The fresh replacement macOS DMG passes 10/10 plus version, ad-hoc signature,
+content, and disk-image audits. Its SHA-256 is
+`389b87d9ad68c302197fb1739ed74040122bee6dc06fa9c7111be4bd6e4574f9`,
+and the packaged Save/relaunch/Recent flow above passed from that exact image.
+
+The published `v0.1.0` assets are unchanged. A native Windows
+package/first-launch pass and a human Linux GUI pass remain release gates.
+
 ## 2026-07-29 three-platform release production
 
 GitHub Actions now runs the complete production and packaging gate natively for

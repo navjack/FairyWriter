@@ -469,6 +469,10 @@ int main(int argc, char** argv) {
 		&& recent_complete.payload[10] == 0,
 		"recent file page ends with an explicit bounded-list completion event");
 	expect(!open_bridge.openFile(bridge_catalog, QStringLiteral("/etc/passwd")), "bridge rejects host path masquerading as ID");
+	MailboxRecord rejected_open;
+	expect(open_bridge.events().pop(rejected_open)
+			&& rejected_open.kind == FairyWriter::DocumentBridge::EventOpenFailed,
+		"an unresolvable open ID reaches the cartridge as a visible failure");
 	expect(open_bridge.listFiles(bridge_catalog), "bridge lists catalog entries");
 	MailboxRecord file_event;
 	expect(open_bridge.events().pop(file_event) && file_event.kind == FairyWriter::DocumentBridge::EventFileEntry && file_event.payload.size() >= 20, "file listing emits metadata event");
@@ -499,6 +503,10 @@ int main(int argc, char** argv) {
 			&& settings_event.kind
 				== FairyWriter::DocumentBridge::EventPersistenceSettings,
 		"Save As refreshes the current format setting");
+	expect(!bridge_catalog.recentFiles().isEmpty()
+			&& bridge_catalog.recentFiles().front().absolutePath
+				== QFileInfo(save_as_path).canonicalFilePath(),
+		"successful Save As records the durable target in Recent Files");
 	QFile saved_as(save_as_path);
 	const QByteArray saved_as_bytes = saved_as.open(QIODevice::ReadOnly) ? saved_as.readAll() : QByteArray();
 	expect(saved_as_bytes == "!opened", "save-as commits target atomically");
@@ -523,8 +531,21 @@ int main(int argc, char** argv) {
 			&& settings_event.kind
 				== FairyWriter::DocumentBridge::EventPersistenceSettings,
 		"new Save As refreshes the current format setting");
+	expect(!bridge_catalog.recentFiles().isEmpty()
+			&& bridge_catalog.recentFiles().front().absolutePath
+				== QFileInfo(bridge_files.filePath(QStringLiteral("new-save.txt")))
+					.canonicalFilePath(),
+		"successful Save As New records the created target in Recent Files");
 	QFile new_saved(bridge_files.filePath(QStringLiteral("new-save.txt")));
 	expect(new_saved.open(QIODevice::ReadOnly) && new_saved.readAll() == "!opened", "new save-as target contains the document");
+	expect(open_bridge.saveAsNew(bridge_catalog, QStringLiteral("missing-parent"),
+			QStringLiteral("lost-save.txt")),
+		"invalid Save As New request is consumed as a visible cartridge outcome");
+	MailboxRecord invalid_save_event;
+	expect(open_bridge.events().pop(invalid_save_event)
+			&& invalid_save_event.kind
+				== FairyWriter::DocumentBridge::EventPersistenceFailed,
+		"invalid Save As New emits a visible persistence failure instead of disappearing");
 	const QString recovery_path = bridge_files.filePath(QStringLiteral("recovery.txt"));
 	const QString recovery_filename_before = open_bridge.engine().filename();
 	const std::uint64_t recovery_revision_before = open_bridge.engine().revision();
@@ -834,6 +855,29 @@ int main(int argc, char** argv) {
 		const auto& after_typing = scroll_bridge.viewports().active();
 		expect((after_typing[91] & 16) == 0,
 			"typing releases the scroll and brings the window back to the caret");
+
+		// Opening a document is not a scroll. A window still anchored where the
+		// user dragged the previous document's scrollbar would open the new file
+		// somewhere in its middle, or at its end, instead of at its caret.
+		MailboxRecord scroll_before_open = scroll_again;
+		scroll_before_open.revision = scroll_bridge.engine().revision();
+		expect(scroll_bridge.submit(scroll_before_open) && scroll_bridge.pump(),
+			"the bridge accepts a scrollbar drag before an open");
+		expect(read32(scroll_bridge.viewports().active(), 20) > 0,
+			"the pre-open drag really moved the window off the document start");
+		QTemporaryDir opened_files;
+		const QString opened_path = opened_files.filePath(QStringLiteral("scrolled.txt"));
+		QFile opened_file(opened_path);
+		expect(opened_file.open(QIODevice::WriteOnly), "scrolled-open fixture opens");
+		opened_file.write(long_text.toUtf8());
+		opened_file.close();
+		FairyWriter::FileCatalog opened_catalog(opened_files.path());
+		const QString opened_id = opened_catalog.registerPath(opened_path);
+		expect(!opened_id.isEmpty() && scroll_bridge.openFile(opened_catalog, opened_id),
+			"the scrolled bridge opens a document from the catalog");
+		const auto& opened_view = scroll_bridge.viewports().active();
+		expect(read32(opened_view, 20) == 0 && (opened_view[91] & 16) == 0,
+			"an opened document starts at its own caret, not the previous scroll offset");
 	}
 	if (!failures) std::cout << "All FairyWriter document engine tests passed.\n";
 	return failures;

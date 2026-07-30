@@ -81,11 +81,33 @@ Windows, use Control.
 - Ctrl/Command+[ / ]: decrease / increase paragraph indent
 - Ctrl/Command+Shift+L / E / R: align left / center / right
 
+### File browser
+
+- Open (F1 -> Open) lists drives/folders. Enter opens the highlighted row, and
+  Enter on a document loads it and returns to the editor. Check a row other
+  than the first one: folders are listed before documents, so the document you
+  want is usually further down the page.
+- In Save As, choose a format, then use Enter to select a drive/folder or open
+  a subfolder.
+- Once the intended folder is open, press **N** for **New File**, type the base
+  filename, and choose **Save**. FairyWriter appends the selected format's
+  extension.
+- In the filename dialog, Tab or any arrow key moves the visible highlight
+  through the name field, Save, and Cancel. Enter activates the highlighted
+  item; typing returns focus to the name field. The upper-right Save and Cancel
+  buttons and the bordered name field are also direct mouse targets.
+- Backspace erases while the name field is selected. From an empty field or
+  either button it cancels the dialog.
+- Backspace returns to the parent folder. The visible folder is always the save
+  destination; returning to a parent must not retain a previously visited
+  subfolder.
+
 ### Mouse
 
 - Click in the document to place the caret; drag to select.
 - Click `[B]`, `[I]`, `[U]`, `[L]`, `[C]`, or `[R]` in the upper-right toolbar
-  to change formatting.
+  to change formatting. During filename entry that card instead contains the
+  large Save and Cancel buttons.
 - Click or drag anywhere on the thin position bar above the document to scroll.
   Scrolling moves the view while keeping the caret in place; click in the
   scrolled text to place the caret there.
@@ -116,9 +138,17 @@ Pass that path to FairyWriter when launching, then check:
 6. Press F2, then return with both F1 and Backspace. Help should return to the
    exact document/menu/browser screen it came from.
 7. Toggle bold, italic, underline, and alignment with both keyboard and mouse.
+   Hold two and all three styles on the same words: bold+italic, bold+underline,
+   italic+underline and all three must each look like themselves rather than
+   like one of the others. Then centre and right-align a paragraph long enough
+   to wrap: every line moves on its own width, the caret stays on its character,
+   and clicking a moved line puts the caret where you clicked.
 8. Create a new document and save it. First Save must open **SAVE AS FORMAT**
-   with ODT selected, then the cartridge file browser. Save without typing an
-   extension and confirm FairyWriter creates a non-empty `.odt`.
+   with ODT selected, then the cartridge file browser. Enter the intended
+   folder and press **N**. Confirm the old browser rows disappear completely;
+   Tab/arrows visibly highlight the field, Save, and Cancel; mouse Cancel
+   dismisses a non-empty name; and mouse Save without a typed extension creates
+   a non-empty `.odt` in that exact folder and lists it under Recent Files.
 9. Close FairyWriter normally, launch a fresh process, open that ODT, and verify
    both text and formatting. Repeat Save As/relaunch for DOCX, RTF, and Markdown;
    Markdown must use `.md`.

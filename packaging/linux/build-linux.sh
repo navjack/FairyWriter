@@ -86,14 +86,31 @@ linuxdeploy \
 	--plugin qt
 
 # linuxdeploy-plugin-qt's EXTRA_PLATFORM_PLUGINS accepts one plugin name in
-# this pinned release. Copy the additional display backends explicitly so
-# both X11 and Wayland are present in the shipped AppImage.
+# this pinned release. Copy the complete Wayland client backend explicitly:
+# the platform plugins load shell, decoration, and graphics integrations at
+# runtime, so shipping only the two ELF entry points is not a closed package.
 qt_plugin_dir=$("${QMAKE}" -query QT_INSTALL_PLUGINS)
 platform_dir="${appdir}/usr/plugins/platforms"
 mkdir -p "${platform_dir}"
 for plugin in libqwayland-generic.so libqwayland-egl.so; do
 	install -m 0755 "${qt_plugin_dir}/platforms/${plugin}" "${platform_dir}/${plugin}"
 done
+for plugin_group in \
+	wayland-decoration-client \
+	wayland-graphics-integration-client \
+	wayland-shell-integration; do
+	cp -a "${qt_plugin_dir}/${plugin_group}" "${appdir}/usr/plugins/"
+done
+# These plugins are copied after linuxdeploy-plugin-qt has inspected the main
+# executable, so their QtWayland runtime closure is otherwise invisible.
+# linuxdeploy's directory input is not recursive, so pass every runtime-loaded
+# plugin directory in one dependency-deployment operation.
+linuxdeploy \
+	--appdir "${appdir}" \
+	--deploy-deps-only "${platform_dir}" \
+	--deploy-deps-only "${appdir}/usr/plugins/wayland-decoration-client" \
+	--deploy-deps-only "${appdir}/usr/plugins/wayland-graphics-integration-client" \
+	--deploy-deps-only "${appdir}/usr/plugins/wayland-shell-integration"
 linuxdeploy --appdir "${appdir}" --output appimage
 
 file "${artifact}"
@@ -101,15 +118,26 @@ test "$(od -An -tx1 -N4 "${artifact}" | tr -d ' \n')" = 7f454c46
 
 audit_root="${work_root}/audit"
 extract-appimage "${artifact}" "${audit_root}/squashfs-root"
-QT_QPA_PLATFORM=offscreen "${audit_root}/squashfs-root/AppRun" --version
+clean_app_env=(env -u QTDIR -u LD_LIBRARY_PATH -u QT_PLUGIN_PATH)
+QT_QPA_PLATFORM=offscreen "${clean_app_env[@]}" \
+	"${audit_root}/squashfs-root/AppRun" --version
 # The production executable is the embedded SNES player, so the old native
 # Qt editor's --verify-ui-layout contract does not apply to this artifact.
+
+# Reject plugin dependencies that the build image could otherwise satisfy from
+# its development Qt installation.
+while IFS= read -r plugin; do
+	if "${clean_app_env[@]}" ldd "${plugin}" | grep -F 'not found'; then
+		echo "AppImage plugin has an unresolved dependency: ${plugin}" >&2
+		exit 1
+	fi
+done < <(find "${audit_root}/squashfs-root/usr/plugins" -type f -name '*.so' -print)
 
 # A production player with no arguments should enter its event loop under both
 # Linux display stacks. A bounded timeout is intentional: this is a launch
 # smoke test, not an automated gameplay session.
 set +e
-xvfb-run -a -s '-screen 0 1024x768x24' timeout --signal=TERM 5 \
+"${clean_app_env[@]}" xvfb-run -a -s '-screen 0 1024x768x24' timeout --signal=TERM 5 \
 	"${audit_root}/squashfs-root/AppRun" >"${audit_root}/xvfb.log" 2>&1
 xvfb_status=$?
 set -e
@@ -130,7 +158,8 @@ cleanup_weston() { kill "${weston_pid}" 2>/dev/null || true; }
 trap 'cleanup; cleanup_weston' EXIT
 sleep 1
 set +e
-WAYLAND_DISPLAY="${wayland_socket}" QT_QPA_PLATFORM=wayland timeout --signal=TERM 5 \
+"${clean_app_env[@]}" WAYLAND_DISPLAY="${wayland_socket}" QT_QPA_PLATFORM=wayland \
+	timeout --signal=TERM 5 \
 	"${audit_root}/squashfs-root/AppRun" >"${audit_root}/wayland.log" 2>&1
 wayland_status=$?
 set -e

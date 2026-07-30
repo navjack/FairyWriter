@@ -52,6 +52,7 @@ bool DocumentBridge::switchSession(FileCatalog& catalog, const QString& id) {
 		const QString path = session.files.value(qBound(0, session.active, session.files.size() - 1));
 		if (!QFileInfo::exists(path) || !m_persistence.load(path).succeeded()) return false;
 		catalog.registerPath(path);
+		releaseView();
 	}
 	m_session_id = id;
 	return sessionEvent(m_events, EventSessionChanged, session)
@@ -92,18 +93,37 @@ bool DocumentBridge::publishStructureSuggestion() {
 
 bool DocumentBridge::submit(const MailboxRecord& command) { return m_commands.push(command); }
 
+// A replacement document gets a fresh view. Both the live scrollbar anchor and
+// the last published window belong to the document that just went away, and
+// forcing them onto the new one would open it somewhere other than its caret.
+void DocumentBridge::releaseView() {
+	m_scroll_anchor.reset();
+	m_viewport_start.reset();
+}
+
+bool DocumentBridge::publishOpenFailed(const QString& id) {
+	MailboxRecord event;
+	event.kind = EventOpenFailed;
+	event.revision = m_engine.revision();
+	const QByteArray bytes = id.toUtf8();
+	event.payload.assign(reinterpret_cast<const std::uint8_t*>(bytes.constData()),
+		reinterpret_cast<const std::uint8_t*>(bytes.constData() + bytes.size()));
+	return m_events.push(event);
+}
+
 bool DocumentBridge::openFile(FileCatalog& catalog, const QString& id) {
+	// An ID the catalog cannot resolve is still a failed open the user asked
+	// for. It has to reach the cartridge as one, because the cartridge has
+	// already left the browser for the document: without this event the request
+	// would vanish and the unchanged document would look like a dead key.
 	const FileEntry* file = catalog.entry(id);
-	if (!file || file->directory) return false;
-	if (!m_persistence.load(file->absolutePath).succeeded()) {
-		MailboxRecord event;
-		event.kind = EventOpenFailed;
-		event.revision = m_engine.revision();
-		const QByteArray bytes = id.toUtf8();
-		event.payload.assign(reinterpret_cast<const std::uint8_t*>(bytes.constData()), reinterpret_cast<const std::uint8_t*>(bytes.constData() + bytes.size()));
-		return m_events.push(event);
+	if (!file || file->directory) {
+		publishOpenFailed(id);
+		return false;
 	}
-	catalog.noteOpened(id);
+	if (!m_persistence.load(file->absolutePath).succeeded()) return publishOpenFailed(id);
+	catalog.noteRecent(id);
+	releaseView();
 	return publishPersistenceSettings() && publish() && publishStructureSuggestion();
 }
 
@@ -201,6 +221,7 @@ bool DocumentBridge::publishRecoveryAvailable(const QString& format) {
 bool DocumentBridge::recover(const QString& path, const QString& originalFilename) {
 	Q_UNUSED(originalFilename);
 	if (!m_persistence.recover(path).succeeded()) return false;
+	releaseView();
 	MailboxRecord event;
 	event.kind = EventRecoveryRestored;
 	event.revision = m_engine.revision();
@@ -209,7 +230,19 @@ bool DocumentBridge::recover(const QString& path, const QString& originalFilenam
 
 bool DocumentBridge::saveAs(FileCatalog& catalog, const QString& id, bool overwriteConfirmed) {
 	const FileEntry* file = catalog.entry(id);
-	if (!file || file->directory || !file->writable) return false;
+	if (!file || file->directory) {
+		PersistenceResult invalid;
+		invalid.error = PersistenceError::InvalidPath;
+		invalid.detail = QStringLiteral("The selected save target is no longer valid.");
+		return publishPersistenceFailure(invalid);
+	}
+	if (!file->writable) {
+		PersistenceResult read_only;
+		read_only.error = PersistenceError::ReadOnly;
+		read_only.path = file->absolutePath;
+		read_only.detail = QStringLiteral("The selected save target is read-only.");
+		return publishPersistenceFailure(read_only);
+	}
 	if (!overwriteConfirmed) {
 		MailboxRecord event;
 		event.kind = EventOverwriteRequired;
@@ -219,14 +252,19 @@ bool DocumentBridge::saveAs(FileCatalog& catalog, const QString& id, bool overwr
 		return m_events.push(event);
 	}
 	const PersistenceResult result = m_persistence.saveAs(file->absolutePath, true);
-	return result.succeeded()
-		? (publishPersistenceSettings() && publish())
-		: publishPersistenceFailure(result);
+	if (!result.succeeded()) return publishPersistenceFailure(result);
+	catalog.noteRecent(id);
+	return publishPersistenceSettings() && publish();
 }
 
 bool DocumentBridge::saveAsNew(FileCatalog& catalog, const QString& parentId, const QString& name) {
 	const QString path = catalog.newFilePath(parentId, name);
-	if (path.isEmpty()) return false;
+	if (path.isEmpty()) {
+		PersistenceResult invalid;
+		invalid.error = PersistenceError::InvalidPath;
+		invalid.detail = QStringLiteral("The selected folder or filename is no longer valid.");
+		return publishPersistenceFailure(invalid);
+	}
 	const PersistenceResult result = m_persistence.saveAs(path, false);
 	if (!result.succeeded()) return publishPersistenceFailure(result);
 	const QString id = catalog.registerPath(path);
@@ -246,6 +284,7 @@ bool DocumentBridge::saveAsNew(FileCatalog& catalog, const QString& parentId, co
 	for (int i = 0; i < 8; ++i) event.payload.push_back(static_cast<std::uint8_t>(modified >> (i * 8)));
 	event.payload.insert(event.payload.end(), reinterpret_cast<const std::uint8_t*>(id_bytes.constData()), reinterpret_cast<const std::uint8_t*>(id_bytes.constData() + id_bytes.size()));
 	event.payload.insert(event.payload.end(), reinterpret_cast<const std::uint8_t*>(name_bytes.constData()), reinterpret_cast<const std::uint8_t*>(name_bytes.constData() + name_bytes.size()));
+	catalog.noteRecent(id);
 	return m_events.push(event) && publishPersistenceSettings() && publish();
 }
 

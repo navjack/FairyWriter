@@ -39,6 +39,12 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.2.0" date="2026-07-29">
+      <description>
+        <p>Bold, italic and underline now render independently in every combination, and paragraph alignment is applied per visual line.</p>
+        <p>Fixes opening a document from any file-browser row but the first.</p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-07-29">
       <description>
         <p>Initial public-development baseline for the cartridge-owned FairyWriter product.</p>

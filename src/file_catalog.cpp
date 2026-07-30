@@ -77,7 +77,15 @@ FileCatalog::FileCatalog(QString root) : m_root(normalizedPath(QDir(root).canoni
 	if (!m_root.isEmpty()) {
 		QSettings settings = recentSettings();
 		settings.sync();
-		m_recent = settings.value(QStringLiteral("FairyWriter/Recent/") + idFor(m_root)).toStringList();
+		const QString key = QStringLiteral("FairyWriter/RecentPaths/") + idFor(m_root);
+		const QStringList recent_paths = settings.value(key).toStringList();
+		for (const QString& path : recent_paths) {
+			const QString id = registerPath(path);
+			const FileEntry* file = entry(id);
+			if (id.isEmpty() || !file || file->directory || m_recent.contains(id)) continue;
+			m_recent.push_back(id);
+			if (m_recent.size() == 10) break;
+		}
 	}
 }
 
@@ -108,6 +116,7 @@ QString FileCatalog::registerPath(const QString& path) {
 
 QString FileCatalog::createDirectory(const QString& parentId, const QString& name) {
 	const FileEntry* parent = parentId.isEmpty() ? nullptr : entry(parentId);
+	if (!parentId.isEmpty() && !parent) return {};
 	const QString parentPath = parent ? parent->absolutePath : m_root;
 	if (!QFileInfo(parentPath).isDir() || name.isEmpty() || name == QLatin1String(".") || name == QLatin1String("..") || containsPathSeparator(name)) return {};
 	const QString path = QDir(parentPath).filePath(name);
@@ -126,6 +135,7 @@ QString FileCatalog::createFile(const QString& parentId, const QString& name) {
 
 QString FileCatalog::newFilePath(const QString& parentId, const QString& name) const {
 	const FileEntry* parent = parentId.isEmpty() ? nullptr : entry(parentId);
+	if (!parentId.isEmpty() && !parent) return {};
 	const QString parentPath = parent ? parent->absolutePath : m_root;
 	if (!QFileInfo(parentPath).isDir() || name.isEmpty() || name == QLatin1String(".") || name == QLatin1String("..") || containsPathSeparator(name)) return {};
 	const QString path = QDir(parentPath).filePath(name);
@@ -133,14 +143,26 @@ QString FileCatalog::newFilePath(const QString& parentId, const QString& name) c
 	return path;
 }
 
-void FileCatalog::noteOpened(const QString& id) {
+void FileCatalog::noteRecent(const QString& id) {
 	const FileEntry* file = entry(id);
 	if (!file || file->directory) return;
 	m_recent.removeAll(id);
 	m_recent.prepend(id);
 	while (m_recent.size() > 10) m_recent.removeLast();
+
+	QStringList recent_paths;
+	recent_paths.reserve(m_recent.size());
+	for (const QString& recent_id : m_recent) {
+		const FileEntry* recent_file = entry(recent_id);
+		if (recent_file && !recent_file->directory) recent_paths.push_back(recent_file->absolutePath);
+	}
+
 	QSettings settings = recentSettings();
-	settings.setValue(QStringLiteral("FairyWriter/Recent/") + idFor(m_root), m_recent);
+	const QString root_id = idFor(m_root);
+	settings.setValue(QStringLiteral("FairyWriter/RecentPaths/") + root_id, recent_paths);
+	// Opaque IDs are intentionally process-private. An older build stored them,
+	// but a fresh catalog cannot resolve an ID without its canonical path.
+	settings.remove(QStringLiteral("FairyWriter/Recent/") + root_id);
 	settings.sync();
 }
 

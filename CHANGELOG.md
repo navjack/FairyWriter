@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+## 0.2.0 — 2026-07-29 — tester preview
+
+- Bold, italic and underline are now independent on screen. The cartridge had
+  four glyph pages and picked one shape by priority, so underline hid bold and
+  bold hid italic; holding two of them showed only one. There is now a glyph
+  page per combination — the style bits are the page index, so the draw loop
+  masks them instead of resolving a priority — and every combination renders as
+  itself. Underline also moved to the palette's pale blue and stops a column
+  short of the cell edge, so it reads as a line under its own text instead of a
+  bar against the next line.
+- Paragraph alignment is rendered. Left, centre and right now place each visual
+  line on its own width, so a wrapped centred paragraph is centred line by line
+  and the space a line broke at no longer counts toward its width. The caret
+  follows a moved line, and clicking or arrowing into one lands on the character
+  under the pointer. Justify renders as left.
+- Fixed opening a document from any browser row but the first. The cartridge
+  indexed the per-row flags and opaque-ID-length tables, which hold one byte per
+  visible row, with the 32-byte stride of the ID table, so Enter on a lower row
+  read another row's bytes and emitted an empty or truncated ID. Because folders
+  sort ahead of documents, that is nearly every real Open: the host could not
+  resolve the ID and the browser returned to the unchanged document. Selecting a
+  folder below the first row failed the same way, and mouse clicks share the
+  path. An ID the catalog cannot resolve now also reaches the cartridge as a
+  visible open failure instead of vanishing.
+- Give a replacement document a fresh view. Opening a file, restoring recovery,
+  or switching sessions no longer forces the previous document's scrollbar
+  anchor onto the new one, which could open a document at its end.
+- Fixed first Save/Save As so the visible browser folder is the sole save
+  destination, returning to a parent cannot retain a stale child folder, and
+  the cartridge explains when to press N to create the new file.
+- Replaced the filename overlay with a complete cartridge-owned Save dialog:
+  the old browser rows are cleared, the title and formatting cards become
+  filename context plus clickable Save/Cancel buttons, and Tab/arrows visibly
+  move one shared keyboard/mouse focus ring. Sub-frame desktop clicks are
+  retained until the Super NES Mouse report is latched instead of being lost
+  when press and release arrive between guest frames.
+- Reject stale catalog parent IDs instead of silently treating them as the
+  catalog root, report invalid/read-only save targets in the cartridge, and add
+  successful Save As targets to Recent Files. Persist host-private canonical
+  paths so a fresh process can rebuild its opaque catalog IDs and open Recent
+  immediately after relaunch.
+- Make the Windows package carry vcpkg's application-local runtime DLLs and
+  launch its staged executable with a system-only PATH before creating the ZIP.
+- Deploy the complete Qt Wayland client plugin/runtime closure in the Linux
+  AppImage and audit it without the build image's Qt environment.
+
 ## 0.1.0 — 2026-07-29 — tester preview
 
 - Added native macOS arm64, Linux x86_64, and Windows x64 release jobs. Every

@@ -32,7 +32,7 @@ public:
 	// persistence layer commits the complete file first, then registers it.
 	QString newFilePath(const QString& parentId, const QString& name) const;
 	QString createFile(const QString& parentId, const QString& name);
-	void noteOpened(const QString& id);
+	void noteRecent(const QString& id);
 	QVector<FileEntry> recentFiles() const;
 	const FileEntry* entry(const QString& id) const;
 

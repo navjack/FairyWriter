@@ -1,6 +1,7 @@
 #include "file_catalog.h"
 #include <QTemporaryDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QDir>
 #include <iostream>
 #include <algorithm>
@@ -27,12 +28,14 @@ int main() {
 	const auto zeta = std::find_if(entries.cbegin(), entries.cend(), [](const auto& e) { return e.name == "zeta.txt"; });
 	expect(zeta != entries.cend() && !zeta->id.isEmpty(), "entries expose opaque IDs and names");
 	expect(zeta != entries.cend() && zeta->size == 0 && zeta->writable, "entries expose metadata");
-	catalog.noteOpened(zeta->id);
+	catalog.noteRecent(zeta->id);
 	expect(catalog.recentFiles().size() == 1 && catalog.recentFiles().front().id == zeta->id, "recent files retain opaque open history");
 	FileCatalog restored_catalog(temp.path());
+	expect(restored_catalog.recentFiles().size() == 1 && restored_catalog.recentFiles().front().name == "zeta.txt",
+		"recent files are usable immediately after a fresh catalog instance");
 	const auto restored_entries = restored_catalog.list();
 	const auto restored_zeta = std::find_if(restored_entries.cbegin(), restored_entries.cend(), [](const auto& e) { return e.name == "zeta.txt"; });
-	expect(restored_zeta != restored_entries.cend(), "restored catalog re-registers the recent file");
+	expect(restored_zeta != restored_entries.cend(), "restored catalog still lists the recent file");
 	expect(restored_catalog.recentFiles().size() == 1 && restored_catalog.recentFiles().front().name == "zeta.txt", "recent file order persists across catalog instances");
 	const auto hidden = catalog.list(QString(), true);
 	expect(hidden.size() == 4, "hidden-file toggle exposes hidden files");
@@ -41,6 +44,12 @@ int main() {
 	expect(!folder_id.isEmpty() && catalog.entry(folder_id)->directory, "Unicode directory creation returns an opaque ID");
 	const QString created_file_id = catalog.createFile(folder_id, QStringLiteral("新規.txt"));
 	expect(!created_file_id.isEmpty() && catalog.entry(created_file_id) && !catalog.entry(created_file_id)->directory, "safe filename creation returns an opaque file ID");
+	expect(catalog.createFile(QStringLiteral("missing-parent"), QStringLiteral("lost.txt")).isEmpty()
+			&& !QFileInfo::exists(root.filePath(QStringLiteral("lost.txt"))),
+		"unknown parent IDs never fall back to the catalog root for file creation");
+	expect(catalog.createDirectory(QStringLiteral("missing-parent"), QStringLiteral("Lost")).isEmpty()
+			&& !QFileInfo::exists(root.filePath(QStringLiteral("Lost"))),
+		"unknown parent IDs never fall back to the catalog root for directory creation");
 	expect(catalog.createFile(folder_id, QStringLiteral("../escape.txt")).isEmpty(), "file creation rejects traversal");
 	expect(catalog.createFile(folder_id, QStringLiteral("..\\escape.txt")).isEmpty(), "file creation rejects native Windows traversal");
 	expect(catalog.createDirectory(QString(), QStringLiteral("../escape")).isEmpty(), "directory traversal is rejected");

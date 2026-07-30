@@ -659,7 +659,8 @@ if(APPLE)
 	endif()
 elseif(WIN32)
 	# windeployqt consumes this minimal install tree. Tester packaging supplies
-	# the Qt runtime, licenses, and testing guide beside the executable.
+	# the Qt runtime, vcpkg application-local dependencies, licenses, and testing
+	# guide beside the executable.
 	set(datadir ".")
 	install(TARGETS fairywriter RUNTIME DESTINATION .)
 else()

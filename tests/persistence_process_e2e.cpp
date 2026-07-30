@@ -80,6 +80,14 @@ int main(int argc, char** argv)
 		expect(loaded.status == QProcess::NormalExit && loaded.code == 0,
 			"second fresh process loads the saved format's real semantics",
 			&loaded);
+
+		ChildResult browsed = runChild(executable, {
+			QStringLiteral("--persistence-cartridge-e2e-child"),
+			QStringLiteral("browse"), format, path, recovery
+		});
+		expect(browsed.status == QProcess::NormalExit && browsed.code == 0,
+			"a fresh process reopens the document through the cartridge Open browser",
+			&browsed);
 	}
 
 	const QString crash_path = temporary.filePath(QStringLiteral("recovered.odt"));

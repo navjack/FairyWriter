@@ -2,7 +2,7 @@ diff --git a/runner/src/snes/snes.c b/runner/src/snes/snes.c
 index 24dca7c..e0a2633 100644
 --- a/runner/src/snes/snes.c
 +++ b/runner/src/snes/snes.c
-@@ -22,6 +22,45 @@
+@@ -22,6 +22,48 @@
  int snes_frame_counter;
  static const double apuCyclesPerMaster = (32040 * 32) / (1364 * 262 * 60.0);
  
@@ -26,13 +26,16 @@ index 24dca7c..e0a2633 100644
 +  /* The report is captured on the high-to-low latch transition. The 32 bits
 +   * are: zero, button/signature/sensitivity, signed Y, signed X. */
 +  if (mouse->strobe && !strobe) {
-+    const uint8_t buttons = (uint8_t)(0x01 | (mouse->left ? 0x40 : 0) |
-+                                      (mouse->right ? 0x80 : 0));
++    const uint8_t buttons =
++        (uint8_t)(0x01 | ((mouse->left || mouse->left_pending) ? 0x40 : 0) |
++                  ((mouse->right || mouse->right_pending) ? 0x80 : 0));
 +    mouse->report = ((uint32_t)buttons << 16) |
 +                    ((uint32_t)mouse_sign_magnitude(mouse->dy) << 8) |
 +                    mouse_sign_magnitude(mouse->dx);
 +    mouse->dx = 0;
 +    mouse->dy = 0;
++    mouse->left_pending = false;
++    mouse->right_pending = false;
 +    mouse->bit = 0;
 +  }
 +  mouse->strobe = strobe;
@@ -48,7 +51,7 @@ index 24dca7c..e0a2633 100644
  uint8_t snes_readReg(Snes* snes, uint16_t adr);
  void snes_writeReg(Snes* snes, uint16_t adr, uint8_t val);
  
-@@ -46,6 +85,8 @@ Snes* snes_init(uint8_t *ram) {
+@@ -46,6 +88,8 @@ Snes* snes_init(uint8_t *ram) {
    snes->cart = cart_init(snes);
    snes->input1_currentState = 0;
    snes->input2_currentState = 0;
@@ -57,7 +60,7 @@ index 24dca7c..e0a2633 100644
    return snes;
  }
  
-@@ -95,6 +136,8 @@ void snes_reset(Snes* snes, bool hard) {
+@@ -95,6 +139,8 @@ void snes_reset(Snes* snes, bool hard) {
    snes->autoJoyRead = false;
    snes->autoJoyTimer = 0;
    snes->ppuLatch = false;
@@ -66,7 +69,7 @@ index 24dca7c..e0a2633 100644
    snes->multiplyA = 0xff;
    snes->multiplyResult = 0xfe01;
    snes->divideA = 0xffff;
-@@ -276,30 +319,10 @@ uint8_t snes_readReg(Snes* snes, uint16_t adr) {
+@@ -276,30 +322,10 @@ uint8_t snes_readReg(Snes* snes, uint16_t adr) {
        return snes->multiplyResult & 0xff;
      case 0x4217:
        return snes->multiplyResult >> 8;
@@ -101,7 +104,7 @@ index 24dca7c..e0a2633 100644
      case 0x4218:
        return SwapInputBits(snes->input1_currentState) & 0xff;
      case 0x4219:
-@@ -322,6 +345,10 @@ uint8_t snes_readReg(Snes* snes, uint16_t adr) {
+@@ -322,6 +348,10 @@ uint8_t snes_readReg(Snes* snes, uint16_t adr) {
  
  void snes_writeReg(Snes* snes, uint16_t adr, uint8_t val) {
    switch(adr) {
@@ -112,7 +115,7 @@ index 24dca7c..e0a2633 100644
      case 0x4200: {
        snes->autoJoyRead = val & 0x1;
        if(!snes->autoJoyRead) snes->autoJoyTimer = 0;
-@@ -336,6 +363,7 @@ void snes_writeReg(Snes* snes, uint16_t adr, uint8_t val) {
+@@ -336,6 +366,7 @@ void snes_writeReg(Snes* snes, uint16_t adr, uint8_t val) {
        break;
      }
      case 0x4201: {
@@ -120,7 +123,7 @@ index 24dca7c..e0a2633 100644
        if(!(val & 0x80) && snes->ppuLatch) {
          // latch the ppu
          ppu_read(g_ppu, 0x37);
-@@ -421,10 +449,8 @@ uint8_t snes_read(Snes* snes, uint32_t adr) {
+@@ -421,10 +452,8 @@ uint8_t snes_read(Snes* snes, uint32_t adr) {
      if(adr >= 0x2100 && adr < 0x2200) {
        return snes_readBBus(snes, adr & 0xff); // B-bus
      }
@@ -133,7 +136,7 @@ index 24dca7c..e0a2633 100644
      if(adr >= 0x4200 && adr < 0x4220 || adr >= 0x4218 && adr < 0x4220) {
        return snes_readReg(snes, adr); // internal registers
      }
-@@ -436,6 +462,21 @@ uint8_t snes_read(Snes* snes, uint32_t adr) {
+@@ -436,6 +465,23 @@ uint8_t snes_read(Snes* snes, uint32_t adr) {
    return cart_read(snes->cart, bank, adr);
  }
  
@@ -148,6 +151,8 @@ index 24dca7c..e0a2633 100644
 +  if (!snes) return;
 +  snes->mouse.dx = mouse_add_clamped(snes->mouse.dx, dx);
 +  snes->mouse.dy = mouse_add_clamped(snes->mouse.dy, dy);
++  if (left && !snes->mouse.left) snes->mouse.left_pending = true;
++  if (right && !snes->mouse.right) snes->mouse.right_pending = true;
 +  snes->mouse.left = left;
 +  snes->mouse.right = right;
 +}
@@ -155,7 +160,7 @@ index 24dca7c..e0a2633 100644
  void snes_write(Snes* snes, uint32_t adr, uint8_t val) {
    uint8_t bank = adr >> 16;
    adr &= 0xffff;
-@@ -466,7 +507,7 @@ void snes_write(Snes* snes, uint32_t adr, uint8_t val) {
+@@ -466,7 +512,7 @@ void snes_write(Snes* snes, uint32_t adr, uint8_t val) {
      if(adr >= 0x2100 && adr < 0x2200) {
        snes_writeBBus(snes, adr & 0xff, val); // B-bus
      }
@@ -168,7 +173,7 @@ diff --git a/runner/src/snes/snes.h b/runner/src/snes/snes.h
 index f60a43f..8b62c40 100644
 --- a/runner/src/snes/snes.h
 +++ b/runner/src/snes/snes.h
-@@ -15,7 +15,21 @@ typedef struct Snes Snes;
+@@ -15,7 +15,23 @@ typedef struct Snes Snes;
  #include "dma.h"
  #include "ppu.h"
  #include "cart.h"
@@ -183,6 +188,8 @@ index f60a43f..8b62c40 100644
 +  int16_t dy;
 +  bool left;
 +  bool right;
++  bool left_pending;
++  bool right_pending;
 +  bool strobe;
 +  uint8_t bit;
 +  uint32_t report;
@@ -190,7 +197,7 @@ index f60a43f..8b62c40 100644
  
  struct Snes {
    Cpu* cpu;
-@@ -25,7 +39,12 @@ struct Snes {
+@@ -25,7 +41,12 @@ struct Snes {
    Cart* cart;
    uint16 input1_currentState;
    uint16 input2_currentState;
@@ -203,7 +210,7 @@ index f60a43f..8b62c40 100644
  
    // ram data port ($2180-$2183)
    uint32_t ramAdr;
-@@ -65,7 +84,11 @@ uint8_t snes_read(Snes* snes, uint32_t adr);
+@@ -65,7 +86,11 @@ uint8_t snes_read(Snes* snes, uint32_t adr);
  void snes_write(Snes* snes, uint32_t adr, uint8_t val);
  uint8_t snes_readReg(Snes* snes, uint16_t adr);
  void snes_writeReg(Snes* snes, uint16_t adr, uint8_t val);

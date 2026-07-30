@@ -64,7 +64,7 @@ ARG QT_REPOSITORY=https://download.qt.io/online/qtsdkrepository/linux_x64/deskto
 RUN set -eu; \
 	qt_root="/opt/qt/${QT_VERSION}/gcc_64"; \
 	mkdir -p /tmp/qt-packages "${qt_root}"; \
-	for package in qtbase qtwayland; do \
+	for package in qtbase qtsvg qtwayland; do \
 		archive="${QT_BUILD}${package}-Linux-RHEL_8_10-GCC-Linux-RHEL_8_10-X86_64.7z"; \
 		curl -fL --retry 3 -o "/tmp/qt-packages/${archive}" "${QT_REPOSITORY}/${archive}"; \
 		curl -fL --retry 3 -o "/tmp/qt-packages/${archive}.sha1" "${QT_REPOSITORY}/${archive}.sha1"; \

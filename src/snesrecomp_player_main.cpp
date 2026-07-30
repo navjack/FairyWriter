@@ -89,7 +89,8 @@ Scan scanForKey(int key)
 	case Qt::Key_5: return {0x2e}; case Qt::Key_6: return {0x36};
 	case Qt::Key_7: return {0x3d}; case Qt::Key_8: return {0x3e};
 	case Qt::Key_9: return {0x46}; case Qt::Key_0: return {0x45};
-	case Qt::Key_Space: return {0x29}; case Qt::Key_Return: return {0x5a};
+	case Qt::Key_Space: return {0x29}; case Qt::Key_Tab: return {0x0d};
+	case Qt::Key_Return: case Qt::Key_Enter: return {0x5a};
 	case Qt::Key_Backspace: return {0x66};
 	case Qt::Key_Delete: return {0x71, true}; case Qt::Key_Home: return {0x6c, true};
 	case Qt::Key_End: return {0x69, true};
@@ -1316,6 +1317,78 @@ int runPersistenceCartridgeE2eChild(const QStringList& arguments)
 			&& !player.persistenceTestBridge().engine().text()
 				.contains(QStringLiteral("source"))) {
 			return 117;
+		}
+		player.persistenceTestBridge().persistence().markCleanShutdown();
+		return 0;
+	}
+
+	// The user's own way back into a saved document: F1, Open, the browser, the
+	// row the file actually occupies, Enter. "load" above calls openDocument()
+	// like a desktop file association does, which never touches the cartridge
+	// browser, so it cannot prove that browsing to a document opens it.
+	if (operation == QLatin1String("browse")) {
+		RecompPlayer player(rom, catalog_root, recovery_root);
+		if (!player.isValid() || !player.persistenceTestFrames(6)) return 128;
+		if (!persistenceTap(player, 0x05)
+			|| player.persistenceTestWram(0x031d) != 1) {
+			qWarning("F1 did not open the menu before Open: mode=%u",
+				player.persistenceTestWram(0x031d));
+			return 129;
+		}
+		if (!persistenceTap(player, 0x72, true)
+			|| player.persistenceTestWram(0x031e) != 1
+			|| !persistenceTap(player, 0x5a)
+			|| !player.persistenceTestFrames(8)
+			|| player.persistenceTestWram(0x031d) != 5) {
+			qWarning("Open did not reach a ready root browser: mode=%u row=%u",
+				player.persistenceTestWram(0x031d),
+				player.persistenceTestWram(0x031e));
+			return 130;
+		}
+		if (!persistenceTap(player, 0x5a) || !player.persistenceTestFrames(8)
+			|| player.persistenceTestWram(0x031d) != 5) {
+			qWarning("entering the catalog root did not list its files: mode=%u",
+				player.persistenceTestWram(0x031d));
+			return 131;
+		}
+		// Find the saved document among the rows the host actually published.
+		// Folders sort ahead of documents, so this is never the first row.
+		const QString wanted = QFileInfo(path).fileName();
+		const int rows = player.persistenceTestWram(0x031f);
+		int target = -1;
+		for (int row = 0; row < rows && target < 0; ++row) {
+			QByteArray name;
+			const int length = player.persistenceTestWram(
+				0x17f0 + static_cast<std::uint32_t>(row));
+			for (int at = 0; at < length; ++at) {
+				name.push_back(static_cast<char>(player.persistenceTestWram(
+					0x1700 + static_cast<std::uint32_t>(row * 30 + at))));
+			}
+			if (QString::fromUtf8(name) == wanted) target = row;
+		}
+		if (target < 1) {
+			qWarning("'%s' was not a listed row below the first: rows=%u row=%d",
+				qPrintable(wanted), rows, target);
+			return 132;
+		}
+		for (int row = 0; row < target; ++row) {
+			if (!persistenceTap(player, 0x72, true)) return 133;
+		}
+		if (player.persistenceTestWram(0x0320) != target) {
+			qWarning("the browser selection did not reach row %d: row=%u",
+				target, player.persistenceTestWram(0x0320));
+			return 134;
+		}
+		if (!persistenceTap(player, 0x5a) || !player.persistenceTestFrames(12)
+			|| player.persistenceTestWram(0x031d) != 0
+			|| player.persistenceTestBridge().engine().filename() != path
+			|| player.persistenceTestBridge().engine().isDirty()
+			|| !player.persistenceTestBridge().engine().text().contains(expected)) {
+			qWarning("browsing to row %d did not open it: mode=%u file='%s' text='%s'",
+				target, player.persistenceTestWram(0x031d),
+				qPrintable(player.persistenceTestBridge().engine().filename()),
+				qPrintable(player.persistenceTestBridge().engine().text().left(60)));
+			return 135;
 		}
 		player.persistenceTestBridge().persistence().markCleanShutdown();
 		return 0;

@@ -89,6 +89,8 @@ public:
 
 private:
 	bool publish();
+	void releaseView();
+	bool publishOpenFailed(const QString& id);
 	bool publishStructureSuggestion();
 	bool publishFilePage(const QVector<FileEntry>& files, std::size_t offset,
 		std::uint8_t source);

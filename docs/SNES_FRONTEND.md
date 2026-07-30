@@ -72,6 +72,21 @@ FairyWriter is a native app that presents a source-generated SNES cartridge runt
   Transitions synchronously wait for that worker's typed durable result.
 - New documents and first Save default to ODT. Save As offers ODT, DOCX, RTF,
   and Markdown. Existing FODT and plain text remain compatibility formats.
+- In Save As New, the current visible browser parent at `$1900/$0348` is the
+  sole destination authority. The cartridge does not retain a separate
+  previously entered folder: Back changes the destination, and N is accepted
+  only while a real folder is open.
+- Filename mode owns a dedicated 30x8 ROM plane. It must never copy the ready
+  browser plane and paint a prompt over it. The lower panel contains one
+  bordered 24-cell field while the title/status cards carry dialog context and
+  the formatting card becomes stacked Save/Cancel actions.
+- `$036d` is the filename focus enum (name, Save, Cancel). Tab/arrows, Enter,
+  Back, typing, and mouse targets all operate on that one state; render derives
+  the field or button highlight from it. The host forwards Qt Tab as PS/2
+  set-2 `$0d`, which the cartridge translates to semantic Tab `$09`.
+- Recent-file settings are host-private canonical paths, not persisted opaque
+  IDs. A fresh `FileCatalog` validates those paths and rebuilds new opaque IDs
+  before the cartridge requests Recent; no filesystem path crosses the mailbox.
 - New-file writes stage beside the destination before a no-replace rename.
   Existing files use atomic replacement with direct-write fallback disabled.
 - Timed persistence begins with the first content change after the last durable
@@ -110,8 +125,21 @@ Every record uses versioned little-endian framing with protocol, kind, payload s
 ## Document display and position status
 
 - The document staging plane is 30x17 (510 cells), matching the 17-row VBlank upload. Every render clears the complete low-byte and attribute planes with a paired 16-bit loop before projecting text, so shorter viewports cannot inherit stale lower-row tiles.
+- Rich style is a three-bit mask, and the mask is the glyph page index: bit 0 lands in the tilemap character byte (+128) and bits 1-2 in the attribute byte's tile-id bits 8-9. There is one page per combination, so bold, italic and underline compose without any of them taking priority. A styled page stores printable ASCII only, keeps a 128-id VRAM stride, and the scene tiles occupy the styled pages' unreferenced control-character slots, which keeps all eight pages inside BG1's 1024-id ceiling.
+- Paragraph alignment is cartridge layout. The host publishes the alignment of each format run; the cartridge lays every line out flush left and then translates the finished row inside its own width, because a line's width is only known once the line ends and the wrap decisions that produced it must not depend on where it is then placed. Alignment is therefore per visual line, the space a line broke at is not part of its width, and the caret moves with its row. `resolveCellCommand` is the one place that converts a visible cell back into layout space for the pointer and for wrap-aware Up/Down. Justify renders as left.
 - The bar above the document is now a real position track. Cartridge OAM sprite 1 renders a dedicated thumb at an X coordinate derived from committed `bytes_before / total_document_bytes`; the host supplies only document metadata and does not draw the indicator.
-- OAM is persistent. The pointer is refreshed every VBlank for mouse motion, while the position thumb is written only when a new viewport marks its X coordinate dirty. Keep this event-driven split: rewriting both sprites every VBlank regressed input/render timing in the end-to-end machine test. A scroll drag is the one exception: it moves the thumb immediately so the drag feels attached to the pointer, and the next viewport republishes it from real byte offsets.
+- OAM is persistent. The pointer is refreshed every VBlank for mouse motion,
+  while the position thumb is written only when a new viewport marks its X
+  coordinate dirty. Keep this event-driven split: rewriting both sprites every
+  VBlank regressed input/render timing in the end-to-end machine test. A scroll
+  drag is the one exception: it moves the thumb immediately so the drag feels
+  attached to the pointer, and the next viewport republishes it from real byte
+  offsets.
+- Qt can deliver a complete mouse press/release between two guest frames. The
+  patched Super NES Mouse therefore retains each rising button edge until the
+  next `$4016` high-to-low report latch, then clears the pending edge. Held
+  state remains separate, so dragging and the following release retain their
+  ordinary frame-to-frame semantics.
 
 ## Surface colour
 

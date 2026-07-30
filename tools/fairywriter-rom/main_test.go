@@ -31,7 +31,8 @@ func TestCartridgeImageOwnsRealSnesContract(t *testing.T) {
 		{"palette", paletteOffset}, {"tilemap", tilemapOffset}, {"menu", menuOffset},
 		{"browser", browserOffset}, {"browser-ready", browserReadyOffset},
 		{"help", helpOffset}, {"settings", settingsOffset},
-		{"save-format", saveFormatOffset}, {"tiles", tilesOffset},
+		{"save-format", saveFormatOffset}, {"filename", filenameOffset},
+		{"tiles", tilesOffset},
 	} {
 		if region.offset/0x8000 != 1 {
 			t.Fatalf("%s data at %#x is not in bank 1", region.name, region.offset)
@@ -191,11 +192,130 @@ func TestRichStyleFlagsProjectIntoPerCellProofMapAndGateTileGeneration(t *testin
 	if bytes.Contains(rom[:scanMapOffset], disallowed) {
 		t.Fatalf("rich-style-enabled build must not retain the narrower spell|grammar-only projection mask % x", disallowed)
 	}
-	// Four glyph-shape pages (plain/underline/bold/italic) at 128 tiles each
-	// must be present before any background/scene tile, so tile count is at
-	// least 512 plus whatever scene art and the pointer sprite add.
-	if tiles < 512 {
-		t.Fatalf("rich-style-enabled build should emit at least 4x128 glyph-shape tiles, got %d", tiles)
+	// One glyph page per style combination: the plain page keeps all 128
+	// ASCII-aligned tiles, and each of the seven styled pages stores printable
+	// ASCII only.
+	wantGlyphTiles := 128 + (stylePageCount-1)*styledPageTiles
+	if tiles < wantGlyphTiles {
+		t.Fatalf("rich-style-enabled build should emit at least %d glyph tiles, got %d",
+			wantGlyphTiles, tiles)
+	}
+}
+
+// Alignment reaches the cartridge in the format run's own byte, and a run that
+// carries nothing else must still be projected: a centred plain paragraph has no
+// bold, italic, underline or proofing bit anywhere in it.
+func TestParagraphAlignmentIsProjectedAndApplied(t *testing.T) {
+	rom, _ := build()
+	program := rom[:scanMapOffset]
+	for _, want := range []struct {
+		name  string
+		bytes []byte
+	}{
+		{"the run's alignment byte is read", []byte{0xbf, 0x86, 0x42, 0x70, 0x29, 0x03}},
+		{"it is staged per character at $0d00", []byte{0x99, 0x00, 0x0d}},
+		{"the row's alignment is read back at $0f14", []byte{0xad, 0x14, 0x0f, 0xc9, 0x01}},
+		{"a centred row is placed on half its free width", []byte{0xa9, 0x1e, 0x38, 0xed, 0x18, 0x0f, 0x4a}},
+		{"a right aligned row is placed on all of it", []byte{0xa9, 0x1e, 0x38, 0xed, 0x18, 0x0f}},
+		{"the per-row shift is recorded for the pointer", []byte{0x9d, 0x00, 0x0f}},
+	} {
+		if !bytes.Contains(program, want.bytes) {
+			t.Fatalf("alignment build is missing where %s: % x", want.name, want.bytes)
+		}
+	}
+}
+
+// Bold, italic and underline are independent character properties, so a writer
+// can hold any combination of them and each combination needs its own glyph.
+// Collapsing two of them onto one page is exactly the defect where holding bold
+// and italic together showed only one of the two.
+func TestEveryStyleCombinationRendersItsOwnGlyph(t *testing.T) {
+	for _, ch := range []byte("AgQ!7") {
+		seen := map[string]int{}
+		for style := 0; style < stylePageCount; style++ {
+			key := string(glyphShapePixels(ch, style))
+			if previous, clash := seen[key]; clash {
+				t.Fatalf("character %q renders identically for style masks %d and %d",
+					ch, previous, style)
+			}
+			seen[key] = style
+		}
+	}
+	// Each property must also be individually visible in a combination, not
+	// merely different from its neighbours: underline owns the 8th pixel row,
+	// and italic's skew puts ink in a column the upright glyph never reaches.
+	upright := glyphShapePixels('A', 0)
+	for style := 1; style < stylePageCount; style++ {
+		pixels := glyphShapePixels('A', style)
+		underlined := false
+		for col := 0; col < 8; col++ {
+			if pixels[7*8+col] != 0 && pixels[7*8+col] != 4 {
+				underlined = true
+			}
+		}
+		if want := style&styleUnderline != 0; underlined != want {
+			t.Fatalf("style mask %d underline row lit=%v, want %v", style, underlined, want)
+		}
+		ink, uprightInk := 0, 0
+		for i := range pixels {
+			if pixels[i] == 15 {
+				ink++
+			}
+			if upright[i] == 15 {
+				uprightInk++
+			}
+		}
+		if style&styleBold != 0 && ink <= uprightInk {
+			t.Fatalf("style mask %d is not bolder than the upright glyph: %d vs %d ink pixels",
+				style, ink, uprightInk)
+		}
+	}
+}
+
+// The packed tile blob and the strided BG1 id space are two different
+// orderings. Every uploaded run must land on the ids the draw loop computes,
+// stay inside BG1's 1024-id ceiling, and never overlap another run: a run at the
+// wrong VRAM address is invisible in the ROM bytes and shows up only as garbage
+// glyphs on screen.
+func TestTileUploadsCoverEveryGlyphPageWithoutOverlap(t *testing.T) {
+	_, tiles, uploads := encode(scene())
+	occupied := map[int]bool{}
+	for _, upload := range uploads {
+		if upload.count <= 0 {
+			t.Fatalf("upload %+v transfers nothing", upload)
+		}
+		if upload.romTile+upload.count > len(tiles)/32 {
+			t.Fatalf("upload %+v reads past the %d-tile blob", upload, len(tiles)/32)
+		}
+		for i := 0; i < upload.count; i++ {
+			id := upload.vramTile + i
+			if id >= stylePageCount*stylePageStride {
+				t.Fatalf("upload %+v reaches tile id %d, past BG1's addressable pages", upload, id)
+			}
+			if occupied[id] {
+				t.Fatalf("upload %+v re-uploads tile id %d", upload, id)
+			}
+			occupied[id] = true
+		}
+	}
+	for page := 0; page < stylePageCount; page++ {
+		first, last := styledFirstChar, styledLastChar
+		if page == 0 {
+			first, last = 0, 127
+		}
+		for ch := first; ch <= last; ch++ {
+			if !occupied[page*stylePageStride+ch] {
+				t.Fatalf("glyph page %d has no uploaded tile for character %d", page, ch)
+			}
+		}
+	}
+	// Scene art must live in the styled pages' unreferenced control-character
+	// slots rather than past them, which is what keeps the eight pages inside
+	// the 1024-id ceiling.
+	for _, id := range sceneTileIds() {
+		if id%stylePageStride >= styledFirstChar {
+			t.Fatalf("scene tile id %d is inside a styled page's printable range", id)
+		}
 	}
 }
 
@@ -203,6 +323,7 @@ func TestXbandScancodeMapIsCartridgeOwned(t *testing.T) {
 	m := xbandScanMap()
 	for scan, want := range map[byte]byte{
 		0x05: 0x18,
+		0x0d: 0x09,
 		0x1c: 'a', 0x32: 'b', 0x21: 'c', 0x15: 'q', 0x1a: 'z',
 		0x16: '1', 0x45: '0', 0x29: ' ', 0x5a: 0x0d, 0x66: 0x08,
 		0x4e: '-', 0x55: '=', 0x54: '[', 0x5b: ']', 0x4c: ';',
@@ -221,6 +342,20 @@ func TestXbandScancodeMapIsCartridgeOwned(t *testing.T) {
 		if m[prefix] != 0 {
 			t.Fatalf("protocol prefix %02x must not map to printable text", prefix)
 		}
+	}
+}
+
+func TestFilenamePlaneIsACompleteBoundedDialog(t *testing.T) {
+	plane := filenamePlane()
+	if len(plane) != 30*8 {
+		t.Fatalf("filename plane is %d bytes, want one complete 30x8 page", len(plane))
+	}
+	if !bytes.Equal(plane[3*30+2:3*30+28], []byte("+------------------------+")) ||
+		!bytes.Equal(plane[4*30+2:4*30+28], []byte("|                        |")) {
+		t.Fatal("filename plane lost its 24-cell bordered input field")
+	}
+	if bytes.Contains(plane, []byte("FILE BROWSER")) {
+		t.Fatal("filename dialog must not inherit browser-plane content")
 	}
 }
 

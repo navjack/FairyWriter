@@ -26,6 +26,9 @@
 - New documents are ODT. Save As offers ODT, DOCX, RTF, and Markdown; FODT and
   plain text remain compatibility formats. Markdown source is authoritative
   UTF-8 and is parsed by the pinned vendored cmark-gfm snapshot.
+- Recent-file paths exist only in private host settings. A fresh `FileCatalog`
+  validates them and rebuilds process-local opaque IDs before the cartridge
+  requests Recent; filesystem paths never cross the SRAM mailbox.
 - The SRAM mailbox is the authority boundary. Keyboard input reaches the
   cartridge through the XBAND controller-port-2 path.
 - Production has one visual identity and one resident cartridge glyph set.
@@ -46,6 +49,10 @@
   after the three-platform build PR merged and the `v0.1.0` tester preview was
   published. PR 5 carries its one deterministic product-version authority and
   the SemVer/release process from that baseline forward.
+- The branch is intentionally dirty with the save-flow, Windows runtime, Linux
+  Wayland-runtime, regression, tester-guide, changelog, and durable-handoff
+  changes from this manual release-failure pass. Nothing from this pass has
+  been committed, pushed, or substituted into the published release.
 - Private development branches remain local. Their history contains old
   packaged applications and must not be pushed. Public GitHub `main` was
   created as a new root from the sanitized source tree; neither it nor this
@@ -71,14 +78,195 @@
 - `build-arm64/FairyWriter.app` is the current validated production app. The
   ignored top-level `FairyWriter.app` was not synchronized during this
   source/push-readiness pass.
-- The local DMG/AppImage are fresh validation rebuilds from the versioning
-  branch. The published `v0.1.0` assets instead come from green post-merge
-  GitHub Actions run `30483999477` at public commit `440ddef`, so Windows and
-  both Unix release packages share one exact source commit.
+- The local DMG/AppImage are validation rebuilds from this dirty branch and are
+  not at the same source revision as each other. macOS
+  `8993e37e66f56d2a3e3eaa66b8363a012797335bf22cf3a784ffea480475e741` carries the
+  browser row-selection fix plus the style-combination and alignment work and is
+  the package to test by hand. Linux
+  `99a00273dc29e9128f395c7ff0cc172cdbe13c4f8af434c111aae6d380b9a312` carries only
+  the browser fix and predates the style/alignment work; it needs a rebuild
+  before a Linux GUI pass means anything for those. Both supersede the earlier
+  macOS `389b87d9…`/`fbe1fa48…` and Linux `53f45ba5…` packages. The published
+  `v0.1.0` assets instead come from post-merge GitHub Actions run `30483999477`
+  at public commit `440ddef` and have not been repaired.
 - `ideas/` remains ignored personal reference artwork. It was deliberately kept
   during repository cleanup because it is creative source material.
 - `plan.md` contains the user-authored durable persistence plan and is committed
   as part of the first hardening change.
+
+### Version state
+
+- `VERSION` is `0.2.0`, claimed in source by this pass. `VERSIONING.md` puts new
+  user-visible behavior and substantial cartridge changes in the MINOR position
+  before 1.0, and this pass is both. `CHANGELOG.md` and the AppStream release
+  history carry the same number and date.
+- The `v0.2.0` tag and its published assets do not exist yet. They come only from
+  a merged commit whose three native package jobs pass, per the release
+  checklist. `v0.1.0` remains published and untouched.
+
+### Completed in the current pass (rich style combinations and alignment)
+
+Invariant: bold, italic and underline are independent properties of a character
+and every combination has its own glyph page; paragraph alignment is cartridge
+layout, applied per visual line, and the caret and the mouse follow the line it
+moves.
+
+- The cartridge had four glyph pages (plain/underline/bold/italic) and the draw
+  loop chose one by priority, so underline hid bold and bold hid italic. The
+  three style bits are now the page index itself: bit 0 lands in the tilemap
+  character byte (+128) and bits 1-2 in the attribute byte's tile-id bits 8-9,
+  which the draw loop already had free. That deleted the priority chain instead
+  of adding to it.
+- Eight ASCII-aligned 128-tile pages would be 1024 tiles, 32 KiB — more than the
+  tile blob's 28,208-byte budget. A styled page therefore stores printable ASCII
+  only (95 tiles) while still occupying a 128-id stride in VRAM, and the scene
+  art moved into the styled pages' unreferenced control-character slots. 835
+  tiles of the 881 the ROM can hold, and 1022 is the highest BG1 id used. The
+  ROM-to-VRAM order is no longer one blob, so character data uploads as ten DMAs
+  from a build-time chunk list.
+- Underline was full-width ink white on the one pixel row that touches the next
+  line of text, which read as a bar between two lines and made an underlined
+  line above another one hard to read. It is now the palette's pale blue and
+  stops a column short of the cell edge. Five variants were rendered and
+  compared before choosing.
+- Alignment is applied by translating each finished row inside the plane rather
+  than by laying it out pre-shifted: a line's width is only known once the line
+  ends, and the wrap decisions that produced it must not depend on where it is
+  then placed. `finishRow` owns that, and the draw loop's own wrap arithmetic,
+  cursor capture and hit-test keep walking one unshifted coordinate space.
+- Three defects found by rendering and reading the plane back, not by reasoning:
+  the wrap padding loop's back edge re-entered at the label where the shift was
+  applied, finishing the same row once per padded cell; the row-index bookkeeping
+  clobbered the X register the move loop needed, which corrupted whole rows; and
+  a wrapped line counted the space it broke at, which left right-aligned text a
+  cell short of the margin and cost a centred line its last character.
+- `resolveCellCommand` is the one place that converts a visible cell back into
+  layout space, so the pointer and wrap-aware Up/Down both got it from one
+  change. It restores the caller's own target afterwards, because the pointer
+  keeps that value as its already-published key and a held button would
+  otherwise re-publish an extend command every frame over a shifted row.
+- Coverage: the machine test pins the tilemap bytes for all eight combinations
+  plus two proofing overlaps, proves all eight render distinct pixels through the
+  real machine, and checks alignment's plane rows and shift table, the caret on a
+  centred row, and a click on a centred row resolving to the character under the
+  pointer. The ROM contract test pins the glyph-page count, per-combination glyph
+  distinctness, the upload chunks against BG1's id ceiling, and the alignment
+  wiring. Production stays at 10/10 ctest.
+
+### Completed in the previous pass (browser row selection)
+
+Invariant: the row the user is looking at is the row that opens. Per-row browser
+tables are one byte per visible row and must never be indexed with the opaque-ID
+table's 32-byte stride, and no request the user made may end in silence.
+
+- Manual macOS acceptance after the save-flow pass reported that saving worked
+  but Open did nothing. `browserEnter` read the per-row flags (`$17e0`) and
+  opaque-ID length (`$17e8`) tables — one byte per row, exactly as the
+  file-entry decode writes them — with `selection * 32`, the stride of the
+  `$1600` ID table. Row 0 aliased correctly, so every earlier test and the
+  Recent list (whose newest file is row 0) passed. Any lower row read another
+  row's bytes: Enter emitted an empty or truncated ID, the host could not
+  resolve it, and the cartridge had already left the browser for the unchanged
+  document. Folders sort ahead of documents, so the wanted file is almost never
+  row 0. Selecting a folder below the first row broke the same way, and mouse
+  clicks share `browserEnter` through `$0320`. Both readers now use the row
+  index; only the ID copy loop keeps the shifted one.
+- `DocumentBridge::openFile` returned false for an unresolvable ID without
+  telling the cartridge, which is the silence the user actually saw. It now
+  publishes `EventOpenFailed`, so the outcome dialog explains the failure.
+- Opening a document, restoring recovery, or switching sessions kept the
+  previous document's forced scrollbar anchor and last published window, which
+  could open a file at its end. A replaced document now gets a fresh view.
+- Coverage for the exact reported flow: the machine test drives a multi-row
+  page and asserts that the second folder row and the third file row each carry
+  their own opaque ID, and the process test adds a `browse` child that walks the
+  real production binary through F1 -> Open -> root -> the row the file actually
+  occupies -> Enter and verifies the loaded document. Both fail on the previous
+  cartridge; the `browse` child failed with the cartridge outcome dialog
+  (mode `$0b`) and an empty document. Production stays at 10/10 ctest.
+- Both local packages were rebuilt from this tree after the fix. The native
+  macOS DMG passes 10/10 plus its signature, arm64-only, version, developer-path
+  and content audits with a valid disk-image checksum, SHA-256
+  `8993e37e66f56d2a3e3eaa66b8363a012797335bf22cf3a784ffea480475e741`. The
+  Ubuntu 22.04 container AppImage passes 10/10 plus clean-environment version,
+  every-plugin `ldd`, X11 Xvfb liveness, Wayland launch and content audits,
+  SHA-256 `99a00273dc29e9128f395c7ff0cc172cdbe13c4f8af434c111aae6d380b9a312`.
+- The packaged macOS artifact itself was driven through the reported flow: from
+  the mounted DMG, that app's cartridge saved a real ODT, and a second fresh
+  process from the same app walked F1 -> Open -> root -> the row the document
+  actually occupies -> Enter and loaded it. The DMG ships only the cocoa
+  platform plugin, so packaged-app checks must not request `offscreen`.
+
+### Completed in the previous pass (manual release-failure hardening)
+
+Invariant: the browser folder visible when the user presses N is the only Save
+As New destination; filename mode owns one cleared focus model for keyboard and
+mouse; a fresh process can reconstruct Recent without first browsing a folder;
+and a release package must start without development runtime paths before it
+can be called self-contained.
+
+- Manual macOS acceptance exposed that first Save's file browser never
+  explained the N action. More importantly, the cartridge copied the last
+  entered folder into a second `$1840/$0330` destination buffer; Back restored
+  the visible `$1900/$0348` browser context without restoring that duplicate.
+  The current browser parent is now the sole authority. Root and folder titles
+  explain the two steps, N is ignored at the roots page, and machine coverage
+  proves Back/re-entry serializes the currently visible folder.
+- The former filename prompt copied the ready-browser plane and painted three
+  labels over uncleared rows. Filename entry now owns a dedicated 30x8 plane,
+  a bordered 24-cell field, explicit keyboard instructions, and stacked Save
+  and Cancel actions in the former formatting card. Name/Save/Cancel share one
+  focus byte, Tab/arrows visibly move it, Enter activates it, and the field and
+  both buttons are mouse targets.
+- Qt can deliver a complete press/release between guest frames. The Super NES
+  Mouse boundary now retains a pending press edge until the next controller
+  latch, so a fast desktop click cannot disappear. The machine regression
+  drives that exact sub-frame sequence.
+- `FileCatalog` no longer treats a nonempty unknown parent ID as its root.
+  Invalid or read-only Save As targets publish a visible persistence failure,
+  and successful Save As/Save As New targets are recorded in Recent Files.
+  Recent previously persisted only opaque IDs, which a fresh process could not
+  resolve. It now persists private canonical paths, validates them at startup,
+  and rebuilds new opaque IDs before any directory browse.
+- The exact published Windows x64 package reproduces the reported CrossOver
+  exit code 53. Its executable imports `z.dll`, but the ZIP does not contain
+  it: vcpkg's application-local deployment populated the build tree while the
+  install stage copied only the EXE. Windows packaging now copies that resolved
+  DLL set before `windeployqt` and launches the staged executable with a
+  system-only PATH before creating the ZIP.
+- The published Linux AppImage checksum matches its sidecar and its version and
+  X11 launch checks pass in a clean Ubuntu 22.04 container. Its Wayland launch
+  aborts because the image has the platform entry points but omits their
+  QtWayland libraries and runtime shell-integration plugins; the former gate
+  inherited builder Qt paths and masked this. Linux packaging now deploys the
+  complete Wayland client plugin tree and dependency closure, rejects
+  unresolved plugin ELFs, and removes builder Qt paths from every package
+  launch audit.
+- Native macOS passes the full 10/10 production gate and 10 additional repeated
+  XBAND runs. Its fresh ad-hoc-signed DMG passes version, signature, content,
+  and disk-image audits with SHA-256
+  `389b87d9ad68c302197fb1739ed74040122bee6dc06fa9c7111be4bd6e4574f9`.
+  From that mounted DMG, a mouse Save created
+  `/Users/jackmangano/fw-dmg-recent-0729.odt`; it was verified as a valid
+  OpenDocument ZIP, the app was fully quit and relaunched, Recent listed the
+  file without a folder browse, and Enter reopened it. The test file was moved
+  recoverably to Trash.
+- The final Ubuntu 22.04 container build passes 10/10. Its fresh AppImage passes
+  clean-environment version, every-plugin `ldd`, X11, Wayland, and content
+  audits with SHA-256
+  `53f45ba5f1cefb2bcdedebbd8d0ca6ca477ca6bb6a03c295de3498073b9f16d3`.
+  The ROM generator, Bash builder, PowerShell builder, and diff checks also
+  pass.
+- The published `v0.1.0` assets have not changed and remain failed tester
+  previews. The macOS packaged Save/relaunch/Recent gate now passes. Remaining
+  release gates are a native Windows rebuild plus real Windows first launch and
+  a human Linux GUI pass.
+- Next concrete action: the user is testing the `8993e37e…` DMG by hand -- Open
+  from a lower browser row, the style combinations, and centre/right alignment
+  including a wrapped paragraph. Then rebuild the AppImage at this revision and
+  run it through the same checklist in a Linux GUI, and run the native Windows
+  package job and verify its staged ZIP launches on real Windows. Windows has no
+  post-fix package at all yet.
 
 ### Completed in the latest pass (three-platform release production)
 

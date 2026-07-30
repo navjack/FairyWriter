@@ -77,6 +77,21 @@ $Executable = Join-Path $StageRoot "fairywriter.exe"
 if (-not (Test-Path -LiteralPath $Executable)) {
     throw "Staged tester executable is missing: $Executable"
 }
+
+# vcpkg's application-local deployment runs at build time and places each
+# non-system runtime DLL beside the built executable. CMake installs only the
+# executable, so carry that exact resolved set into the package before Qt adds
+# its own runtime and plugins.
+$BuiltExecutable = Join-Path $BuildRoot "Release\fairywriter.exe"
+if (-not (Test-Path -LiteralPath $BuiltExecutable)) {
+    throw "Built tester executable is missing: $BuiltExecutable"
+}
+$BuiltRuntimeRoot = Split-Path -Parent $BuiltExecutable
+Get-ChildItem -LiteralPath $BuiltRuntimeRoot -Filter "*.dll" -File |
+    ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination $StageRoot -Force
+    }
+
 & $WinDeployQt --release --compiler-runtime --no-translations $Executable
 if ($LASTEXITCODE -ne 0) { throw "windeployqt failed" }
 
@@ -84,6 +99,23 @@ Copy-Item -LiteralPath (Join-Path $SourceRoot "COPYING") -Destination $StageRoot
 Copy-Item -LiteralPath (Join-Path $SourceRoot "third_party\\cmark-gfm\\COPYING") `
     -Destination (Join-Path $StageRoot "CMARK-GFM-LICENSE")
 Copy-Item -LiteralPath (Join-Path $SourceRoot "TESTING.md") -Destination $StageRoot
+
+# Prove the staged directory is self-contained. The build and test environment
+# has Qt and vcpkg runtime directories on PATH, which can hide a missing DLL in
+# the ZIP. A first process launch with only Windows system locations available
+# catches that package-boundary failure while retaining the GUI subsystem.
+$OriginalPath = $env:PATH
+try {
+    $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+    $Launch = Start-Process -FilePath $Executable -ArgumentList "--version" `
+        -WorkingDirectory $StageRoot -Wait -PassThru
+    if ($Launch.ExitCode -ne 0) {
+        throw "Staged tester executable failed its clean-path launch with exit code $($Launch.ExitCode)"
+    }
+}
+finally {
+    $env:PATH = $OriginalPath
+}
 
 $VersionInfo = (Get-Item -LiteralPath $Executable).VersionInfo
 if ($VersionInfo.ProductName -ne "FairyWriter" -or

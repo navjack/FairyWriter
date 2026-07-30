@@ -39,16 +39,19 @@ const (
 	// The help card is a full-screen static plane like the menu and browser
 	// planes, not a dialog overlay, so it gets its own 240-byte page and is
 	// copied by the same 8-bit-X loop they use.
-	helpOffset       = 0x8d50 // 240
-	settingsOffset   = 0x8e40 // 240
-	saveFormatOffset = 0x8f30 // 336
+	helpOffset            = 0x8d50 // 240
+	settingsOffset        = 0x8e40 // 240
+	saveFormatOffset      = 0x8f30 // 240
+	saveRootTitleOffset   = 0x9020 // 30
+	saveFolderTitleOffset = 0x903e // 30
+	filenameOffset        = 0x9080 // 240
 	// Tiles are last because they are the only variable-size blob, so the fixed
 	// pages above keep stable offsets. Capacity here is 0xffb0-tilesOffset =
-	// 28464 bytes = 889 tiles, up from the 554 that exactly filled the old
+	// 28208 bytes = 881 tiles, up from the 554 that exactly filled the old
 	// layout. The hard ceiling beyond that is VRAM, not ROM: BG1 plus OBJ cannot
 	// address more than 1024 4bpp tiles however large the cartridge gets. New
 	// static planes come out of this budget by shifting tilesOffset up.
-	tilesOffset = 0x9080
+	tilesOffset = 0x9180
 	// bank1Limit is where bank 1's data has to stop: the start of the reserved
 	// header-scoring window at $ffb0. See the reserved-window check in build().
 	bank1Limit = 0xffb0
@@ -343,18 +346,75 @@ func browserReadyPlane() []byte {
 	)
 }
 
+// Filename entry is a real modal plane rather than text painted over the last
+// browser listing. The lower document panel owns the field and instructions;
+// renderFilename also repurposes the title and formatting cards as contextual
+// Save/Cancel controls. The visible field is deliberately the same width as
+// the bounded filename buffer so entered text never disappears off-screen.
+func filenamePlane() []byte {
+	return textPlane(
+		"       SAVE NEW DOCUMENT",
+		"  ENTER A NAME FOR THE FILE",
+		"",
+		"  +------------------------+",
+		"  |                        |",
+		"  +------------------------+",
+		"  TYPE NAME, THEN CHOOSE SAVE",
+		"  ENTER USES HIGHLIGHTED ITEM",
+	)
+}
+
+// Rich style is a three-bit mask, not a list of mutually exclusive shapes:
+// bold, italic and underline are independent properties of a character and a
+// writer can hold any two or all three at once. The mask value doubles as the
+// glyph page index, and the page index is exactly what the tilemap carries:
+// bit 0 of the page lands in the character byte (+128) and bits 1-2 in the
+// attribute byte's tile-id bits 8-9, so the draw loop needs no arithmetic
+// beyond masking the host's own flag bits. These values therefore match
+// FormatRunBold/Italic/Underline in the host's mailbox wire on purpose.
+const (
+	styleBold      = 1
+	styleItalic    = 2
+	styleUnderline = 4
+	// One page per mask value: plain plus every combination.
+	stylePageCount = 8
+	// Tile id = page*stylePageStride + ASCII. The stride is what makes the
+	// character byte and the two attribute bits sufficient.
+	stylePageStride = 128
+	// Only printable ASCII can be styled, so a styled page stores that range
+	// and nothing else. The ids below styledFirstChar and above styledLastChar
+	// in each styled page are never referenced by the draw loop, which is where
+	// the background/scene tiles live -- see encode().
+	styledFirstChar = 32
+	styledLastChar  = 126
+	styledPageTiles = styledLastChar - styledFirstChar + 1
+	// A capital glyph fills rows 0-6, so the underline has exactly one pixel row
+	// and it is the row that touches the next line of text. Drawn in the ink
+	// white at the full cell width it stops reading as an underline and starts
+	// reading as a bar between two lines -- badly so where an underlined line
+	// sits above another one. Index 5 is the palette's pale blue: it holds a
+	// clearly visible line under its own text while staying quiet enough that
+	// the letters of the following line stay readable against it, and stopping
+	// one column short of the cell edge keeps the line from fusing into an
+	// unbroken band across the whole width.
+	underlineInk     = 5
+	underlineColumns = 7
+)
+
 // glyphShapePixels renders one resident glyph's 8x8 pixel buffer (background
-// color 4, ink color 15) for a given rich-style shape: 0 plain, 1 underline,
-// 2 bold, 3 italic. Base glyphs are 5 columns wide (see `glyphs`), leaving
-// columns 5-7 free, so bold's 1px dilation and italic's up-to-2px skew never
-// clip into a neighboring character's cell.
-func glyphShapePixels(ch byte, shape int) []byte {
+// color 4, ink color 15) for a rich-style mask (styleBold|styleItalic|
+// styleUnderline, 0 for plain). Base glyphs are 5 columns wide (see `glyphs`),
+// leaving columns 5-7 free, so bold's 1px dilation and italic's up-to-2px skew
+// compose within the cell -- even together -- without clipping into the
+// neighboring character, and underline owns the otherwise unused 8th pixel row
+// that neither of the other two touches.
+func glyphShapePixels(ch byte, style int) []byte {
 	pixels := make([]byte, 64)
 	for i := range pixels {
 		pixels[i] = 4 // document-field blue behind every resident glyph
 	}
 	if ch == 127 {
-		if shape != 0 {
+		if style != 0 {
 			// The block cursor glyph is style-invariant; the cursor draw
 			// path always references the plain-bank tile directly.
 			return pixels
@@ -375,7 +435,7 @@ func glyphShapePixels(ch byte, shape int) []byte {
 	}
 	for row, bits := range g {
 		shift := 0
-		if shape == 3 { // italic: skew increasing toward the top row, capped at 2px
+		if style&styleItalic != 0 { // skew increasing toward the top row, capped at 2px
 			shift = (6 - row) / 3
 		}
 		for col := 0; col < 5; col++ {
@@ -386,49 +446,110 @@ func glyphShapePixels(ch byte, shape int) []byte {
 			if at >= 0 && at < 8 {
 				pixels[row*8+at] = 15
 			}
-			if shape == 2 && at+1 < 8 { // bold: dilate every lit pixel one column right
+			if style&styleBold != 0 && at+1 < 8 { // dilate every lit pixel one column right
 				pixels[row*8+at+1] = 15
 			}
 		}
 	}
-	if shape == 1 { // underline: light the glyph's unused 8th pixel row
-		for col := 0; col < 8; col++ {
-			pixels[7*8+col] = 15
+	if style&styleUnderline != 0 { // light the glyph's unused 8th pixel row
+		for col := 0; col < underlineColumns; col++ {
+			pixels[7*8+col] = underlineInk
 		}
 	}
 	return pixels
 }
 
-func encode(c canvas) ([]byte, []byte) {
+// tileUpload is one contiguous ROM-to-VRAM character-data transfer. The tile
+// blob is packed (a styled page stores printable ASCII only) while the BG1 tile
+// ids it occupies are strided, so the ROM order and the VRAM order are not the
+// same sequence and the upload cannot be a single DMA.
+type tileUpload struct {
+	romTile  int
+	vramTile int
+	count    int
+}
+
+// sceneTileIds returns the BG1 tile ids available for background/scene art, in
+// allocation order. Each styled page reserves stylePageStride ids but only
+// stores printable ASCII, so the control-character slots of every styled page
+// are ids the draw loop can never reference. Using them keeps the whole glyph
+// scheme inside BG1's 1024-id ceiling instead of pushing scene art past it.
+func sceneTileIds() []int {
+	var ids []int
+	for page := 1; page < stylePageCount; page++ {
+		for ch := 0; ch < styledFirstChar; ch++ {
+			ids = append(ids, page*stylePageStride+ch)
+		}
+	}
+	return ids
+}
+
+func encode(c canvas) ([]byte, []byte, []tileUpload) {
 	index := map[string]uint16{}
 	var tiles [][]byte
+	var uploads []tileUpload
 	// Tile ids 0..127 intentionally equal ASCII. The 65816 can therefore
 	// consume a host text byte from cartridge SRAM and write it directly to a
 	// BG1 tilemap cell without a lookup table or host-side rendering.
-	// Ids 128..511 are three more 128-tile pages (underline/bold/italic) at
-	// the same ASCII-aligned offset, selected via the tilemap attribute
-	// byte's char-bit8/9 (see the draw loop's rich-style attribute logic).
-	// Background/scene tiles are appended after all four pages, so they
-	// naturally start at id 512.
-	if !richStyleVisualsEnabled {
-		for ch := 0; ch < 128; ch++ {
-			pixels := glyphShapePixels(byte(ch), 0)
-			tiles = append(tiles, pixels)
-			if _, exists := index[string(pixels)]; !exists {
-				index[string(pixels)] = uint16(ch)
-			}
+	// Ids page*128 + ASCII are seven more glyph pages, one per bold/italic/
+	// underline combination, selected by the character byte's bit 7 and the
+	// attribute byte's tile-id bits 8-9 (see the draw loop's rich-style
+	// attribute logic). A styled page stores printable ASCII only.
+	for ch := 0; ch < 128; ch++ {
+		pixels := glyphShapePixels(byte(ch), 0)
+		tiles = append(tiles, pixels)
+		if _, exists := index[string(pixels)]; !exists {
+			index[string(pixels)] = uint16(ch)
 		}
-	} else {
-		for shape := 0; shape < 4; shape++ {
-			for ch := 0; ch < 128; ch++ {
-				pixels := glyphShapePixels(byte(ch), shape)
-				id := uint16(shape*128 + ch)
+	}
+	uploads = append(uploads, tileUpload{romTile: 0, vramTile: 0, count: 128})
+	if richStyleVisualsEnabled {
+		for page := 1; page < stylePageCount; page++ {
+			uploads = append(uploads, tileUpload{
+				romTile:  len(tiles),
+				vramTile: page*stylePageStride + styledFirstChar,
+				count:    styledPageTiles,
+			})
+			for ch := styledFirstChar; ch <= styledLastChar; ch++ {
+				pixels := glyphShapePixels(byte(ch), page)
+				id := uint16(page*stylePageStride + ch)
 				tiles = append(tiles, pixels)
 				if _, exists := index[string(pixels)]; !exists {
 					index[string(pixels)] = id
 				}
 			}
 		}
+	}
+	// Scene art claims the styled pages' unreferenced control-character slots.
+	// Consecutive claims are merged so the upload stays a handful of DMAs.
+	free := sceneTileIds()
+	if !richStyleVisualsEnabled {
+		free = nil
+	}
+	claimSceneTile := func(pixels []byte) uint16 {
+		var id int
+		if len(free) > 0 {
+			id, free = free[0], free[1:]
+		} else {
+			// No styled pages (rich style disabled) or the holes are exhausted:
+			// fall back to appending past the last glyph page.
+			id = stylePageCount * stylePageStride
+			for _, upload := range uploads {
+				if end := upload.vramTile + upload.count; end > id {
+					id = end
+				}
+			}
+		}
+		last := &uploads[len(uploads)-1]
+		if last.vramTile+last.count == id && last.romTile+last.count == len(tiles) {
+			last.count++
+		} else {
+			uploads = append(uploads, tileUpload{
+				romTile: len(tiles), vramTile: id, count: 1,
+			})
+		}
+		tiles = append(tiles, pixels)
+		return uint16(id)
 	}
 	tilemap := make([]byte, 32*32*2)
 	for ty := 0; ty < 28; ty++ {
@@ -442,9 +563,8 @@ func encode(c canvas) ([]byte, []byte) {
 			key := string(pixels)
 			id, ok := index[key]
 			if !ok {
-				id = uint16(len(tiles))
+				id = claimSceneTile(pixels)
 				index[key] = id
-				tiles = append(tiles, pixels)
 			}
 			binary.LittleEndian.PutUint16(tilemap[(ty*32+tx)*2:], id)
 		}
@@ -477,7 +597,7 @@ func encode(c canvas) ([]byte, []byte) {
 			}
 		}
 	}
-	return tilemap, encoded
+	return tilemap, encoded, uploads
 }
 
 // pointerSpritePixels returns the 8x8 4bpp arrow used for the resident SNES
@@ -549,6 +669,7 @@ func xbandScanMap() [256]byte {
 		0x79: '&', 0x78: '*', 0x77: '(', 0x76: ')', 0x75: '_', 0x74: '+',
 		0x73: '<', 0x72: '>', 0x71: '?', 0x6f: '"', 0x6e: '{', 0x6d: '}',
 		0x6c: ':', 0x6b: '|', 0x69: '~',
+		0x0d: 0x09, // Tab advances focus in cartridge-owned dialogs.
 		0x5a: 0x0d, 0x66: 0x08,
 	} {
 		m[scan] = ch
@@ -566,7 +687,7 @@ func loromAddr(offset int) uint16 { return uint16(0x8000 + (offset & 0x7fff)) }
 
 // emitProgram returns the 65816 program image and the offset of its RTI
 // interrupt landing pad, which build() wires into every non-RESET vector.
-func emitProgram(tileBytes int) ([]byte, int) {
+func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	var p []byte
 	b := func(v ...byte) { p = append(p, v...) }
 	// patch16 back-patches the 16-bit operand of an already-emitted instruction
@@ -653,9 +774,17 @@ func emitProgram(tileBytes int) ([]byte, int) {
 	ldaSta(0x80, 0x2115)
 	b(0x9c, 0x16, 0x21, 0x9c, 0x17, 0x21)
 	dma(tilemapOffset, 2048, 1, 0x18)
-	ldaSta(0, 0x2116)
-	ldaSta(0x10, 0x2117)
-	dma(tilesOffset, uint16(tileBytes), 1, 0x18)
+	// Character data is uploaded chunk by chunk. The packed ROM blob and the
+	// strided BG1 id space are two different orderings (see tileUpload), so each
+	// contiguous run sets its own VRAM word address. VMADD is a word address and
+	// one 4bpp tile is 16 words.
+	for _, upload := range tileUploads {
+		const tileWords = 16
+		vramWord := 0x1000 + upload.vramTile*tileWords
+		ldaSta(byte(vramWord), 0x2116)
+		ldaSta(byte(vramWord>>8), 0x2117)
+		dma(tilesOffset+upload.romTile*32, uint16(upload.count*32), 1, 0x18)
+	}
 	// Upload the pointer and position-thumb OBJ tiles to VRAM word $6000 (OBJ
 	// name base 3). Their ROM bytes are the final 64 of the tile blob.
 	ldaSta(0x80, 0x2115)
@@ -705,8 +834,9 @@ func emitProgram(tileBytes int) ([]byte, int) {
 	b(0x9c, 0x14, 0x03, 0x9c, 0x1a, 0x03, 0x9c, 0x1b, 0x03)                                     // settings return/selection, Save+Recovery mode
 	b(0xa9, 0x01, 0x8d, 0x1c, 0x03, 0xa9, 0x05, 0x8d, 0x2b, 0x03)                               // one minute, five retained copies
 	b(0x9c, 0x2e, 0x03, 0x9c, 0x2f, 0x03, 0x9c, 0x68, 0x03, 0x9c, 0x69, 0x03, 0x9c, 0x6a, 0x03) // rendered Markdown, ODT, no filter/current format/transition Save
-	b(0x9c, 0x1f, 0x03, 0x9c, 0x20, 0x03, 0x9c, 0x30, 0x03, 0x9c, 0x31, 0x03)                   // browser/page and Save As lengths
+	b(0x9c, 0x1f, 0x03, 0x9c, 0x20, 0x03, 0x9c, 0x31, 0x03)                                     // browser count/selection and filename length
 	b(0x9c, 0x32, 0x03)                                                                         // find query length
+	b(0x9c, 0x6d, 0x03)                                                                         // filename dialog focus: name/save/cancel
 	b(0xa9, 128, 0x8d, 0x34, 0x03, 0xa9, 112, 0x8d, 0x35, 0x03, 0x9c, 0x36, 0x03)               // SNES mouse pointer and previous left button
 	b(0xa9, scrollThumbTrackStart, 0x8d, 0x52, 0x03, 0xa9, 0x01, 0x8d, 0x53, 0x03)              // document-position thumb starts dirty at track origin
 	b(0xa9, 0xff, 0x8d, 0x3c, 0x03, 0x8d, 0x3d, 0x03)                                           // no sticky vertical column yet ($033c/$033d)
@@ -1038,9 +1168,66 @@ func emitProgram(tileBytes int) ([]byte, int) {
 	mouseRisingEdge := len(p)
 	branch(bneMouseRisingEdge, mouseRisingEdge)
 	b(0xad, 0x36, 0x03)
-	bneMouseDone := len(p)
+	b(0xf0, 0x03) // BEQ skips the held-button trampoline.
+	jmpPointerHeldAt := len(p)
+	b(0x4c, 0, 0)
+	b(0xa9, 0x01, 0x8d, 0x36, 0x03, 0xad, 0x1d, 0x03)
+	// Filename mode owns two large contextual buttons in the former formatting
+	// card and a field in the document panel. A click changes the same focus
+	// byte keyboard navigation uses, then returns Enter for either action or a
+	// private refresh key for the field. Save and Cancel therefore have one
+	// activation path regardless of whether the user clicked or navigated.
+	b(0xc9, 0x0a)
+	bneMouseNotFilename := len(p)
 	b(0xd0, 0)
-	b(0xa9, 0x01, 0x8d, 0x36, 0x03, 0xad, 0x1d, 0x03, 0xc9, 0x01)
+	b(0xad, 0x35, 0x03) // LDA $0335 (mouse Y)
+	b(0xc9, 8)
+	bccMouseFilenameField := len(p)
+	b(0x90, 0)
+	b(0xc9, 24)
+	bcsMouseFilenameField := len(p)
+	b(0xb0, 0)
+	b(0xad, 0x34, 0x03) // LDA $0334 (mouse X)
+	b(0xc9, 160)
+	bccMouseFilenameDone := len(p)
+	b(0x90, 0)
+	b(0xc9, 248)
+	bcsMouseFilenameDone := len(p)
+	b(0xb0, 0)
+	b(0xad, 0x35, 0x03, 0xc9, 16)
+	bccMouseFilenameSave := len(p)
+	b(0x90, 0)
+	b(0xa9, 0x02, 0x8d, 0x6d, 0x03, 0xa9, 0x0d, 0x60) // Cancel focus, then Enter.
+	mouseFilenameSave := len(p)
+	branch(bccMouseFilenameSave, mouseFilenameSave)
+	b(0xa9, 0x01, 0x8d, 0x6d, 0x03, 0xa9, 0x0d, 0x60) // Save focus, then Enter.
+	mouseFilenameField := len(p)
+	branch(bccMouseFilenameField, mouseFilenameField)
+	branch(bcsMouseFilenameField, mouseFilenameField)
+	b(0xad, 0x35, 0x03, 0xc9, 104)
+	bccMouseFilenameDone2 := len(p)
+	b(0x90, 0)
+	b(0xc9, 128)
+	bcsMouseFilenameDone2 := len(p)
+	b(0xb0, 0)
+	b(0xad, 0x34, 0x03, 0xc9, 24)
+	bccMouseFilenameDone3 := len(p)
+	b(0x90, 0)
+	b(0xc9, 232)
+	bcsMouseFilenameDone3 := len(p)
+	b(0xb0, 0)
+	b(0x9c, 0x6d, 0x03, 0xa9, 0x1e, 0x60) // Name focus, then refresh.
+	mouseFilenameDone := len(p)
+	branch(bccMouseFilenameDone, mouseFilenameDone)
+	branch(bcsMouseFilenameDone, mouseFilenameDone)
+	branch(bccMouseFilenameDone2, mouseFilenameDone)
+	branch(bcsMouseFilenameDone2, mouseFilenameDone)
+	branch(bccMouseFilenameDone3, mouseFilenameDone)
+	branch(bcsMouseFilenameDone3, mouseFilenameDone)
+	b(0xa9, 0x00, 0x60)
+	mouseNotFilename := len(p)
+	branch(bneMouseNotFilename, mouseNotFilename)
+	b(0xc9, 0x01)
 	// The document-body, toolbar, scroll-track and browser blocks now sit between
 	// here and `mouseMenu`, so this uses the standard inverted-BNE-over-JMP
 	// trampoline rather than a relative branch that no longer reaches.
@@ -1170,7 +1357,7 @@ func emitProgram(tileBytes int) ([]byte, int) {
 	b(0x9c, 0x36, 0x03)
 	b(0x9c, 0x33, 0x03) // releasing ends any scroll drag
 	mouseDone := len(p)
-	branch(bneMouseDone, pointerHeld)
+	jump(jmpPointerHeldAt, pointerHeld)
 	branch(bccMouseDone, mouseDone)
 	branch(bcsMouseDone, mouseDone)
 	branch(beqMouseDone2, mouseDone)
@@ -1340,11 +1527,53 @@ func emitProgram(tileBytes int) ([]byte, int) {
 	// addressable offsets at 255 even once the base was right.
 	resolveCellCommand := len(p)
 	patch16(pointerResolveCall, resolveCellCommand)
+	// Bring the target back into layout space first. Centre and right aligned
+	// rows are drawn translated right within their plane row, while the hit-test
+	// below walks the layout flush left, so the cell the user actually pointed at
+	// is not the cell the layout will report. Both callers -- the pointer and
+	// wrap-aware Up/Down -- work in visible cells, so this is the one place that
+	// has to know.
+	b(0xc2, 0x20)                   // REP #$20 (16-bit A)
+	b(0xad, 0x39, 0x03)             // LDA $0339 (target cell)
+	b(0x8d, 0x22, 0x0f)             // STA $0f22 -- the visible target, restored below
+	b(0xa2, 0x00)                   // LDX #0 (row; index registers are 8-bit here)
+	unshiftRow := len(p)
+	b(0xc9, 0x1e, 0x00) // CMP #30
+	bccUnshiftHaveRow := len(p)
+	b(0x90, 0)
+	b(0x38, 0xe9, 0x1e, 0x00) // SEC; SBC #30
+	b(0xe8)                   // INX
+	braUnshiftRow := len(p)
+	b(0x80, 0)
+	unshiftHaveRow := len(p)
+	branch(bccUnshiftHaveRow, unshiftHaveRow)
+	branch(braUnshiftRow, unshiftRow)
+	b(0xe2, 0x20)       // SEP #$20 (8-bit A; A is the column within the row)
+	b(0xdd, 0x00, 0x0f) // CMP $0f00,X (this row's shift)
+	bccUnshiftClamp := len(p)
+	b(0x90, 0)          // BCC: pointed left of the shifted text
+	b(0xbd, 0x00, 0x0f) // LDA $0f00,X (take the whole shift back)
+	braUnshiftApply := len(p)
+	b(0x80, 0)
+	unshiftClamp := len(p)
+	branch(bccUnshiftClamp, unshiftClamp)
+	// Left of the row's first character: give back only the column, so the
+	// target lands on that character instead of before the row.
+	unshiftApply := len(p)
+	branch(braUnshiftApply, unshiftApply)
+	b(0x8d, 0x1e, 0x0f, 0x9c, 0x1f, 0x0f) // STA $0f1e; STZ $0f1f
+	b(0xc2, 0x20)                         // REP #$20
+	b(0xad, 0x39, 0x03, 0x38, 0xed, 0x1e, 0x0f, 0x8d, 0x39, 0x03)
+	b(0xe2, 0x20)                   // SEP #$20
 	b(0xa9, 0x01, 0x8d, 0x40, 0x03) // LDA #1; STA $0340 (hit active)
 	b(0x9c, 0x3b, 0x03)             // STZ $033b (found = 0)
 	resolveRenderCall := len(p)
 	b(0x20, 0, 0)       // JSR render (re-lays out and runs the hit-test)
 	b(0x9c, 0x40, 0x03) // STZ $0340 (hit inactive)
+	// Give the caller back the cell it asked for. The pointer keeps this value as
+	// its "already published" key, so leaving the un-shifted one here would make a
+	// held button re-publish an extend command on every frame over a shifted row.
+	b(0xc2, 0x20, 0xad, 0x22, 0x0f, 0x8d, 0x39, 0x03, 0xe2, 0x20)
 	b(0xad, 0x3b, 0x03) // LDA $033b (found?)
 	beqResolveOut := len(p)
 	b(0xf0, 0)                            // BEQ resolveOut
@@ -1763,6 +1992,7 @@ func emitProgram(tileBytes int) ([]byte, int) {
 	bcsProofDone := len(p)
 	b(0xb0, 0)
 	b(0xa9, 0x00, 0x99, 0x00, 0x0b) // LDA #0; STA $0b00,Y
+	b(0x99, 0x00, 0x0d)             // STA $0d00,Y (paragraph alignment: 0 = left)
 	b(0xb9, 0x00, 0x07, 0x85, 0x1c) // LDA $0700,Y; STA $1c
 	b(0xb9, 0x00, 0x09, 0x85, 0x1d) // LDA $0900,Y; STA $1d
 	b(0xa2, 0x00, 0x00)
@@ -1779,9 +2009,14 @@ func emitProgram(tileBytes int) ([]byte, int) {
 		formatRunMask = 0x1f // + bold|italic|underline
 	}
 	b(0xbf, 0x84, 0x42, 0x70, 0x29, formatRunMask) // LDA.l $704284,X; AND #formatRunMask
+	b(0x85, 0x1e)                                  // save proof bits
+	// A run can carry nothing but its paragraph's alignment -- a centred plain
+	// paragraph is exactly that -- so the "is this run worth matching" test has
+	// to consider alignment as well, or centring a paragraph that has no bold,
+	// italic, underline or proofing anywhere in it would be dropped here.
+	b(0xbf, 0x86, 0x42, 0x70, 0x29, 0x03, 0x05, 0x1e) // LDA.l $704286,X; AND #3; ORA $1e
 	beqProofNextRun := len(p)
 	b(0xf0, 0)
-	b(0x85, 0x1e)             // save proof bits
 	b(0xc2, 0x20)             // REP #$20
 	b(0xa5, 0x1c)             // cell UTF-16 offset
 	b(0xdf, 0x80, 0x42, 0x70) // CMP.l $704280,X (run start)
@@ -1793,6 +2028,15 @@ func emitProgram(tileBytes int) ([]byte, int) {
 	b(0xb0, 0)
 	b(0xe2, 0x20)                                     // SEP #$20
 	b(0xb9, 0x00, 0x0b, 0x05, 0x1e, 0x99, 0x00, 0x0b) // ORA into $0b00,Y
+	// Alignment is a property of the whole paragraph, not an accumulating bit
+	// field: the last run covering this character wins, and left (0) never
+	// overwrites a centre or right already recorded for it.
+	b(0xbf, 0x86, 0x42, 0x70, 0x29, 0x03) // LDA.l $704286,X; AND #3
+	beqProofAlignKept := len(p)
+	b(0xf0, 0)
+	b(0x99, 0x00, 0x0d) // STA $0d00,Y
+	proofAlignKept := len(p)
+	branch(beqProofAlignKept, proofAlignKept)
 	braProofAfterMatch := len(p)
 	b(0x80, 0)
 	proofNoMatch := len(p)
@@ -2810,10 +3054,12 @@ func emitProgram(tileBytes int) ([]byte, int) {
 	b(0xad, 0x1d, 0x03, 0xc9, 0x06)
 	bneBrowserNormalInput2 := len(p)
 	b(0xd0, 0)
-	b(0xad, 0x30, 0x03)
+	// The current listing parent is the save destination. Do not retain a
+	// second "last directory entered" copy: Back must change where N saves.
+	b(0xad, 0x48, 0x03)
 	beqBrowserNormalInput3 := len(p)
 	b(0xf0, 0)
-	b(0xa9, 0x0a, 0x8d, 0x1d, 0x03, 0x9c, 0x31, 0x03)
+	b(0xa9, 0x0a, 0x8d, 0x1d, 0x03, 0x9c, 0x31, 0x03, 0x9c, 0x6d, 0x03)
 	emitBrowserRenderCall()
 	b(0x60)
 	browserNormalInput := len(p)
@@ -2949,11 +3195,18 @@ func emitProgram(tileBytes int) ([]byte, int) {
 	b(0xc9, 0x0d, 0xf0, 0x01, 0x60)
 	b(0xad, 0x1f, 0x03, 0xd0, 0x01, 0x60)
 	b(0xad, 0x1d, 0x03, 0x85, 0x18) // preserve ready mode across ID copy
+	// The per-row flags ($17e0), opaque-ID length ($17e8) and name length
+	// ($17f0) tables hold one byte per visible row, exactly as the file-entry
+	// decode writes them, so the selected row indexes them directly. Only the
+	// $1600 opaque-ID table is 32 bytes per row, and the copy loop below walks
+	// it with its own shifted index.
+	b(0xae, 0x20, 0x03)                                     // LDX $0320 (selected row)
+	b(0xbd, 0xe8, 0x17, 0x8d, 0x15, 0x03, 0x9c, 0x18, 0x03) // payload count = its ID length
 	b(0xad, 0x20, 0x03)
 	for i := 0; i < 5; i++ {
 		b(0x0a)
 	}
-	b(0xaa, 0xbd, 0xe8, 0x17, 0x8d, 0x15, 0x03, 0x9c, 0x18, 0x03)
+	b(0xaa)
 	b(0xa0, 0x00)
 	copyBrowserId := len(p)
 	b(0xcc, 0x15, 0x03)
@@ -2965,11 +3218,9 @@ func emitProgram(tileBytes int) ([]byte, int) {
 	browserIdCopied := len(p)
 	branch(beqBrowserIdCopied, browserIdCopied)
 	branch(braCopyBrowserId, copyBrowserId)
-	b(0xad, 0x20, 0x03)
-	for i := 0; i < 5; i++ {
-		b(0x0a)
-	}
-	b(0xaa) // reload the selected entry's flags after X walked its ID bytes
+	// Reload the selected row's flags after X walked its ID bytes. This table is
+	// also one byte per row, so it must not use the ID table's shifted index.
+	b(0xae, 0x20, 0x03) // LDX $0320 (selected row)
 	b(0xbd, 0xe0, 0x17, 0x29, 0x01)
 	b(0xd0, 0x03) // BNE +3: a directory continues below; a file jumps (range)
 	beqBrowserFile := len(p)
@@ -2977,21 +3228,6 @@ func emitProgram(tileBytes int) ([]byte, int) {
 
 	// A directory keeps its browser role (open/save-as/recent) and moves to a
 	// matching loading mode while the host lists that opaque catalog ID.
-	b(0xa5, 0x18, 0xc9, 0x06)
-	bneSaveAsParentDone := len(p)
-	b(0xd0, 0)
-	b(0xad, 0x15, 0x03, 0x8d, 0x30, 0x03, 0xa0, 0x00)
-	copySaveAsParent := len(p)
-	b(0xcc, 0x15, 0x03)
-	bcsSaveAsParentDone := len(p)
-	b(0xb0, 0)
-	b(0xb9, 0x00, 0x18, 0x99, 0x40, 0x18, 0xc8)
-	braCopySaveAsParent := len(p)
-	b(0x80, 0)
-	saveAsParentDone := len(p)
-	branch(bneSaveAsParentDone, saveAsParentDone)
-	branch(bcsSaveAsParentDone, saveAsParentDone)
-	branch(braCopySaveAsParent, copySaveAsParent)
 	b(0xa9, 0x00, 0x8d, 0x16, 0x03, 0xa9, 0x01, 0x8d, 0x17, 0x03)
 	b(0xa5, 0x18, 0x38, 0xe9, 0x03, 0x8d, 0x1d, 0x03)
 	b(0x9c, 0x1f, 0x03, 0x9c, 0x20, 0x03)
@@ -3071,12 +3307,71 @@ func emitProgram(tileBytes int) ([]byte, int) {
 	emitBrowserRenderCall()
 	b(0x60)
 
-	// Save As New keeps a bounded filename in cartridge WRAM. It constructs
-	// parent-id + NUL + name only at submission time, never exposing a path.
+	// Save As New keeps a bounded filename and dialog focus in cartridge WRAM.
+	// Name, Save and Cancel are one focus ring shared by keyboard and mouse:
+	// Tab/Down/Right advance, Up/Left move back, Enter activates, and typing
+	// always returns focus to the name field. It constructs parent-id + NUL +
+	// name only at submission time, never exposing a path.
 	browserFilenameInput := len(p)
 	jump(browserFilenameJump, browserFilenameInput)
-	b(0xe2, 0x30, 0xa5, 0x5b, 0xc9, 0x08)
-	bneFilenameEnter := len(p)
+	b(0xe2, 0x30, 0xa5, 0x5b)
+	b(0xc9, 0x1e) // private mouse-field refresh key
+	beqFilenameRefresh := equalJump()
+	b(0xc9, 0x09) // Tab
+	beqFilenameNext := equalJump()
+	b(0xc9, 0x12) // Right
+	beqFilenameNext2 := equalJump()
+	b(0xc9, 0x14) // Down
+	beqFilenameNext3 := equalJump()
+	b(0xc9, 0x11) // Left
+	beqFilenamePrevious := equalJump()
+	b(0xc9, 0x13) // Up
+	beqFilenamePrevious2 := equalJump()
+	b(0xc9, 0x08) // Backspace / Back
+	beqFilenameBack := equalJump()
+	b(0xc9, 0x0d) // Enter
+	beqFilenameEnter := equalJump()
+	b(0xc9, 0x20, 0xb0, 0x01, 0x60) // printable lower bound or return
+	b(0xc9, 0x7f, 0x90, 0x01, 0x60) // printable upper bound or return
+	b(0x85, 0x1b, 0x9c, 0x6d, 0x03, 0xad, 0x31, 0x03, 0xc9, 24)
+	b(0x90, 0x01, 0x60) // visible, bounded filename buffer or return
+	b(0xae, 0x31, 0x03, 0xa5, 0x1b, 0x9d, 0x80, 0x18, 0xee, 0x31, 0x03)
+	filenameRefresh := len(p)
+	jump(beqFilenameRefresh, filenameRefresh)
+	emitBrowserRenderCall()
+	b(0x60)
+	filenameNext := len(p)
+	jump(beqFilenameNext, filenameNext)
+	jump(beqFilenameNext2, filenameNext)
+	jump(beqFilenameNext3, filenameNext)
+	b(0xee, 0x6d, 0x03, 0xad, 0x6d, 0x03, 0xc9, 0x03)
+	bccFilenameFocusReady := len(p)
+	b(0x90, 0)
+	b(0x9c, 0x6d, 0x03)
+	filenameFocusReady := len(p)
+	branch(bccFilenameFocusReady, filenameFocusReady)
+	emitBrowserRenderCall()
+	b(0x60)
+	filenamePrevious := len(p)
+	jump(beqFilenamePrevious, filenamePrevious)
+	jump(beqFilenamePrevious2, filenamePrevious)
+	b(0xad, 0x6d, 0x03)
+	bneFilenamePreviousMove := len(p)
+	b(0xd0, 0)
+	b(0xa9, 0x02, 0x8d, 0x6d, 0x03)
+	emitBrowserRenderCall()
+	b(0x60)
+	filenamePreviousMove := len(p)
+	branch(bneFilenamePreviousMove, filenamePreviousMove)
+	b(0xce, 0x6d, 0x03)
+	emitBrowserRenderCall()
+	b(0x60)
+	filenameBack := len(p)
+	jump(beqFilenameBack, filenameBack)
+	// Backspace edits only while the name field owns focus. From either button,
+	// or from an already-empty field, Back is the dialog-wide Cancel action.
+	b(0xad, 0x6d, 0x03)
+	bneFilenameCancel := len(p)
 	b(0xd0, 0)
 	b(0xad, 0x31, 0x03)
 	beqFilenameCancel := len(p)
@@ -3085,31 +3380,30 @@ func emitProgram(tileBytes int) ([]byte, int) {
 	emitBrowserRenderCall()
 	b(0x60)
 	filenameCancel := len(p)
+	branch(bneFilenameCancel, filenameCancel)
 	branch(beqFilenameCancel, filenameCancel)
 	b(0xa9, 0x06, 0x8d, 0x1d, 0x03)
 	emitBrowserRenderCall()
 	b(0x60)
 	filenameEnter := len(p)
-	branch(bneFilenameEnter, filenameEnter)
-	b(0xc9, 0x0d)
-	beqFilenameSubmit := len(p)
+	jump(beqFilenameEnter, filenameEnter)
+	b(0xad, 0x6d, 0x03, 0xc9, 0x02)
+	beqFilenameCancelFromEnter := len(p)
 	b(0xf0, 0)
-	b(0xc9, 0x20, 0xb0, 0x01, 0x60) // printable lower bound or return
-	b(0xc9, 0x7f, 0x90, 0x01, 0x60) // printable upper bound or return
-	b(0x85, 0x1b, 0xad, 0x31, 0x03, 0xc9, 31)
-	b(0x90, 0x01, 0x60) // bounded filename buffer or return
-	b(0xae, 0x31, 0x03, 0xa5, 0x1b, 0x9d, 0x80, 0x18, 0xee, 0x31, 0x03)
-	emitBrowserRenderCall()
+	branch(beqFilenameCancelFromEnter, filenameCancel)
+	b(0xad, 0x31, 0x03)
+	bneFilenameHasName := len(p)
+	b(0xd0, 0)
+	emitBrowserRenderCall() // empty Save still reveals its selected-button highlight
 	b(0x60)
-	filenameSubmit := len(p)
-	branch(beqFilenameSubmit, filenameSubmit)
-	b(0xad, 0x31, 0x03, 0xd0, 0x01, 0x60) // empty name cannot submit
+	filenameHasName := len(p)
+	branch(bneFilenameHasName, filenameHasName)
 	b(0x9c, 0x18, 0x03, 0xa0, 0x00)
 	copyFilenameParent := len(p)
-	b(0xcc, 0x30, 0x03)
+	b(0xcc, 0x48, 0x03)
 	bcsFilenameParentDone := len(p)
 	b(0xb0, 0)
-	b(0xb9, 0x40, 0x18, 0x99, 0x00, 0x18, 0xc8)
+	b(0xb9, 0x00, 0x19, 0x99, 0x00, 0x18, 0xc8)
 	braCopyFilenameParent := len(p)
 	b(0x80, 0)
 	filenameParentDone := len(p)
@@ -4212,6 +4506,10 @@ func emitProgram(tileBytes int) ([]byte, int) {
 	b(0xd0, 0x03)
 	renderTransitionJump := len(p)
 	b(0x4c, 0, 0)
+	b(0xc9, 0x0a)
+	b(0xd0, 0x03)
+	renderFilenameJump := len(p)
+	b(0x4c, 0, 0)
 	b(0xc9, 0x05)
 	bccRenderBrowserLoading := len(p)
 	b(0x90, 0x03)
@@ -4237,6 +4535,36 @@ func emitProgram(tileBytes int) ([]byte, int) {
 	bneCopyBrowserReadyPlane := len(p)
 	b(0xd0, 0)
 	branch(bneCopyBrowserReadyPlane, copyBrowserReadyPlane)
+	// Save As must expose both steps that were previously implicit. At the
+	// roots page Enter chooses a folder; inside a folder N creates the file.
+	// The current parent at $1900/$0348 is also the one serialized on submit.
+	b(0xad, 0x1d, 0x03, 0xc9, 0x06)
+	bneSaveBrowserTitleDone := len(p)
+	b(0xd0, 0)
+	b(0xad, 0x48, 0x03)
+	beqSaveRootTitle := len(p)
+	b(0xf0, 0)
+	b(0xa2, 0x00)
+	copySaveFolderTitle := len(p)
+	b(0xbf, byte(loromAddr(saveFolderTitleOffset)), byte(loromAddr(saveFolderTitleOffset)>>8), loromBank(saveFolderTitleOffset),
+		0x9d, 0x00, 0x10, 0xe8, 0xe0, 30)
+	bneCopySaveFolderTitle := len(p)
+	b(0xd0, 0)
+	branch(bneCopySaveFolderTitle, copySaveFolderTitle)
+	braSaveBrowserTitleDone := len(p)
+	b(0x80, 0)
+	saveRootTitle := len(p)
+	branch(beqSaveRootTitle, saveRootTitle)
+	b(0xa2, 0x00)
+	copySaveRootTitle := len(p)
+	b(0xbf, byte(loromAddr(saveRootTitleOffset)), byte(loromAddr(saveRootTitleOffset)>>8), loromBank(saveRootTitleOffset),
+		0x9d, 0x00, 0x10, 0xe8, 0xe0, 30)
+	bneCopySaveRootTitle := len(p)
+	b(0xd0, 0)
+	branch(bneCopySaveRootTitle, copySaveRootTitle)
+	saveBrowserTitleDone := len(p)
+	branch(bneSaveBrowserTitleDone, saveBrowserTitleDone)
+	branch(braSaveBrowserTitleDone, saveBrowserTitleDone)
 	// Recovery rows use the bounded browser entry plane, but keep their own
 	// cartridge-owned title.
 	b(0xad, 0x4e, 0x03, 0xc9, 0x08)
@@ -4263,30 +4591,6 @@ func emitProgram(tileBytes int) ([]byte, int) {
 	}
 	overwritePromptDone := len(p)
 	jump(overwritePromptSkipJump, overwritePromptDone)
-	// New-file entry is likewise a cartridge plane. The native backend never
-	// receives keystrokes until this ROM builds CommandSaveAsNew on Enter.
-	b(0xad, 0x1d, 0x03, 0xc9, 0x0a, 0xf0, 0x03)
-	filenamePromptSkipJump := len(p)
-	b(0x4c, 0, 0)
-	for i, ch := range []byte("NEW FILE NAME:") {
-		ldaSta(ch, uint16(0x1096+i))
-	}
-	for i, ch := range []byte("TYPE THEN ENTER") {
-		ldaSta(ch, uint16(0x10d2+i))
-	}
-	b(0xa2, 0x00)
-	copyFilenamePrompt := len(p)
-	b(0xec, 0x31, 0x03)
-	bcsFilenamePromptDone := len(p)
-	b(0xb0, 0)
-	b(0xbd, 0x80, 0x18, 0x9d, 0xb4, 0x10, 0xe8)
-	braCopyFilenamePrompt := len(p)
-	b(0x80, 0)
-	filenamePromptDone := len(p)
-	branch(bcsFilenamePromptDone, filenamePromptDone)
-	branch(braCopyFilenamePrompt, copyFilenamePrompt)
-	filenamePromptEnd := len(p)
-	jump(filenamePromptSkipJump, filenamePromptEnd)
 	// Error/state outcomes never escape to a native alert. $0337 stores the
 	// event low byte: 04 recovery available, 05 recovery restored, 07 save
 	// conflict, 08 read-only, 09 open failed. Mode $0c is the transient
@@ -4659,6 +4963,106 @@ func emitProgram(tileBytes int) ([]byte, int) {
 	saveFormatPlaneReadyJump := len(p)
 	b(0x4c, 0, 0)
 
+	renderFilename := len(p)
+	jump(renderFilenameJump, renderFilename)
+	b(0xa2, 0x00)
+	copyFilenamePlane := len(p)
+	b(0xbf, byte(loromAddr(filenameOffset)), byte(loromAddr(filenameOffset)>>8), loromBank(filenameOffset),
+		0x9d, 0x00, 0x10, 0xe8, 0xe0, 0xf0)
+	bneCopyFilenamePlane := len(p)
+	b(0xd0, 0)
+	branch(bneCopyFilenamePlane, copyFilenamePlane)
+
+	// Filename mode temporarily owns the complete header. The normal document
+	// title and formatting glyphs would otherwise make the modal look like an
+	// overlay on a still-active editor -- exactly the broken state this screen
+	// replaces. The right card becomes two stacked, mouse-sized actions.
+	b(0xa2, 0x00)
+	clearFilenameTitle := len(p)
+	b(0xa9, ' ', 0x9d, 0x00, 0x14, 0xa9, documentBaseAttr, 0x9d, 0x00, 0x15, 0xe8, 0xe0, 72)
+	bneClearFilenameTitle := len(p)
+	b(0xd0, 0)
+	branch(bneClearFilenameTitle, clearFilenameTitle)
+	for row, line := range []string{"SAVE NEW FILE", "TYPE A FILE NAME", "EXTENSION AUTO"} {
+		for col, ch := range []byte(line) {
+			ldaSta(ch, uint16(0x1400+row*18+col))
+		}
+	}
+	for i, ch := range []byte("TAB/ARROWS MOVE  ENTER SELECTS") {
+		ldaSta(ch, uint16(0x1480+i))
+		ldaSta(documentBaseAttr, uint16(0x1580+i))
+	}
+	filenameToolbar := " [  SAVE  ]" + " [ CANCEL ]"
+	if len(filenameToolbar) != 22 {
+		panic("filename toolbar labels must be two 11-character rows")
+	}
+	for i, ch := range []byte(filenameToolbar) {
+		ldaSta(ch, uint16(0x1c00+i))
+		ldaSta(documentBaseAttr, uint16(0x1c20+i))
+	}
+
+	// The 24-byte buffer and its visible field are the same width. Keep an
+	// underscore insertion marker only while the field owns focus and still
+	// has room; no typed byte is ever hidden or wrapped into stale UI.
+	b(0xa2, 0x00)
+	copyFilenameBytesToField := len(p)
+	b(0xec, 0x31, 0x03)
+	bcsFilenameBytesInField := len(p)
+	b(0xb0, 0)
+	b(0xbd, 0x80, 0x18, 0x9d, 0x7b, 0x10, 0xe8)
+	braCopyFilenameBytesToField := len(p)
+	b(0x80, 0)
+	filenameBytesInField := len(p)
+	branch(bcsFilenameBytesInField, filenameBytesInField)
+	branch(braCopyFilenameBytesToField, copyFilenameBytesToField)
+	b(0xad, 0x6d, 0x03)
+	bneFilenameFocusNotField := len(p)
+	b(0xd0, 0)
+	b(0xe0, 24)
+	bcsFilenameFieldFull := len(p)
+	b(0xb0, 0)
+	b(0xa9, '_', 0x9d, 0x7b, 0x10)
+	filenameFieldFull := len(p)
+	branch(bcsFilenameFieldFull, filenameFieldFull)
+	b(0xa2, 0x00)
+	highlightFilenameField := len(p)
+	b(0xa9, 0x04,
+		0x9d, 0x5c, 0x12,
+		0x9d, 0x7a, 0x12,
+		0x9d, 0x98, 0x12,
+		0xe8, 0xe0, 26)
+	bneHighlightFilenameField := len(p)
+	b(0xd0, 0)
+	branch(bneHighlightFilenameField, highlightFilenameField)
+	filenameFieldReadyJump := len(p)
+	b(0x4c, 0, 0)
+	filenameFocusNotField := len(p)
+	branch(bneFilenameFocusNotField, filenameFocusNotField)
+	b(0xc9, 0x01)
+	bneFilenameFocusCancel := len(p)
+	b(0xd0, 0)
+	b(0xa2, 0x00)
+	highlightFilenameSave := len(p)
+	b(0xa9, 0x04, 0x9d, 0x20, 0x1c, 0xe8, 0xe0, 11)
+	bneHighlightFilenameSave := len(p)
+	b(0xd0, 0)
+	branch(bneHighlightFilenameSave, highlightFilenameSave)
+	filenameSaveReadyJump := len(p)
+	b(0x4c, 0, 0)
+	filenameFocusCancel := len(p)
+	branch(bneFilenameFocusCancel, filenameFocusCancel)
+	b(0xa2, 0x00)
+	highlightFilenameCancel := len(p)
+	b(0xa9, 0x04, 0x9d, 0x2b, 0x1c, 0xe8, 0xe0, 11)
+	bneHighlightFilenameCancel := len(p)
+	b(0xd0, 0)
+	branch(bneHighlightFilenameCancel, highlightFilenameCancel)
+	filenamePlaneReady := len(p)
+	jump(filenameFieldReadyJump, filenamePlaneReady)
+	jump(filenameSaveReadyJump, filenamePlaneReady)
+	filenamePlaneReadyJump := len(p)
+	b(0x4c, 0, 0)
+
 	renderTransition := len(p)
 	jump(renderTransitionJump, renderTransition)
 	b(0xa2, 0x00)
@@ -4706,12 +5110,162 @@ func emitProgram(tileBytes int) ([]byte, int) {
 	for _, at := range []int{
 		browserLoadingReadyJump, browserReadyJump, helpPlaneReadyJump,
 		settingsPlaneReadyJump, saveFormatPlaneReadyJump,
-		transitionPlaneReadyJump,
+		filenamePlaneReadyJump, transitionPlaneReadyJump,
 	} {
 		jump(at, menuPlaneReady)
 	}
 	menuUploadJump := len(p)
 	b(0x4c, 0, 0)
+
+	// finishRow applies paragraph alignment to the plane row the draw loop has
+	// just completed. Alignment is deliberately not a property of the drawing
+	// pass: a line's width is only known once the line ends, and the wrap
+	// decisions that produced that width must not depend on where the line is
+	// then placed. So each row is laid out flush left and translated right
+	// afterwards, which leaves the loop's own wrap arithmetic, cursor capture and
+	// hit-test walking one unshifted coordinate space.
+	//
+	// Input:  $0a = the finished row's width in cells, Y = one cell past its last
+	//         drawn cell, X = the next character to draw, $0f14 = the row's
+	//         alignment (0 left, 1 centre, 2 right, 3 justify -- rendered left).
+	// Output: the row's cells are moved right in $1000/$1200, the caret cell
+	//         $0b follows them, $0f00+row records the shift for the pointer, and
+	//         $0f14 is reloaded for the row that starts at X.
+	//
+	// A, X and Y are preserved: every call site is mid-flow in the draw loop.
+	// Index registers are 16-bit here, as renderDocument leaves them.
+	finishRow := len(p)
+	b(0x48, 0xda, 0x5a) // PHA; PHX; PHY
+	b(0xa5, 0x0a)       // LDA $0a (the row's drawn width)
+	b(0xd0, 0x03)       // BNE over the trampoline: an empty row is a long branch away
+	finishRowEmptyJump := len(p)
+	b(0x4c, 0, 0) // JMP finishRowEmpty (no row was consumed)
+	// Keep the row's geometry where the 16-bit arithmetic below can read it as a
+	// word. A direct 16-bit read of $0a would take the caret's low byte at $0b
+	// with it, which is the exact shape of three earlier defects in this routine's
+	// neighbourhood.
+	b(0x8d, 0x18, 0x0f, 0x9c, 0x19, 0x0f)       // STA $0f18; STZ $0f19 (width)
+	b(0x1a, 0x8d, 0x1c, 0x0f, 0x9c, 0x1d, 0x0f) // INC A; STA $0f1c; STZ $0f1d (width+1)
+	b(0xc2, 0x20)                               // REP #$20 (16-bit A)
+	b(0x98, 0x38, 0xed, 0x18, 0x0f)             // TYA; SEC; SBC $0f18 (rowStart = Y - width)
+	b(0x8d, 0x1a, 0x0f)                         // STA $0f1a
+	b(0x98, 0x38, 0xe9, 0x01, 0x00)             // TYA; SEC; SBC #1 (its last drawn cell)
+	b(0xaa)                                     // TAX
+	b(0xe2, 0x20)                               // SEP #$20 (8-bit A)
+	// A wrapped line ends on the space it broke at, and that space is not part of
+	// the visible line: counting it would leave right-aligned text a cell short of
+	// the margin and put every wrapped centred line half a cell off.
+	finishRowTrim := len(p)
+	b(0xad, 0x18, 0x0f) // LDA $0f18 (cells still counted)
+	beqFinishRowTrimmed := len(p)
+	b(0xf0, 0)
+	b(0xbd, 0x00, 0x10, 0xc9, ' ') // LDA $1000,X; CMP #' '
+	bneFinishRowTrimmed := len(p)
+	b(0xd0, 0)
+	b(0xca, 0xce, 0x18, 0x0f) // DEX; DEC $0f18
+	braFinishRowTrim := len(p)
+	b(0x80, 0)
+	finishRowTrimmed := len(p)
+	branch(beqFinishRowTrimmed, finishRowTrimmed)
+	branch(bneFinishRowTrimmed, finishRowTrimmed)
+	branch(braFinishRowTrim, finishRowTrim)
+	// X is now the row's last visible cell and $0f18 its visible width.
+	// shift = alignment 1 -> (30 - width)/2, 2 -> 30 - width, otherwise 0. A row
+	// of nothing but spaces has no visible width and is never moved.
+	b(0xad, 0x18, 0x0f)
+	beqFinishRowNoShift := len(p)
+	b(0xf0, 0)
+	b(0xad, 0x14, 0x0f, 0xc9, 0x01) // LDA $0f14; CMP #1
+	beqFinishRowCentre := len(p)
+	b(0xf0, 0)
+	b(0xc9, 0x02) // CMP #2
+	beqFinishRowRight := len(p)
+	b(0xf0, 0)
+	finishRowNoShift := len(p)
+	branch(beqFinishRowNoShift, finishRowNoShift)
+	b(0xa9, 0x00) // left, or justify rendered as left
+	braFinishRowHaveShift := len(p)
+	b(0x80, 0)
+	finishRowCentre := len(p)
+	branch(beqFinishRowCentre, finishRowCentre)
+	b(0xa9, 0x1e, 0x38, 0xed, 0x18, 0x0f, 0x4a) // LDA #30; SEC; SBC $0f18; LSR A
+	braFinishRowHaveShift2 := len(p)
+	b(0x80, 0)
+	finishRowRight := len(p)
+	branch(beqFinishRowRight, finishRowRight)
+	b(0xa9, 0x1e, 0x38, 0xed, 0x18, 0x0f) // LDA #30; SEC; SBC $0f18
+	finishRowHaveShift := len(p)
+	branch(braFinishRowHaveShift, finishRowHaveShift)
+	branch(braFinishRowHaveShift2, finishRowHaveShift)
+	// Record the shift for this row, then advance the row counter. The pointer and
+	// wrap-aware Up/Down read this table to bring a visible cell back into layout
+	// space, so every row the loop completes has to appear in it -- zero shifts
+	// included.
+	b(0x8d, 0x16, 0x0f, 0x9c, 0x17, 0x0f) // STA $0f16; STZ $0f17 (shift)
+	// X still points at the row's last visible cell and the move loop below needs
+	// it, but indexing the row table takes X away.
+	b(0xc2, 0x20, 0x8a, 0x8d, 0x20, 0x0f, 0xe2, 0x20) // TXA; STA $0f20 (16-bit)
+	b(0xae, 0x12, 0x0f)                               // LDX $0f12 (row index; its high byte stays 0)
+	b(0xad, 0x16, 0x0f)                               // LDA $0f16
+	b(0x9d, 0x00, 0x0f)                               // STA $0f00,X
+	b(0xe8, 0x8e, 0x12, 0x0f)                         // INX; STX $0f12
+	b(0xae, 0x20, 0x0f)                               // LDX $0f20 (the last visible cell again)
+	b(0xad, 0x16, 0x0f)                               // LDA $0f16
+	b(0xd0, 0x03)                         // BNE over the trampoline
+	finishRowDoneJump := len(p)
+	b(0x4c, 0, 0) // JMP finishRowDone (already flush left)
+	// Move the row's visible cells right, last cell first so the copy can never
+	// overwrite a cell it has not read yet. X is still that last cell.
+	b(0xc2, 0x20)                   // REP #$20 (16-bit A)
+	b(0x8a, 0x18, 0x6d, 0x16, 0x0f) // TXA; CLC; ADC $0f16 (+ shift)
+	b(0xa8)                         // TAY (destination)
+	b(0xe2, 0x20)                   // SEP #$20 (8-bit A)
+	finishRowMove := len(p)
+	b(0xbd, 0x00, 0x10, 0x99, 0x00, 0x10) // LDA $1000,X; STA $1000,Y
+	b(0xbd, 0x00, 0x12, 0x99, 0x00, 0x12) // LDA $1200,X; STA $1200,Y
+	b(0xca, 0x88, 0xce, 0x18, 0x0f)       // DEX; DEY; DEC $0f18
+	bneFinishRowMove := len(p)
+	b(0xd0, 0)
+	branch(bneFinishRowMove, finishRowMove)
+	// Blank the cells the row vacated, so the text it used to hold there cannot
+	// stay behind the moved line.
+	b(0xae, 0x1a, 0x0f)                         // LDX $0f1a (rowStart)
+	b(0xad, 0x16, 0x0f, 0x8d, 0x18, 0x0f)       // LDA $0f16; STA $0f18 (count = shift)
+	finishRowBlank := len(p)
+	b(0xa9, ' ', 0x9d, 0x00, 0x10)              // LDA #' '; STA $1000,X
+	b(0xa9, documentBaseAttr, 0x9d, 0x00, 0x12) // LDA #base; STA $1200,X
+	b(0xe8, 0xce, 0x18, 0x0f)                   // INX; DEC $0f18
+	bneFinishRowBlank := len(p)
+	b(0xd0, 0)
+	branch(bneFinishRowBlank, finishRowBlank)
+	// The caret cell belongs to this row like any other cell, including the cell
+	// one past its last character, where the caret sits at a line end. Leaving it
+	// behind would draw the block cursor where the text used to be.
+	b(0xc2, 0x20)       // REP #$20 (16-bit A)
+	b(0xa5, 0x0b)       // LDA $0b (caret cell)
+	b(0xcd, 0x1a, 0x0f) // CMP $0f1a (rowStart)
+	bccFinishRowCaretDone := len(p)
+	b(0x90, 0)                      // BCC: the caret is in an earlier row
+	b(0x38, 0xed, 0x1a, 0x0f)       // SEC; SBC $0f1a (its column in this row)
+	b(0xcd, 0x1c, 0x0f)             // CMP $0f1c (width + 1)
+	bcsFinishRowCaretDone := len(p)
+	b(0xb0, 0)                                        // BCS: the caret is in a later row
+	b(0xa5, 0x0b, 0x18, 0x6d, 0x16, 0x0f, 0x85, 0x0b) // LDA $0b; CLC; ADC $0f16; STA $0b
+	finishRowCaretDone := len(p)
+	branch(bccFinishRowCaretDone, finishRowCaretDone)
+	branch(bcsFinishRowCaretDone, finishRowCaretDone)
+	b(0xe2, 0x20) // SEP #$20 (8-bit A)
+	finishRowDone := len(p)
+	jump(finishRowDoneJump, finishRowDone)
+	finishRowEmpty := len(p)
+	jump(finishRowEmptyJump, finishRowEmpty)
+	// The row that starts here inherits the alignment of its first character.
+	b(0x7a, 0xfa)       // PLY; PLX (X is the next character to draw)
+	b(0xbd, 0x00, 0x0d) // LDA $0d00,X
+	b(0x8d, 0x14, 0x0f) // STA $0f14
+	b(0x68)             // PLA (the caller's accumulator)
+	b(0x60)             // RTS
+
 	renderDocument := len(p)
 	jump(beqRenderDocument+2, renderDocument)
 	b(0xc2, 0x10)
@@ -4727,6 +5281,18 @@ func emitProgram(tileBytes int) ([]byte, int) {
 	// counter, deliberately kept off $0c so measuring a word after the caret is
 	// captured cannot corrupt the caret's high byte.
 	b(0xa2, 0x00, 0x00, 0xa0, 0x00, 0x00, 0x64, 0x0a, 0x64, 0x0b, 0x64, 0x0c, 0x64, 0x56, 0x64, 0x5a)
+	// Alignment state for this pass: an all-zero shift table (rows the loop never
+	// reaches must still read as unshifted for the pointer), row counter 0, and
+	// the first row's alignment taken from the first character.
+	b(0xa2, 0x11, 0x00) // LDX #17
+	clearRowShifts := len(p)
+	b(0xca, 0x9e, 0x00, 0x0f) // DEX; STZ $0f00,X
+	bneClearRowShifts := len(p)
+	b(0xd0, 0)
+	branch(bneClearRowShifts, clearRowShifts)
+	b(0x9c, 0x12, 0x0f, 0x9c, 0x13, 0x0f) // STZ $0f12; STZ $0f13 (row 0)
+	b(0xad, 0x00, 0x0d, 0x8d, 0x14, 0x0f) // LDA $0d00; STA $0f14
+	b(0xa2, 0x00, 0x00)                   // LDX #0 (the clear loop above used X)
 	drawLoop := len(p)
 	b(0xc0, 0xfe, 0x01)
 	b(0x90, 0x03) // BCC visible; otherwise jump beyond the long layout loop
@@ -4741,6 +5307,9 @@ func emitProgram(tileBytes int) ([]byte, int) {
 	b(0x84, 0x0b) // STY $0b -- only when the true caret was never found this pass
 	skipNaturalEndCapture := len(p)
 	branch(bneSkipNaturalEndCapture, skipNaturalEndCapture)
+	// The document's last line is a finished row too, and it is the one most
+	// likely to be short -- so it is the one alignment moves furthest.
+	jsrTo(finishRow)
 	drawCursorJump := len(p)
 	b(0x4c, 0, 0)
 	textRemains := len(p)
@@ -4842,6 +5411,13 @@ func emitProgram(tileBytes int) ([]byte, int) {
 	b(0x90, 0)
 	advanceToLine := len(p)
 	branch(bcsAdvanceToLine, advanceToLine)
+	// A word that does not fit ends the visual line, and X is already back at
+	// that word's first character, which is the next row's first character too.
+	// This runs once per line: the padding loop below re-enters at padLine, not
+	// here, because its own back edge would otherwise finish the same row once
+	// per padded cell -- each call translating it further right.
+	jsrTo(finishRow)
+	padLine := len(p)
 	// This padding loop's screen-full guard was dead code. `REP #$10` at the top
 	// of renderDocument makes the index registers 16-bit, so `CPY #imm` is a
 	// three-byte instruction here -- but the bound was emitted as the two-byte
@@ -4865,9 +5441,9 @@ func emitProgram(tileBytes int) ([]byte, int) {
 	screenNotFull := len(p)
 	branch(bccScreenNotFull, screenNotFull)
 	b(0xa5, 0x0a, 0xc9, 0x1e)
-	bneAdvanceToLine := len(p)
+	bnePadLine := len(p)
 	b(0xd0, 0)
-	branch(bneAdvanceToLine, advanceToLine)
+	branch(bnePadLine, padLine)
 	b(0x64, 0x0a)
 	positionCursor := len(p)
 	branch(beqPositionCursor, positionCursor)
@@ -4995,61 +5571,27 @@ func emitProgram(tileBytes int) ([]byte, int) {
 	branch(braPaletteReady, paletteReady)
 	branch(braPaletteReady2, paletteReady)
 	b(0x48)                         // PHA (stash palette attribute)
-	b(0xbd, 0x00, 0x0b, 0x29, 0x07) // LDA $0b00,X; AND #(bold|italic|underline)
-	beqShapeNone := len(p)
-	b(0xf0, 0)
-	b(0x29, 0x04) // underline bit?
-	beqShapeCheckBold := len(p)
-	b(0xf0, 0)
-	b(0xa9, 0x01) // shape 1: underline
-	braShapeReady := len(p)
-	b(0x80, 0)
-	shapeCheckBold := len(p)
-	branch(beqShapeCheckBold, shapeCheckBold)
-	b(0xbd, 0x00, 0x0b, 0x29, 0x01) // LDA $0b00,X; AND #bold
-	beqShapeItalic := len(p)
-	b(0xf0, 0)
-	b(0xa9, 0x02) // shape 2: bold
-	braShapeReady2 := len(p)
-	b(0x80, 0)
-	shapeItalic := len(p)
-	branch(beqShapeItalic, shapeItalic)
-	b(0xa9, 0x03) // shape 3: italic
-	braShapeReady3 := len(p)
-	b(0x80, 0)
-	shapeNone := len(p)
-	branch(beqShapeNone, shapeNone)
-	b(0xa9, 0x00) // shape 0: plain
-	shapeReady := len(p)
-	branch(braShapeReady, shapeReady)
-	branch(braShapeReady2, shapeReady)
-	branch(braShapeReady3, shapeReady)
-	// A = shape index 0-3. LSR splits it: bit0 (tile-id page, +128) goes to
-	// carry and becomes a $1000,Y OR-mask staged in $54; bit1 (tile-id page,
-	// +256, i.e. attribute-byte char-bit8) stays in A to OR into the palette
+	// The three style bits are the glyph page index, so there is no priority to
+	// resolve and nothing to look up: bold, italic and underline each own one
+	// bit, and every combination is its own page (see glyphShapePixels). LSR
+	// splits that page index the way the tilemap splits a tile id: bit 0 becomes
+	// the character byte's +128 OR-mask staged in $54, and the remaining two
+	// bits are the attribute byte's tile-id bits 8-9, ORed into the palette
 	// attribute already stashed on the stack.
-	b(0x4a) // LSR A
-	b(0x48) // PHA (stash shape high-bit)
+	b(0xbd, 0x00, 0x0b, 0x29, 0x07) // LDA $0b00,X; AND #(bold|italic|underline)
+	b(0x4a)                         // LSR A: C = bold, A = page >> 1 (0-3)
+	b(0x48)                         // PHA (stash the two high page bits)
 	b(0xa9, 0x00)
 	bccShapeLowZero := len(p)
 	b(0x90, 0)
 	b(0xa9, 0x80)
 	shapeLowZero := len(p)
 	branch(bccShapeLowZero, shapeLowZero)
-	b(0x85, 0x54) // STA $54
-	b(0x68)       // PLA (shape high-bit)
-	beqNoHighBit := len(p)
-	b(0xf0, 0)
-	b(0x68)       // PLA (palette attribute)
-	b(0x09, 0x01) // ORA #$01 (char-bit8)
-	braAttrReady := len(p)
-	b(0x80, 0)
-	noHighBit := len(p)
-	branch(beqNoHighBit, noHighBit)
-	b(0x68) // PLA (palette attribute, unchanged)
-	attrReady := len(p)
-	branch(braAttrReady, attrReady)
+	b(0x85, 0x54)       // STA $54
+	b(0x68)             // PLA (page >> 1)
+	b(0x03, 0x01)       // ORA $01,S (the palette attribute, left in place)
 	b(0x99, 0x00, 0x12) // STA $1200,Y
+	b(0x68)             // PLA (discard the palette attribute)
 	styleApplied := len(p)
 	branch(braStyleApplied, styleApplied)
 	b(0x68) // PLA (restore original glyph)
@@ -5100,12 +5642,19 @@ func emitProgram(tileBytes int) ([]byte, int) {
 	b(0x99, 0x00, 0x10, 0xe8, 0xc8, 0xe6, 0x0a, 0xa5, 0x0a, 0xc9, 0x1e)
 	b(0xf0, 0x03)
 	jmpTo(drawLoop)
+	// A line filled to the last column ends without any padding. Its width is
+	// the full plane, so no alignment can move it, but the row still has to be
+	// recorded and the next row's alignment picked up.
+	jsrTo(finishRow)
 	b(0x64, 0x0a)
 	jmpTo(drawLoop)
 	newline := len(p)
 	jump(newlineJump, newline)
 	jump(jmpNewlineAt, newline)
-	b(0xe8)
+	b(0xe8) // INX past the newline, so X is the next row's first character
+	// The paragraph ends here, so this is where its width is still known: the
+	// padding below raises the column to 30 on its way to the next row.
+	jsrTo(finishRow)
 	newlineAdvance := len(p)
 	b(0xa5, 0x0a)
 	beqNewlineDone := len(p)
@@ -5121,6 +5670,9 @@ func emitProgram(tileBytes int) ([]byte, int) {
 	screenFull := len(p)
 	jump(screenFull2Jump, screenFull)
 	patch16(screenFullJump, screenFull)
+	// Finish the row the plane ran out on before Y stops being a cell index: the
+	// caret sentinel below overwrites it.
+	jsrTo(finishRow)
 	b(0xa5, 0x56) // LDA $56 (true caret already found?)
 	bneScreenFullAlreadyFound := len(p)
 	b(0xd0, 0)
@@ -5346,14 +5898,17 @@ func emitProgram(tileBytes int) ([]byte, int) {
 }
 
 func build() ([]byte, int) {
-	tilemap, tiles := encode(scene())
-	program, irqStub := emitProgram(len(tiles))
+	tilemap, tiles, uploads := encode(scene())
+	program, irqStub := emitProgram(len(tiles), uploads)
 	menu := mainMenuPlane()
 	transition := transitionPlane()
 	browserReady := browserReadyPlane()
 	help := helpPlane()
 	settings := settingsPlane()
 	saveFormat := saveFormatPlane()
+	filename := filenamePlane()
+	saveRootTitle := []byte(" CHOOSE A FOLDER FOR NEW FILE ")
+	saveFolderTitle := []byte("  PRESS N: NEW FILE IN FOLDER ")
 	// Region layout, checked per bank. Each entry must fit before the next one
 	// starts; the final bound in each bank is the reserved window that closes it.
 	for _, region := range []struct {
@@ -5373,7 +5928,10 @@ func build() ([]byte, int) {
 		{"browser-ready plane", browserReadyOffset, len(browserReady), helpOffset},
 		{"help plane", helpOffset, len(help), settingsOffset},
 		{"settings plane", settingsOffset, len(settings), saveFormatOffset},
-		{"save-format plane", saveFormatOffset, len(saveFormat), tilesOffset},
+		{"save-format plane", saveFormatOffset, len(saveFormat), saveRootTitleOffset},
+		{"save root title", saveRootTitleOffset, len(saveRootTitle), saveFolderTitleOffset},
+		{"save folder title", saveFolderTitleOffset, len(saveFolderTitle), filenameOffset},
+		{"filename plane", filenameOffset, len(filename), tilesOffset},
 		{"PPU tiles", tilesOffset, len(tiles), bank1Limit},
 	} {
 		if region.start+region.size > region.limit {
@@ -5394,6 +5952,9 @@ func build() ([]byte, int) {
 	copy(rom[helpOffset:], help)
 	copy(rom[settingsOffset:], settings)
 	copy(rom[saveFormatOffset:], saveFormat)
+	copy(rom[saveRootTitleOffset:], saveRootTitle)
+	copy(rom[saveFolderTitleOffset:], saveFolderTitle)
+	copy(rom[filenameOffset:], filename)
 	scanMap := xbandScanMap()
 	copy(rom[scanMapOffset:], scanMap[:])
 	copy(rom[tilemapOffset:], tilemap)

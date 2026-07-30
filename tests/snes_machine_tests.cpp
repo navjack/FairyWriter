@@ -72,6 +72,16 @@ bool wramEquals(FairySnesMachine* machine, std::uint32_t address, std::string_vi
 	return true;
 }
 
+std::string wramString(FairySnesMachine* machine, std::uint32_t address, std::size_t length)
+{
+	std::string value(length, '\0');
+	for (std::size_t i = 0; i < length; ++i) {
+		value[i] = static_cast<char>(
+			fairy_snes_debug_wram(machine, address + static_cast<std::uint32_t>(i)));
+	}
+	return value;
+}
+
 void append16(std::vector<std::uint8_t>& bytes, std::uint16_t value)
 {
 	bytes.push_back(static_cast<std::uint8_t>(value));
@@ -140,6 +150,29 @@ int main(int argc, char** argv)
 	if (mouse_stationary != 0x00410000u) {
 		std::fprintf(stderr, "SNES mouse did not consume latched motion: %08x\n", mouse_stationary);
 		return 98;
+	}
+	// A desktop click can press and release between adjacent 60 Hz guest polls.
+	// The peripheral boundary must retain that rising edge for one report rather
+	// than letting the release overwrite it before the cartridge can latch.
+	fairy_snes_mouse_event(machine, 0, 0, false, false);
+	fairy_snes_mouse_event(machine, 0, 0, true, false);
+	fairy_snes_mouse_event(machine, 0, 0, false, false);
+	fairy_snes_debug_bus_write(machine, 0x004016, 1);
+	fairy_snes_debug_bus_write(machine, 0x004016, 0);
+	std::uint32_t quick_click = 0;
+	for (int bit = 0; bit < 32; ++bit) {
+		quick_click = (quick_click << 1) | (fairy_snes_debug_bus_read(machine, 0x004016) & 1);
+	}
+	fairy_snes_debug_bus_write(machine, 0x004016, 1);
+	fairy_snes_debug_bus_write(machine, 0x004016, 0);
+	std::uint32_t after_quick_click = 0;
+	for (int bit = 0; bit < 32; ++bit) {
+		after_quick_click = (after_quick_click << 1) | (fairy_snes_debug_bus_read(machine, 0x004016) & 1);
+	}
+	if (quick_click != 0x00410000u || after_quick_click != 0x00010000u) {
+		std::fprintf(stderr, "SNES mouse lost or stuck a sub-frame click: press=%08x release=%08x\n",
+			quick_click, after_quick_click);
+		return 99;
 	}
 	for (int i = 0; i < 3; ++i) {
 		if (!fairy_snes_run_frame(machine)) return 4;
@@ -640,9 +673,10 @@ int main(int argc, char** argv)
 	fairy_snes_destroy(machine);
 	machine = fairy_snes_create(rom.data(), rom.size());
 	if (!machine || !runFrames(machine, 3)) return 85;
-	// New-file Save As persists a selected directory as the opaque parent, then
-	// keeps every filename character guest-owned until Enter creates one typed
-	// parent-id + NUL + filename command.
+	// New-file Save As uses the current browser parent as the sole destination
+	// authority. Back must clear/change that parent rather than retaining the
+	// last directory entered, and the cartridge must expose the otherwise
+	// non-obvious N action before it accepts a guest-owned filename.
 	if (!fairy_snes_key_event(machine, 0x05, true, false) || !runFrames(machine, 2)) return 86;
 	for (int i = 0; i < 3; ++i) {
 		if (!fairy_snes_key_event(machine, 0x72, true, true) || !runFrames(machine, 2)) return 87;
@@ -670,11 +704,13 @@ int main(int argc, char** argv)
 	fairy_snes_debug_bus_write(machine, 0x700006, static_cast<std::uint8_t>(parent_page.size()));
 	fairy_snes_debug_bus_write(machine, 0x700007, static_cast<std::uint8_t>(parent_page.size() >> 8));
 	if (!runFrames(machine, 3) || fairy_snes_debug_wram(machine, 0x031d) != 6
+		|| fairy_snes_debug_wram(machine, 0x0348) != 0
+		|| !wramEquals(machine, 0x1000, " CHOOSE A FOLDER FOR NEW FILE ")
 		|| !fairy_snes_key_event(machine, 0x5a, true, false) || !runFrames(machine, 2)
 		|| fairy_snes_debug_wram(machine, 0x031d) != 3
-		|| fairy_snes_debug_wram(machine, 0x0330) != parent_id.size()
-		|| !wramEquals(machine, 0x1840, parent_id)) {
-		std::fputs("Save As directory did not become the cartridge parent ID\n", stderr);
+		|| fairy_snes_debug_wram(machine, 0x0348) != parent_id.size()
+		|| !wramEquals(machine, 0x1900, parent_id)) {
+		std::fputs("Save As root did not become the current browser parent\n", stderr);
 		return 89;
 	}
 	std::vector<std::uint8_t> empty_save_page;
@@ -687,6 +723,46 @@ int main(int argc, char** argv)
 	fairy_snes_debug_bus_write(machine, 0x700006, static_cast<std::uint8_t>(empty_save_producer));
 	fairy_snes_debug_bus_write(machine, 0x700007, static_cast<std::uint8_t>(empty_save_producer >> 8));
 	if (!runFrames(machine, 2) || fairy_snes_debug_wram(machine, 0x031d) != 6
+		|| !wramEquals(machine, 0x1000, "  PRESS N: NEW FILE IN FOLDER ")
+		|| !fairy_snes_key_event(machine, 0x66, true, false) || !runFrames(machine, 2)
+		|| fairy_snes_debug_wram(machine, 0x031d) != 3
+		|| fairy_snes_debug_wram(machine, 0x0348) != 0) {
+		std::fputs("Save As Back did not restore the root destination context\n", stderr);
+		return 89;
+	}
+	for (std::size_t i = 0; i < parent_page.size(); ++i) {
+		fairy_snes_debug_bus_write(machine,
+			0x702100 + static_cast<std::uint32_t>(empty_save_producer + i), parent_page[i]);
+	}
+	const std::size_t restored_root_producer = empty_save_producer + parent_page.size();
+	fairy_snes_debug_bus_write(machine, 0x700006,
+		static_cast<std::uint8_t>(restored_root_producer));
+	fairy_snes_debug_bus_write(machine, 0x700007,
+		static_cast<std::uint8_t>(restored_root_producer >> 8));
+	if (!runFrames(machine, 3) || fairy_snes_debug_wram(machine, 0x031d) != 6
+		|| !wramEquals(machine, 0x1000, " CHOOSE A FOLDER FOR NEW FILE ")
+		|| !fairy_snes_key_event(machine, 0x31, true, false) || !runFrames(machine, 2)
+		|| fairy_snes_debug_wram(machine, 0x031d) != 6
+		|| !fairy_snes_key_event(machine, 0x5a, true, false) || !runFrames(machine, 2)
+		|| fairy_snes_debug_wram(machine, 0x031d) != 3) {
+		std::fputs("Save As root accepted N or failed to re-enter its selected folder\n", stderr);
+		return 89;
+	}
+	for (std::size_t i = 0; i < empty_save_page.size(); ++i) {
+		fairy_snes_debug_bus_write(machine,
+			0x702100 + static_cast<std::uint32_t>(restored_root_producer + i),
+			empty_save_page[i]);
+	}
+	const std::size_t restored_folder_producer =
+		restored_root_producer + empty_save_page.size();
+	fairy_snes_debug_bus_write(machine, 0x700006,
+		static_cast<std::uint8_t>(restored_folder_producer));
+	fairy_snes_debug_bus_write(machine, 0x700007,
+		static_cast<std::uint8_t>(restored_folder_producer >> 8));
+	if (!runFrames(machine, 2) || fairy_snes_debug_wram(machine, 0x031d) != 6
+		|| fairy_snes_debug_wram(machine, 0x0348) != parent_id.size()
+		|| !wramEquals(machine, 0x1900, parent_id)
+		|| !wramEquals(machine, 0x1000, "  PRESS N: NEW FILE IN FOLDER ")
 		|| !fairy_snes_key_event(machine, 0x31, true, false) || !runFrames(machine, 2)
 		|| fairy_snes_debug_wram(machine, 0x031d) != 10) {
 		std::fputs("Save As New did not enter the cartridge filename screen\n", stderr);
@@ -694,19 +770,115 @@ int main(int argc, char** argv)
 	}
 	constexpr std::string_view new_name = "new";
 	constexpr std::string_view committed_name = "new.odt";
-	if (!typeAscii(machine, new_name) || !wramEquals(machine, 0x1880, new_name)
-		|| !wramEquals(machine, 0x1096, "NEW FILE NAME:")
-		|| !wramEquals(machine, 0x10b4, new_name)) {
-		std::fputs("cartridge filename entry did not retain/render typed text\n", stderr);
+	// Filename entry is a complete modal, not an overlay on stale browser rows.
+	// It owns the title card, replaces formatting with Save/Cancel, exposes the
+	// keyboard focus ring, and renders a field exactly as wide as its buffer.
+	if (!wramEquals(machine, 0x1007, "SAVE NEW DOCUMENT")
+		|| !wramEquals(machine, 0x1000 + 30, "  ENTER A NAME FOR THE FILE")
+		|| !wramEquals(machine, 0x1000 + 3 * 30 + 2, "+------------------------+")
+		|| !wramEquals(machine, 0x1400, "SAVE NEW FILE")
+		|| !wramEquals(machine, 0x1480, "TAB/ARROWS MOVE  ENTER SELECTS")
+		|| !wramEquals(machine, 0x1c01, "[  SAVE  ]")
+		|| !wramEquals(machine, 0x1c0c, "[ CANCEL ]")
+		|| fairy_snes_debug_wram(machine, 0x036d) != 0
+		|| fairy_snes_debug_wram(machine, 0x125c) != 0x04
+		|| fairy_snes_debug_wram(machine, 0x1c20) != 0x08) {
+		std::fprintf(stderr,
+			"filename mode did not own a fresh modal screen with field focus: mode=%u focus=%u "
+			"field=%02x save=%02x lower='%.30s' title='%.18s' toolbar='%.22s'\n",
+			fairy_snes_debug_wram(machine, 0x031d),
+			fairy_snes_debug_wram(machine, 0x036d),
+			fairy_snes_debug_wram(machine, 0x125c),
+			fairy_snes_debug_wram(machine, 0x1c20),
+			wramString(machine, 0x1000, 30).c_str(),
+			wramString(machine, 0x1400, 18).c_str(),
+			wramString(machine, 0x1c00, 22).c_str());
 		return 91;
 	}
-	const std::size_t new_file_offset = 40 + parent_id.size();
-	if (!fairy_snes_key_event(machine, 0x5a, true, false) || !runFrames(machine, 2)
+	// Down/Up plus physical Tab traverse the same name/save/cancel ring and the
+	// selected control receives the ordinary menu highlight palette.
+	if (!fairy_snes_key_event(machine, 0x72, true, true) || !runFrames(machine, 2)
+		|| fairy_snes_debug_wram(machine, 0x036d) != 1
+		|| fairy_snes_debug_wram(machine, 0x1c20) != 0x04
+		|| fairy_snes_debug_wram(machine, 0x125c) != 0x08
+		|| !fairy_snes_key_event(machine, 0x72, true, true) || !runFrames(machine, 2)
+		|| fairy_snes_debug_wram(machine, 0x036d) != 2
+		|| fairy_snes_debug_wram(machine, 0x1c2b) != 0x04
+		|| !fairy_snes_key_event(machine, 0x75, true, true) || !runFrames(machine, 2)
+		|| fairy_snes_debug_wram(machine, 0x036d) != 1
+		|| !fairy_snes_key_event(machine, 0x0d, true, false) || !runFrames(machine, 2)
+		|| fairy_snes_debug_wram(machine, 0x036d) != 2
+		|| !fairy_snes_key_event(machine, 0x74, true, true) || !runFrames(machine, 2)
+		|| fairy_snes_debug_wram(machine, 0x036d) != 0) {
+		std::fputs("filename keyboard navigation did not move/highlight the focus ring\n", stderr);
+		return 91;
+	}
+	// An empty mouse Save remains in the dialog and visibly selects the clicked
+	// button. Clicking the field then returns focus to typing.
+	fairy_snes_mouse_event(machine, 72, -100, false, false); // center -> Save button (200,12)
+	if (!runFrames(machine, 2)
+		|| fairy_snes_debug_wram(machine, 0x0334) != 200
+		|| fairy_snes_debug_wram(machine, 0x0335) != 12) return 91;
+	fairy_snes_mouse_event(machine, 0, 0, true, false);
+	if (!runFrames(machine, 2)
+		|| fairy_snes_debug_wram(machine, 0x031d) != 10
+		|| fairy_snes_debug_wram(machine, 0x036d) != 1
+		|| fairy_snes_debug_wram(machine, 0x1c20) != 0x04) {
+		std::fputs("empty filename Save click did not focus the real button\n", stderr);
+		return 91;
+	}
+	fairy_snes_mouse_event(machine, 0, 0, false, false);
+	if (!runFrames(machine)) return 91;
+	fairy_snes_mouse_event(machine, -72, 100, false, false); // Save -> name field (128,112)
+	if (!runFrames(machine, 2)) return 91;
+	fairy_snes_mouse_event(machine, 0, 0, true, false);
+	if (!runFrames(machine, 2)
+		|| fairy_snes_debug_wram(machine, 0x036d) != 0
+		|| fairy_snes_debug_wram(machine, 0x125c) != 0x04) {
+		std::fputs("filename field click did not restore typing focus\n", stderr);
+		return 91;
+	}
+	fairy_snes_mouse_event(machine, 0, 0, false, false);
+	if (!runFrames(machine) || !typeAscii(machine, new_name)
+		|| !wramEquals(machine, 0x1880, new_name)
+		|| !wramEquals(machine, 0x107b, new_name)
+		|| !fairy_snes_key_event(machine, 0x66, true, false) || !runFrames(machine, 2)
+		|| fairy_snes_debug_wram(machine, 0x0331) != 2
+		|| fairy_snes_debug_wram(machine, 0x107d) != '_'
+		|| !typeAscii(machine, "w")
+		|| !wramEquals(machine, 0x1880, new_name)) {
+		std::fputs("cartridge filename field did not retain/render/edit typed text\n", stderr);
+		return 91;
+	}
+	// Cancel must be an action, not a synthetic Backspace: clicking it with a
+	// non-empty name exits immediately and preserves the selected parent.
+	fairy_snes_mouse_event(machine, 72, -92, false, false); // field -> Cancel (200,20)
+	if (!runFrames(machine, 2)) return 91;
+	fairy_snes_mouse_event(machine, 0, 0, true, false);
+	if (!runFrames(machine, 2)
+		|| fairy_snes_debug_wram(machine, 0x031d) != 6
+		|| fairy_snes_debug_wram(machine, 0x0348) != parent_id.size()
+		|| !wramEquals(machine, 0x1900, parent_id)) {
+		std::fputs("filename Cancel click did not dismiss a non-empty modal\n", stderr);
+		return 91;
+	}
+	fairy_snes_mouse_event(machine, 0, 0, false, false);
+	if (!runFrames(machine)
+		|| !fairy_snes_key_event(machine, 0x31, true, false) || !runFrames(machine, 2)
+		|| fairy_snes_debug_wram(machine, 0x031d) != 10
+		|| !typeAscii(machine, new_name)) return 91;
+	const std::size_t new_file_offset =
+		fairy_snes_debug_bus_read(machine, 0x700002)
+		| (static_cast<std::size_t>(fairy_snes_debug_bus_read(machine, 0x700003)) << 8);
+	fairy_snes_mouse_event(machine, 0, -8, false, false); // Cancel -> Save (200,12)
+	if (!runFrames(machine, 2)) return 92;
+	fairy_snes_mouse_event(machine, 0, 0, true, false);
+	if (!runFrames(machine, 2)
 		|| fairy_snes_debug_wram(machine, 0x031d) != 0
 		|| fairy_snes_debug_bus_read(machine, navigation_command + new_file_offset + 2) != 0x0a
 		|| fairy_snes_debug_bus_read(machine, navigation_command + new_file_offset + 3) != 1
 		|| fairy_snes_debug_bus_read(machine, navigation_command + new_file_offset + 4) != parent_id.size() + 1 + committed_name.size()) {
-		std::fputs("filename submission did not emit CommandSaveAsNew\n", stderr);
+		std::fputs("filename Save click did not emit CommandSaveAsNew\n", stderr);
 		return 92;
 	}
 	for (std::size_t i = 0; i < parent_id.size(); ++i) {
@@ -1249,6 +1421,142 @@ int main(int argc, char** argv)
 	}
 	fairy_snes_destroy(machine);
 
+	// Selecting a row below the first one. Every real Open browse ends on a row
+	// the host did not list first: directories sort ahead of documents, so the
+	// file the user wants is almost never row 0. The per-entry flags, opaque-ID
+	// length and name-length tables are one byte per row, and the selection must
+	// index them that way while indexing the 32-byte-per-row ID table by stride.
+	// Getting that wrong reads another row's bytes: Enter then emits an empty or
+	// truncated ID, the host cannot resolve it, and the browser silently returns
+	// to the unchanged document.
+	machine = fairy_snes_create(rom.data(), rom.size());
+	if (!machine || !runFrames(machine, 3)) return 190;
+	if (!fairy_snes_key_event(machine, 0x05, true, false) || !runFrames(machine, 2)) return 191; // F1
+	if (!fairy_snes_key_event(machine, 0x72, true, true) || !runFrames(machine, 2)) return 192;  // Down -> Open
+	if (!fairy_snes_key_event(machine, 0x5a, true, false) || !runFrames(machine, 2)) return 193; // Enter
+	if (fairy_snes_debug_wram(machine, 0x031d) != 2) return 194;
+	struct RowSpec final { std::string id; std::string name; bool directory; };
+	const auto injectRows = [&](std::size_t base, const std::vector<RowSpec>& rows,
+		std::uint8_t source) {
+		std::vector<std::uint8_t> ev;
+		for (const RowSpec& row : rows) {
+			std::vector<std::uint8_t> pl;
+			pl.push_back(static_cast<std::uint8_t>(row.id.size()));
+			append16(pl, static_cast<std::uint16_t>(row.name.size()));
+			pl.push_back(static_cast<std::uint8_t>(row.directory ? 3 : 2));
+			append64(pl, 0);
+			append64(pl, 0);
+			pl.insert(pl.end(), row.id.begin(), row.id.end());
+			pl.insert(pl.end(), row.name.begin(), row.name.end());
+			appendRecord(ev, 0x8200, pl);
+		}
+		std::vector<std::uint8_t> comp;
+		append32(comp, static_cast<std::uint32_t>(rows.size()));
+		append32(comp, 0);
+		comp.push_back(static_cast<std::uint8_t>(rows.size()));
+		comp.push_back(source);
+		comp.push_back(0);
+		appendRecord(ev, 0x820f, comp);
+		for (std::size_t i = 0; i < ev.size(); ++i) {
+			fairy_snes_debug_bus_write(machine,
+				0x702100 + static_cast<std::uint32_t>(base + i), ev[i]);
+		}
+		const std::size_t producer = base + ev.size();
+		fairy_snes_debug_bus_write(machine, 0x700006, static_cast<std::uint8_t>(producer));
+		fairy_snes_debug_bus_write(machine, 0x700007, static_cast<std::uint8_t>(producer >> 8));
+		return producer;
+	};
+	// The last emitted command record, located from the producer index.
+	const auto lastCommand = [&](std::size_t payload_bytes) {
+		const std::size_t producer = fairy_snes_debug_bus_read(machine, 0x700002)
+			| (static_cast<std::size_t>(fairy_snes_debug_bus_read(machine, 0x700003)) << 8);
+		return 0x700100u + static_cast<std::uint32_t>(producer - 20 - payload_bytes);
+	};
+	const std::string first_root = "aaaaaaaaaaaaaaaaaaaaaaaa";
+	const std::string second_root = "bbbbbbbbbbbbbbbbbbbbbbbb";
+	std::size_t rowbase = injectRows(0, {
+		{first_root, "DOCUMENTS", true},
+		{second_root, "STORIES", true},
+		{"cccccccccccccccccccccccc", "NOTES.ODT", false}
+	}, 2);
+	if (!runFrames(machine, 4) || fairy_snes_debug_wram(machine, 0x031d) != 5
+		|| fairy_snes_debug_wram(machine, 0x031f) != 3) {
+		std::fputs("multi-row root page did not become a ready browser\n", stderr);
+		return 195;
+	}
+	if (!fairy_snes_key_event(machine, 0x72, true, true) || !runFrames(machine, 2)
+		|| fairy_snes_debug_wram(machine, 0x0320) != 1) {
+		std::fputs("Down did not move the browser selection to the second row\n", stderr);
+		return 196;
+	}
+	if (!fairy_snes_key_event(machine, 0x5a, true, false) || !runFrames(machine, 2)) return 197;
+	std::uint32_t record = lastCommand(second_root.size());
+	if (fairy_snes_debug_wram(machine, 0x031d) != 2
+		|| fairy_snes_debug_bus_read(machine, record + 2) != 0x00
+		|| fairy_snes_debug_bus_read(machine, record + 3) != 0x01
+		|| fairy_snes_debug_bus_read(machine, record + 4) != second_root.size()
+		|| wramString(machine, 0x1800, second_root.size()) != second_root) {
+		std::fprintf(stderr,
+			"the second directory row did not list its own opaque ID: mode=%u kind=%02x%02x count=%u staged=%s\n",
+			fairy_snes_debug_wram(machine, 0x031d),
+			fairy_snes_debug_bus_read(machine, record + 3),
+			fairy_snes_debug_bus_read(machine, record + 2),
+			fairy_snes_debug_bus_read(machine, record + 4),
+			wramString(machine, 0x1800, second_root.size()).c_str());
+		return 198;
+	}
+	for (std::size_t i = 0; i < second_root.size(); ++i) {
+		if (fairy_snes_debug_bus_read(machine, record + 20 + static_cast<std::uint32_t>(i))
+			!= static_cast<std::uint8_t>(second_root[i])) {
+			std::fputs("the second directory row's list command carried another row's ID\n", stderr);
+			return 199;
+		}
+	}
+	// Inside that folder, the document sits below a subfolder and another file:
+	// the exact third-row case a user reaches after saving into a home folder.
+	const std::string wanted = "0123456789abcdef01234567";
+	rowbase = injectRows(rowbase, {
+		{"dddddddddddddddddddddddd", "DRAFTS", true},
+		{"eeeeeeeeeeeeeeeeeeeeeeee", "LETTER.ODT", false},
+		{wanted, "MARIA.ODT", false}
+	}, 1);
+	if (!runFrames(machine, 4) || fairy_snes_debug_wram(machine, 0x031d) != 5
+		|| fairy_snes_debug_wram(machine, 0x031f) != 3) {
+		std::fputs("multi-row directory page did not become a ready browser\n", stderr);
+		return 200;
+	}
+	for (int i = 0; i < 2; ++i) {
+		if (!fairy_snes_key_event(machine, 0x72, true, true) || !runFrames(machine, 2)) return 201;
+	}
+	if (fairy_snes_debug_wram(machine, 0x0320) != 2) {
+		std::fputs("Down did not move the browser selection to the third row\n", stderr);
+		return 202;
+	}
+	if (!fairy_snes_key_event(machine, 0x5a, true, false) || !runFrames(machine, 2)) return 203;
+	record = lastCommand(wanted.size());
+	if (fairy_snes_debug_wram(machine, 0x031d) != 0
+		|| fairy_snes_debug_bus_read(machine, record + 2) != 0x01
+		|| fairy_snes_debug_bus_read(machine, record + 3) != 0x01
+		|| fairy_snes_debug_bus_read(machine, record + 4) != wanted.size()) {
+		std::fprintf(stderr,
+			"Enter on the third row did not emit CommandOpenFile: mode=%u kind=%02x%02x count=%u\n",
+			fairy_snes_debug_wram(machine, 0x031d),
+			fairy_snes_debug_bus_read(machine, record + 3),
+			fairy_snes_debug_bus_read(machine, record + 2),
+			fairy_snes_debug_bus_read(machine, record + 4));
+		return 204;
+	}
+	for (std::size_t i = 0; i < wanted.size(); ++i) {
+		if (fairy_snes_debug_bus_read(machine, record + 20 + static_cast<std::uint32_t>(i))
+			!= static_cast<std::uint8_t>(wanted[i])) {
+			std::fprintf(stderr,
+				"open-file from the third row carried the wrong opaque ID: staged=%s\n",
+				wramString(machine, 0x1800, wanted.size()).c_str());
+			return 205;
+		}
+	}
+	fairy_snes_destroy(machine);
+
 	// Recovery and save-progress are cartridge-owned screens. A host
 	// EventRecoveryAvailable renders a restore dialog whose Enter emits
 	// CommandRecover with the opaque "current" token; EventRecoveryRestored
@@ -1469,12 +1777,13 @@ int main(int argc, char** argv)
 	}
 	fairy_snes_destroy(machine);
 
-	// Rich style (bold/italic/underline): each format run flag must project
-	// through to the expected tile-id-page bits, both alone and combined
-	// with a proofing flag on the same cell (proving the palette and shape
-	// axes are independent, per the tilemap attribute byte's bit layout).
-	// Priority among style bits when more than one is set on the same run:
-	// underline wins over bold, bold wins over italic.
+	// Rich style (bold/italic/underline): the three flags are independent, so
+	// every combination has to reach the screen as its own glyph page. The page
+	// index is the flag mask itself; its bit 0 lands in the character byte
+	// (+128) and its remaining two bits in the attribute byte's tile-id bits
+	// 8-9. Proofing keeps its own axis in the palette bits, so a styled cell can
+	// also be flagged. Held together, these cases pin the whole mapping: no
+	// combination may collapse onto another one's page.
 	{
 		struct StyleCase {
 			std::uint8_t flags;
@@ -1482,14 +1791,16 @@ int main(int argc, char** argv)
 			std::uint8_t wantTileLow;
 		};
 		const StyleCase cases[] = {
-			{0x01, 0x09, 0x41}, // bold alone: attr bit0 set, tile-low unchanged
-			{0x02, 0x09, 0xc1}, // italic alone: attr bit0 set, tile-low bit7 set
-			{0x04, 0x08, 0xc1}, // underline alone: attr bit0 clear, tile-low bit7 set
-			{0x05, 0x08, 0xc1}, // bold+underline: underline wins
-			{0x03, 0x09, 0x41}, // bold+italic: bold wins
-			{0x07, 0x08, 0xc1}, // all three: underline wins
-			{0x09, 0x0d, 0x41}, // bold+spelling: spelling palette (bits4-2) + bold shape (bit0)
-			{0x0c, 0x0c, 0xc1}, // spelling+underline: spelling palette + underline shape
+			{0x01, 0x08, 0xc1}, // bold: page 1
+			{0x02, 0x09, 0x41}, // italic: page 2
+			{0x03, 0x09, 0xc1}, // bold+italic: page 3
+			{0x04, 0x0a, 0x41}, // underline: page 4
+			{0x05, 0x0a, 0xc1}, // bold+underline: page 5
+			{0x06, 0x0b, 0x41}, // italic+underline: page 6
+			{0x07, 0x0b, 0xc1}, // bold+italic+underline: page 7
+			{0x09, 0x0c, 0xc1}, // bold+spelling: spelling palette, page 1
+			{0x0c, 0x0e, 0x41}, // underline+spelling: spelling palette, page 4
+			{0x12, 0x05, 0x41}, // italic+grammar: grammar palette, page 2
 		};
 		for (const auto& tc : cases) {
 			FairySnesMachine* m = fairy_snes_create(rom.data(), rom.size());
@@ -1526,6 +1837,196 @@ int main(int argc, char** argv)
 			}
 			fairy_snes_destroy(m);
 		}
+		// The tilemap bytes above are the mapping; these are the pixels. Every
+		// one of the eight style combinations must draw a visibly different
+		// first character, which is what proves the styled glyph pages exist in
+		// VRAM at the strided ids the attribute bytes point at -- a correct
+		// tile id into an unuploaded page renders as garbage or as the plain
+		// glyph, and the byte assertions alone cannot tell the difference.
+		std::uint64_t rendered[8] = {};
+		for (std::uint8_t style = 0; style < 8; ++style) {
+			FairySnesMachine* m = fairy_snes_create(rom.data(), rom.size());
+			if (!m || !runFrames(m, 3)) return 172;
+			constexpr std::string_view text = "ABCDE";
+			fairy_snes_debug_bus_write(m, ViewportSram + 8, static_cast<std::uint8_t>(text.size()));
+			fairy_snes_debug_bus_write(m, ViewportSram + 20, 0);
+			fairy_snes_debug_bus_write(m, ViewportSram + 28, 1);
+			fairy_snes_debug_bus_write(m, ViewportSram + 32, static_cast<std::uint8_t>(text.size()));
+			fairy_snes_debug_bus_write(m, ViewportSram + 34, 1);
+			fairy_snes_debug_bus_write(m, ViewportSram + 124, 1);
+			fairy_snes_debug_bus_write(m, ViewportSram + 125, 0);
+			fairy_snes_debug_bus_write(m, ViewportSram + 384, 0);
+			fairy_snes_debug_bus_write(m, ViewportSram + 385, 0);
+			fairy_snes_debug_bus_write(m, ViewportSram + 386, 1);
+			fairy_snes_debug_bus_write(m, ViewportSram + 387, 0);
+			fairy_snes_debug_bus_write(m, ViewportSram + 388, style);
+			for (std::size_t i = 0; i < text.size(); ++i) {
+				fairy_snes_debug_bus_write(m, ViewportTextSram + static_cast<std::uint32_t>(i), text[i]);
+			}
+			fairy_snes_debug_bus_write(m, 0x70000a, 2);
+			if (!runFrames(m, 6)) return 172;
+			// The document plane's first cell sits at screen (8,80).
+			rendered[style] = blockHash(m, 8, 80, 8, 8);
+			fairy_snes_destroy(m);
+		}
+		static const char* const style_names[8] = {
+			"plain", "bold", "italic", "bold+italic", "underline",
+			"bold+underline", "italic+underline", "bold+italic+underline"
+		};
+		for (int a = 0; a < 8; ++a) {
+			for (int b = a + 1; b < 8; ++b) {
+				if (rendered[a] == rendered[b]) {
+					std::fprintf(stderr,
+						"style combinations %s and %s render identical pixels\n",
+						style_names[a], style_names[b]);
+					return 173;
+				}
+			}
+		}
+	}
+
+	// Paragraph alignment. The host publishes it per format run; the cartridge
+	// owns the 30-column layout, so centring and right alignment are the
+	// cartridge translating each finished row inside its own width. What is being
+	// pinned here is the whole chain: a run's alignment byte reaching the
+	// per-character plane, each visual line of a wrapped paragraph being placed
+	// on its own width rather than the paragraph's, and the caret and the mouse
+	// staying on the characters they belong to once a row has moved.
+	{
+		// "LEFT" (4), "CENTRE" (6), "RIGHT" (5), then a centred paragraph long
+		// enough to wrap. Each entry is one paragraph and one plane row, except
+		// the last, which is three.
+		struct AlignPara final {
+			std::string text;
+			std::uint8_t alignment;
+		};
+		const AlignPara paragraphs[] = {
+			{"LEFT", 0},
+			{"CENTRE", 1},
+			{"RIGHT", 2},
+			{"WRAPPED CENTRED TEXT THAT RUNS PAST ONE ROW OF THE PLANE", 1}
+		};
+		std::string text;
+		std::vector<std::pair<std::uint16_t, std::uint16_t>> spans;
+		for (const AlignPara& para : paragraphs) {
+			spans.emplace_back(static_cast<std::uint16_t>(text.size()),
+				static_cast<std::uint16_t>(para.text.size()));
+			text += para.text;
+			text += "\n";
+		}
+		const auto publish = [&](FairySnesMachine* m, std::uint16_t cursor) {
+			for (std::size_t i = 0; i < text.size(); ++i) {
+				fairy_snes_debug_bus_write(m, ViewportTextSram + static_cast<std::uint32_t>(i),
+					static_cast<std::uint8_t>(text[i]));
+			}
+			fairy_snes_debug_bus_write(m, ViewportSram + 8, static_cast<std::uint8_t>(cursor));
+			fairy_snes_debug_bus_write(m, ViewportSram + 9, static_cast<std::uint8_t>(cursor >> 8));
+			fairy_snes_debug_bus_write(m, ViewportSram + 20, 0);
+			fairy_snes_debug_bus_write(m, ViewportSram + 32, static_cast<std::uint8_t>(text.size()));
+			fairy_snes_debug_bus_write(m, ViewportSram + 33, static_cast<std::uint8_t>(text.size() >> 8));
+			fairy_snes_debug_bus_write(m, ViewportSram + 34, 1);
+			fairy_snes_debug_bus_write(m, ViewportSram + 124,
+				static_cast<std::uint8_t>(std::size(paragraphs)));
+			fairy_snes_debug_bus_write(m, ViewportSram + 125, 0);
+			for (std::size_t i = 0; i < std::size(paragraphs); ++i) {
+				const std::uint32_t at = ViewportSram + 384 + static_cast<std::uint32_t>(i * 8);
+				fairy_snes_debug_bus_write(m, at + 0, static_cast<std::uint8_t>(spans[i].first));
+				fairy_snes_debug_bus_write(m, at + 1, static_cast<std::uint8_t>(spans[i].first >> 8));
+				fairy_snes_debug_bus_write(m, at + 2, static_cast<std::uint8_t>(spans[i].second));
+				fairy_snes_debug_bus_write(m, at + 3, static_cast<std::uint8_t>(spans[i].second >> 8));
+				fairy_snes_debug_bus_write(m, at + 4, 0);
+				fairy_snes_debug_bus_write(m, at + 5, 0);
+				fairy_snes_debug_bus_write(m, at + 6, paragraphs[i].alignment);
+				fairy_snes_debug_bus_write(m, at + 7, 0);
+			}
+			fairy_snes_debug_bus_write(m, 0x70000a, 2);
+		};
+		const auto planeRow = [](FairySnesMachine* m, int row) {
+			return wramString(m, 0x1000 + static_cast<std::uint32_t>(row * 30), 30);
+		};
+
+		machine = fairy_snes_create(rom.data(), rom.size());
+		if (!machine || !runFrames(machine, 3)) return 174;
+		// The cursor is parked past the end so the block cursor cannot replace a
+		// glyph in any row this checks.
+		publish(machine, static_cast<std::uint16_t>(text.size()));
+		if (!runFrames(machine, 6)) return 174;
+		// A left paragraph starts at the margin; a centred one is placed on
+		// (30 - width) / 2; a right one ends at the last column. The wrapped
+		// centred paragraph is centred line by line: its first line happens to
+		// fill the plane exactly and cannot move, while its second is placed on
+		// its own 25 cells rather than the paragraph's length.
+		const struct { int row; const char* want; std::uint8_t shift; } rows[] = {
+			{0, "LEFT                          ", 0},
+			{1, "            CENTRE            ", 12},
+			{2, "                         RIGHT", 25},
+			{3, "WRAPPED CENTRED TEXT THAT RUNS", 0},
+			{4, "  PAST ONE ROW OF THE PLANE   ", 2}
+		};
+		for (const auto& row : rows) {
+			const std::string got = planeRow(machine, row.row);
+			const std::string want(row.want);
+			if (got != want
+				|| fairy_snes_debug_wram(machine, 0x0f00 + static_cast<std::uint32_t>(row.row))
+					!= row.shift) {
+				std::fprintf(stderr,
+					"alignment row %d\n  got  |%s| shift=%u\n  want |%s| shift=%u\n",
+					row.row, got.c_str(),
+					fairy_snes_debug_wram(machine, 0x0f00 + static_cast<std::uint32_t>(row.row)),
+					want.c_str(), row.shift);
+				return 175;
+			}
+		}
+		fairy_snes_destroy(machine);
+
+		// The caret belongs to a character, not to a cell: with the cursor on the
+		// centred paragraph's second character, the block cursor has to sit on
+		// that character where it is actually drawn.
+		machine = fairy_snes_create(rom.data(), rom.size());
+		if (!machine || !runFrames(machine, 3)) return 176;
+		publish(machine, static_cast<std::uint16_t>(spans[1].first + 1)); // "CENTRE"'s 'E'
+		if (!runFrames(machine, 6)) return 176;
+		const std::uint32_t caret = fairy_snes_debug_wram(machine, 0x0b)
+			| (static_cast<std::uint32_t>(fairy_snes_debug_wram(machine, 0x0c)) << 8);
+		if (caret != 30 + 12 + 1) {
+			std::fprintf(stderr,
+				"the caret did not follow the centred row: cell=%u want=%u\n", caret, 30 + 12 + 1);
+			return 177;
+		}
+		fairy_snes_destroy(machine);
+
+		// Clicking a centred row must select the character under the pointer.
+		// The layout the hit-test walks is flush left, so a visible cell has to be
+		// brought back into layout space or every click on a centred line would
+		// land further into the text than the character it was aimed at.
+		machine = fairy_snes_create(rom.data(), rom.size());
+		if (!machine || !runFrames(machine, 3)) return 178;
+		publish(machine, 0);
+		if (!runFrames(machine, 6)) return 178;
+		const int producer_before = fairy_snes_debug_bus_read(machine, 0x700002)
+			| (fairy_snes_debug_bus_read(machine, 0x700003) << 8);
+		// Row 1 column 12 is where 'C' of "CENTRE" is drawn: screen (8+96, 80+8).
+		fairy_snes_mouse_event(machine, -24, -24, false, false); // (104, 88)
+		if (!runFrames(machine, 2)) return 178;
+		fairy_snes_mouse_event(machine, 0, 0, true, false);
+		if (!runFrames(machine, 20)) return 178;
+		const int producer_after = fairy_snes_debug_bus_read(machine, 0x700002)
+			| (fairy_snes_debug_bus_read(machine, 0x700003) << 8);
+		const std::uint32_t click = 0x700100 + static_cast<std::uint32_t>(producer_after - 22);
+		const std::uint16_t offset = fairy_snes_debug_bus_read(machine, click + 20)
+			| (static_cast<std::uint16_t>(fairy_snes_debug_bus_read(machine, click + 21)) << 8);
+		if (producer_after == producer_before
+			|| fairy_snes_debug_bus_read(machine, click + 2) != 0x04
+			|| fairy_snes_debug_bus_read(machine, click + 3) != 0x01
+			|| offset != spans[1].first) {
+			std::fprintf(stderr,
+				"clicking the centred row's first character published offset %u, want %u (kind=%02x%02x)\n",
+				offset, spans[1].first,
+				fairy_snes_debug_bus_read(machine, click + 3),
+				fairy_snes_debug_bus_read(machine, click + 2));
+			return 179;
+		}
+		fairy_snes_destroy(machine);
 	}
 
 	// Toolbar click routing: clicking each bold/italic/underline/alignment

@@ -1,10 +1,21 @@
 # FairyWriter Development Status (Synced 2026-07-29)
 
-`VERSION` is `0.2.0`. Per `VERSIONING.md`, new user-visible behavior and
-substantial cartridge changes take the MINOR position before 1.0: this release
-adds independent style combinations and rendered paragraph alignment on top of
-the browser row-selection fix. The number is claimed here in source; the tag and
-its assets only exist once the three native package jobs pass on a merged commit.
+`VERSION` is `0.2.0`, published. Per `VERSIONING.md`, new user-visible behavior
+and substantial cartridge changes take the MINOR position before 1.0: this
+release adds independent style combinations and rendered paragraph alignment on
+top of the browser row-selection fix.
+
+PR 6 is squash-merged as public commit `0810197`, and `v0.2.0` is an experimental
+GitHub prerelease on that exact commit. Its macOS arm64 DMG, Linux x86_64
+AppImage, Windows x64 ZIP and three checksum sidecars come from post-merge run
+`30502285912`; each was verified against its sidecar after an independent
+download from the release page. `v0.1.0` remains published and untouched, and
+neither tag may be moved.
+
+What that evidence covers is automated: the 10-test production gate and package
+audits on all three platforms. It is not human acceptance. No one has launched
+the Windows package by hand on any build, the Linux AppImage has never had a GUI
+pass, and the macOS app is ad-hoc signed with no notarization.
 
 ## 2026-07-29 rich style combinations and paragraph alignment
 

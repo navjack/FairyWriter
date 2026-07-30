@@ -45,18 +45,24 @@
 
 ### Active working tree
 
-- Branch: `codex/versioning-baseline`, based directly on public `origin/main`
-  after the three-platform build PR merged and the `v0.1.0` tester preview was
-  published. PR 5 carries its one deterministic product-version authority and
-  the SemVer/release process from that baseline forward.
-- The branch is intentionally dirty with the save-flow, Windows runtime, Linux
-  Wayland-runtime, regression, tester-guide, changelog, and durable-handoff
-  changes from this manual release-failure pass. Nothing from this pass has
-  been committed, pushed, or substituted into the published release.
+- Branch: `codex/public-main`, fast-forwarded to public `origin/main` at
+  `0810197`. Everything from the save-flow, browser row-selection, style
+  combination and alignment passes is merged and released as `0.2.0`; the
+  publishable tree is clean. `codex/versioning-baseline` is now redundant — its
+  two commits are PR 5's content, which `main` already carries as the squash
+  commit `37fba0f`.
 - Private development branches remain local. Their history contains old
   packaged applications and must not be pushed. Public GitHub `main` was
   created as a new root from the sanitized source tree; neither it nor this
   handoff branch contains the private history.
+- **The local branch named `main` is the private history, not public main.**
+  Public main is tracked by `codex/public-main`. `gh pr merge --delete-branch`
+  checked out local `main` and tried to pull `origin/main` into it; Git refused
+  the non-fast-forward, so nothing private was pushed and nothing was lost, but
+  the checkout did land on the private tree mid-flow. Any tool that "returns to
+  the default branch" will do this again. Renaming the private branch would
+  remove the trap; until then, do not run merge helpers that switch branches for
+  you, and check `git branch -vv` before trusting a post-merge working tree.
 - Local documents, packaged applications, and the ignored `FairyWriter/`
   artifact directory remain untracked and untouched. The user-authorized demo
   was converted to a repository-owned H.264 MP4 at
@@ -100,9 +106,18 @@
   user-visible behavior and substantial cartridge changes in the MINOR position
   before 1.0, and this pass is both. `CHANGELOG.md` and the AppStream release
   history carry the same number and date.
-- The `v0.2.0` tag and its published assets do not exist yet. They come only from
-  a merged commit whose three native package jobs pass, per the release
-  checklist. `v0.1.0` remains published and untouched.
+- `v0.2.0` is published as an experimental GitHub prerelease on public commit
+  `0810197` (PR 6 squash-merged). Its three packages and checksum sidecars come
+  from post-merge run `30502285912` at that exact commit, and each was verified
+  against its sidecar after an independent download from the release page:
+  DMG `492fb8c221265665ba909501624912b6f25818018bf2ff305295341d8187db38`,
+  AppImage `bbe51195f2e1e38cf301fea680aa8e540c4fc9759c70613276df7b59d04fba90`,
+  ZIP `7b6fa92473467cd71815b47344f9935b9e34bf27616cb7ef3ba2722272fe1701`.
+  `v0.1.0` remains published and untouched, and neither tag may be moved.
+- The published `0.2.0` packages supersede every local validation package in this
+  file for testing purposes. The local `release-macos-arm64` DMG is still named
+  `0.1.0` because it was built before the version bump; its code matches this
+  release apart from the version, changelog and docs.
 
 ### Completed in the current pass (rich style combinations and alignment)
 
@@ -261,12 +276,16 @@ can be called self-contained.
   previews. The macOS packaged Save/relaunch/Recent gate now passes. Remaining
   release gates are a native Windows rebuild plus real Windows first launch and
   a human Linux GUI pass.
-- Next concrete action: the user is testing the `8993e37e…` DMG by hand -- Open
-  from a lower browser row, the style combinations, and centre/right alignment
-  including a wrapped paragraph. Then rebuild the AppImage at this revision and
-  run it through the same checklist in a Linux GUI, and run the native Windows
-  package job and verify its staged ZIP launches on real Windows. Windows has no
-  post-fix package at all yet.
+- Next concrete action: human acceptance of the published `v0.2.0` packages. On
+  macOS, Open from a browser row below the first, the eight style combinations,
+  and centre/right alignment including a wrapped paragraph and a click into a
+  moved line. Then the same checklist on the Linux AppImage in a real GUI, and a
+  real Windows first launch of the ZIP -- Windows has never been launched by a
+  human on any build. Every platform's package audit passes; none of that is
+  acceptance.
+- Known gap carried forward: the toolbar's `[B][I][U]` and `[L][C][R]` buttons
+  never show which states are active, so the only feedback for a formatting
+  toggle is the text itself.
 
 ### Completed in the latest pass (three-platform release production)
 

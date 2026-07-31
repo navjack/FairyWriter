@@ -79,6 +79,8 @@ its first physical-machine acceptance pass.
 - `FAIRYWRITER_DEVELOPER_TOOLS=ON` builds standalone cartridge hosts.
 - `FAIRYWRITER_SNESRECOMP_ROOT=/path` selects an already prepared runtime.
 
-The production configuration currently registers 10 tests. The development
-UI adds three legacy presentation tests. Automated success does not replace the
-manual keyboard, mouse, recovery, and physical-platform checks in `TESTING.md`.
+The production configuration currently registers 11 tests. The development UI
+adds three legacy presentation suites and a UI-layout audit on top of that.
+Confirm the number with `ctest --test-dir build -N` rather than trusting this
+line — it has gone stale before. Automated success does not replace the manual
+keyboard, mouse, recovery, and physical-platform checks in `TESTING.md`.

@@ -38,7 +38,7 @@ FairyWriter is a native app that presents a source-generated SNES cartridge runt
 
 - `FAIRYWRITER_DEVELOPMENT_UI=OFF` and
   `FAIRYWRITER_DEVELOPER_TOOLS=OFF` define the shipping build on every platform.
-- Production regression expectation is 10/10. `fairywriter_persistence` also runs
+- Production regression expectation is 11/11. `fairywriter_persistence` also runs
   all 670 examples from the vendored GFM conformance corpus, and
   `fairywriter_persistence_process_e2e` launches fresh production processes for
   ODT, DOCX, RTF, Markdown, and crash recovery. Enabling the retired development

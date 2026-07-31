@@ -1,5 +1,13 @@
 # Typing blip sound: an SPC700/S-DSP audio path for FairyWriter
 
+> **Status: delivered in 0.3.0** (`5193aa2`, PR #8), 2026-07-30. This file is the
+> design document for the pass that was in flight when it was written; it is
+> rewritten per pass and is not a standing roadmap. Two things here were
+> superseded by what actually shipped — the APU is caught up per *scanline*, not
+> per frame, and `RtlApuLock`/`RtlApuUnlock` deliberately stayed no-ops rather
+> than becoming a mutex. `SCRATCH.MD` records both and why. For what happens
+> next, read *Next actions* in `SCRATCH.MD`, not this file.
+
 ## Context
 
 FairyWriter has no audio at all today. The request is a typing blip — an on/off

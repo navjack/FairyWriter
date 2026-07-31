@@ -1,10 +1,51 @@
-# FairyWriter Development Status (Synced 2026-07-29)
+# FairyWriter Development Status (Synced 2026-07-31)
 
-`VERSION` is `0.2.0`. Per `VERSIONING.md`, new user-visible behavior and
-substantial cartridge changes take the MINOR position before 1.0: this release
-adds independent style combinations and rendered paragraph alignment on top of
-the browser row-selection fix. The number is claimed here in source; the tag and
-its assets only exist once the three native package jobs pass on a merged commit.
+`VERSION` is `0.3.0` — the release that gave FairyWriter sound: an SPC700 audio
+path driven by the emulated S-DSP, and a twelve-setting shaper on F5. Per
+`VERSIONING.md`, new user-visible behavior and substantial cartridge changes take
+the MINOR position before 1.0. `v0.1.0`, `v0.2.0` and `v0.3.0` are all published
+as prereleases; the version stays at the latest public release during ordinary
+development.
+
+`CHANGELOG.md`'s **Unreleased** section holds the render-consistency fixes and the
+generated showcase video — both merged, neither released yet.
+
+Sections below are newest-first and dated. `SCRATCH.MD` holds the live resume
+point, the discoveries that constrain future work, and the rejected approaches;
+this file records implemented behavior.
+
+## Current risk controls
+
+These are not historical — they apply to every change, and two of the three have
+already been violated more than once.
+
+- **Zero-page reuse must be verified empirically**, via `fairy_snes_debug_wram` in
+  a throwaway diagnostic rather than by reading the source. This codebase has
+  **four** such collisions on record: `$19`/`$1b`, `$09`, `$0c`, and `$1f`/`$20`.
+- **`renderDocument` runs with 16-bit index registers** (`REP #$10` at entry,
+  `SEP #$30` at the VBlank handoff) and an 8-bit accumulator. Inside that region
+  every `CPX #`/`CPY #`/`LDX #`/`LDY #` immediate is three bytes, and every
+  `STX`/`STY`/`LDX`/`LDY` to a direct-page address claims **two** consecutive
+  bytes. This family of mistake has produced seven recorded defects.
+- **Do not trust CMake to regenerate the cartridge from `main.go` on this
+  volume.** `touch tools/fairywriter-rom/main.go` first and confirm the intended
+  bytes are in the built `.sfc` before believing a pass *or* a failure. Building
+  only the `fairywriter_cartridge` target refreshes the `.sfc` but not the
+  embedded copy, tripping `fairywriter_cartridge_contract` (exit 54) — build
+  `fairywriter_snes_machine_tests` to refresh both.
+- **Keep every `snes_machine_tests.cpp` return code below 256.** A process exit
+  status is the low 8 bits of `main`'s return, so `return 256` silently reports
+  success.
+- Keep ROM changes localized to rendering where possible, and avoid altering the
+  fragile viewport decode/control-flow paths unless unavoidable.
+- Require green Go ROM tests, then focused XBAND end-to-end, then full `ctest`,
+  before syncing an app bundle.
+
+## Out of scope
+
+- Unicode glyph streaming and any emoji pipeline.
+- Broad feature expansion beyond the constrained one-font proofing/rich-style
+  target.
 
 ## 2026-07-31 render consistency: the optimistic frame agrees
 
@@ -75,6 +116,56 @@ local render may be stale by a frame but may never show a different state.
   rendered before and after a keystroke and the two frames compared. That is how
   the end-of-text selection defect surfaced at all — every byte assertion in the
   suite passed while the highlight was simply not on screen.
+
+## 2026-07-30 SPC700 audio path and shaper (0.3.0)
+
+Recorded on 2026-07-31: the 0.3.0 release shipped without being written into this
+file or `SCRATCH.MD`. Reconstructed from the shipped commit `5193aa2` (PR #8).
+`SCRATCH.MD` carries the rejected approaches and the reasoning; this section is
+what exists.
+
+Nothing is synthesised on the host. Every sample is the emulated S-DSP keying a
+voice, and the desktop side only carries those samples to an output device.
+
+- The SPC700 and S-DSP were already compiled into the production binary and simply
+  never clocked. `clock_position()` in `src/snes_machine.c` now accumulates
+  `snes->apuCatchupCycles` and catches the APU up **once per scanline** — not per
+  frame, which would exceed `snes_catchupApu`'s internal 10000-cycle clamp and
+  discard 42% of the APU's time.
+- `src/snes_machine.h` gained `fairy_snes_audio_blocks`, `fairy_snes_audio_read`,
+  `fairy_snes_audio_discard`, and the `fairy_snes_debug_aram` /
+  `fairy_snes_debug_dsp_reg` accessors the tests use. All are single-threaded
+  against the frame driver; `RtlApuLock`/`RtlApuUnlock` remain deliberate no-ops.
+- `src/audio_output.h/.cpp` is new: a lock-free SPSC ring plus a best-effort
+  miniaudio device. Opening it can fail without stopping the editor, an underrun
+  is silence rather than a stall, and a backed-up consumer drops surplus rather
+  than growing latency.
+- miniaudio 0.11.25 is vendored as a single header in `third_party/miniaudio/`,
+  chosen over Qt Multimedia because `QAudioSink` pulls a platform media-backend
+  plugin that the Linux packaging gate rejects. Recorded in
+  `THIRD_PARTY_NOTICES.md` under its Unlicense/MIT-0 dual offer.
+- The cartridge uploads a real SPC700 driver through the boot ROM's `$BB/$AA` →
+  `$CC` handshake, with every wait bounded and `$0371` as the audio-unavailable
+  fallback so a silent APU cannot hang boot or any headless test.
+  `tools/fairywriter-rom/main.go` gained a BRR encoder, source-generated square
+  and triangle waveforms, and the DSP init table.
+- **F5 opens the sound shaper**, listed in the F2 help card. Twelve settings, each
+  a real S-DSP register field bounded by the hardware field's width: blips on/off,
+  waveform (square, triangle, or the DSP's own noise), attack, decay, sustain
+  level, sustain rate, release, pitch, volume, and the echo unit's volume, delay
+  and feedback. Every numeric field has a slider that takes the mouse or the arrow
+  keys. Settings persist through `SoundSettings` in `src/document_persistence.*`
+  and ride the existing mailbox command/event triple.
+- The shaper auditions as you work: Space or Enter plays the voice and every edit
+  previews itself, so no setting has to be tested by returning to the document.
+- Coverage: seven Go tests over BRR round-tripping, SPC image bank fit, the echo
+  buffer being reserved before echo writes are enabled, sound-plane row layout,
+  and the cartridge's register mirror; plus C++ cases for driver upload, key-on,
+  blips-off actually silencing, the register-write command path, and a
+  sound-settings event travelling mailbox → cartridge state → DSP registers.
+- **Still manual:** no automated test proves the audio is audible on real
+  hardware. Typing latency with blips on, each envelope field being individually
+  audible, and persistence across a restart are live checks.
 
 ## 2026-07-29 rich style combinations and paragraph alignment
 
@@ -238,7 +329,8 @@ The durable-persistence and SNES-conformance changes now share one public
 `origin/main` base and one production gate. The cartridge is a canonical 64 KiB
 two-bank LoROM with validated header selection, checksum, vectors, explicit DB
 state, and bank-aware data access. `fairywriter_cartridge_conformance` raises
-the production expectation to **10/10**.
+the production expectation to **10/10** as of this pass; it has since grown to
+**11/11**.
 
 Recovery generations now also carry an explicit resolved-transition bit. A
 successful primary save or an explicit Discard retains older generations in
@@ -595,7 +687,7 @@ Authoritative docs:
 - `docs/HANDOFF_2026-07-26.md` (execution handoff)
 - `plan.md` (forward plan)
 - `docs/SNES_FRONTEND.md` (frontend ownership model and constraints)
-## Current state
+### 2026-07-27 state at the time
 - Proofing visuals are enabled with a split ROM draw path that isolates plain document rendering from proofing attribute overrides.
 - Text-selection highlighting is reintroduced (regressed silently in the proofing-stabilization commit) with a non-colliding attribute encoding, verified both by SNES-level tests and live in the app.
 - A generated public ODT fixture is wired into automated `ctest` (the earlier
@@ -603,7 +695,7 @@ Authoritative docs:
   passed).
 - Latest full regression status: `ctest --test-dir build-arm64 --output-on-failure` = **10/10 passed**.
 - Top-level app bundle has been refreshed from the validated build after the document-plane clear and position-thumb work. The build and top-level bundles are arm64, ad-hoc signed as `io.github.navjack.FairyWriter`, and pass strict deep signature verification.
-## Implemented and active
+### 2026-07-27 implemented and active at the time
 - Expanded viewport metadata path is active in host serialization.
 - Host emits format-run metadata including proofing flags.
 - Selection normalization in viewport snapshots was added for visual coherence (no-selection case normalizes to cursor).
@@ -642,7 +734,7 @@ Authoritative docs:
   must keep its current resume point updated rather than prune it. Ignored local
   creative source material and packaged artifacts remain outside Git.
 
-## In progress
+### 2026-07-27 in progress at the time
 - Manual app verification pass (2026-07-26) confirmed proofing visuals render and are distinguishable:
   - Spelling-flagged words (common-typo heuristic) render as a solid filled cell with accent-colored glyph.
   - Grammar-flagged repeated words render as a bordered/outlined glyph on the normal background.
@@ -653,14 +745,3 @@ Authoritative docs:
 - User has proposed a mouse-driven toolbar for Bold/Italic/Underline plus left/center/right justify, and floated bulleted/numbered lists too. Alignment already has host-side plumbing (`align_val` in `document_engine.cpp`'s format-run extraction) but no ROM rendering or UI; lists would be new scope on both host and cartridge. Needs its own scoping pass (mouse click-target layout, new host commands, and a check against the "WordPerfect for DOS simplicity" scope constraint) before implementation.
 - Manual verification is still required for the new lower-row clear and position thumb on the real ODT fixture; automated tests prove staging/OAM/framebuffer behavior but not live visual feel.
 - Next confirmed work item: the manual acceptance pass on the real ODT fixture (see `SCRATCH.MD` next actions). Conclusive live toolbar verification is the follow-up after that.
-## Key risk controls
-- Keep ROM changes localized to rendering where possible.
-- Avoid altering fragile viewport decode/control-flow paths unless unavoidable.
-- Require green ROM tests + xband end-to-end + full ctest before app sync.
-- When reusing a zero-page address across ROM routines, verify empirically (via `fairy_snes_debug_wram` in a throwaway diagnostic, not just static reading) that no other routine in the same commit/render pass also claims it -- this codebase has **three** such collisions on record (`$19`/`$1b`, `$09`, and `$0c`).
-- `renderDocument` runs with **16-bit index registers** (`REP #$10` at entry, `SEP #$30` at the VBlank handoff) and an 8-bit accumulator. Inside that region every `CPX #`/`CPY #`/`LDX #`/`LDY #` immediate must be emitted as three bytes, and every `STX`/`STY`/`LDX`/`LDY` to a direct-page address claims **two** consecutive bytes. Two of the three fixes in the later 2026-07-27 pass were caused by overlooking exactly this.
-- Do not trust CMake to regenerate the cartridge from `main.go` on this volume; `touch` the source first and confirm the intended bytes are present in `build-arm64/fairywriter.sfc` before believing a test result. Building only the `fairywriter_cartridge` target leaves the embedded copy stale and trips `fairywriter_cartridge_contract` (exit 54) -- build `fairywriter_snes_machine_tests` to refresh both.
-- Keep every `snes_machine_tests.cpp` return code below 256; the process exit status is the low 8 bits of `main`'s return, so `return 256` silently reports success.
-## Out of scope
-- Unicode glyph streaming/emoji pipeline.
-- Broad feature expansion beyond the constrained one-font proofing/rich-style target.

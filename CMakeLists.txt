@@ -70,6 +70,37 @@ target_link_libraries(fairywriter_markdown INTERFACE
 	libcmark-gfm_static
 )
 
+# Audio output. miniaudio is a single vendored header wrapping the three
+# platforms' native APIs, chosen over Qt Multimedia because QAudioSink routes
+# through the platform media backend plugin -- the ffmpeg one on Linux -- which
+# the AppImage gate in packaging/linux/build-linux.sh would then have to deploy
+# and resolve. This adds nothing to any packaging step. Only the backends we
+# ship on are compiled in; the rest of miniaudio (decoding, encoding, synthesis,
+# resource manager, node graph, engine) is disabled in src/audio_output.cpp.
+add_library(fairywriter_audio INTERFACE)
+target_include_directories(fairywriter_audio INTERFACE
+	${CMAKE_CURRENT_SOURCE_DIR}/third_party/miniaudio
+)
+target_compile_definitions(fairywriter_audio INTERFACE MA_ENABLE_ONLY_SPECIFIC_BACKENDS)
+if(APPLE)
+	target_compile_definitions(fairywriter_audio INTERFACE MA_ENABLE_COREAUDIO)
+	find_library(fairywriter_coreaudio CoreAudio REQUIRED)
+	find_library(fairywriter_audiotoolbox AudioToolbox REQUIRED)
+	find_library(fairywriter_audiounit AudioUnit REQUIRED)
+	find_library(fairywriter_corefoundation CoreFoundation REQUIRED)
+	target_link_libraries(fairywriter_audio INTERFACE
+		${fairywriter_coreaudio} ${fairywriter_audiotoolbox}
+		${fairywriter_audiounit} ${fairywriter_corefoundation})
+elseif(WIN32)
+	target_compile_definitions(fairywriter_audio INTERFACE MA_ENABLE_WASAPI)
+else()
+	# Both are loaded with dlopen at runtime, so neither is a link-time or
+	# package dependency: the AppImage runs against whichever the host has.
+	target_compile_definitions(fairywriter_audio INTERFACE
+		MA_ENABLE_PULSEAUDIO MA_ENABLE_ALSA)
+	target_link_libraries(fairywriter_audio INTERFACE ${CMAKE_DL_LIBS} pthread m)
+endif()
+
 # The visible FairyWriter product is a source-owned SNES cartridge. Keep its
 # generation explicit and ROM-free; the desktop backend will consume this
 # artifact when the SNES runtime replaces the transitional Qt presentation.
@@ -340,6 +371,8 @@ else()
 	qt_add_executable(fairywriter
 		src/fairywriter_production_main.cpp
 		src/snesrecomp_player_main.cpp
+		src/audio_output.h
+		src/audio_output.cpp
 		src/cartridge_image.h
 		src/document_engine.h
 		src/document_engine.cpp
@@ -443,6 +476,7 @@ if(EXISTS "${FAIRYWRITER_SNESRECOMP_ROOT}/runner/src/snes/interp816.c")
 	if(FAIRYWRITER_DEVELOPER_TOOLS)
 		qt_add_executable(fairywriter_xband_player MACOSX_BUNDLE
 			src/snesrecomp_player_main.cpp
+			src/audio_output.cpp
 			src/xband_player_main.cpp
 			src/document_bridge.cpp
 			src/session_store.cpp
@@ -465,6 +499,7 @@ if(EXISTS "${FAIRYWRITER_SNESRECOMP_ROOT}/runner/src/snes/interp816.c")
 			src/3rdparty/qtzip/qtzip.cpp)
 		target_include_directories(fairywriter_xband_player PRIVATE src src/fileformats src/3rdparty/qtzip)
 		target_link_libraries(fairywriter_xband_player PRIVATE
+			fairywriter_audio
 			fairywriter_cartridge_image fairywriter_snes_machine
 			fairywriter_markdown
 			Qt6::Core Qt6::Gui Qt6::OpenGLWidgets Qt6::Widgets ZLIB::ZLIB)
@@ -531,6 +566,7 @@ if(FAIRYWRITER_DEVELOPMENT_UI)
 	)
 else()
 	target_link_libraries(fairywriter PRIVATE
+		fairywriter_audio
 		fairywriter_cartridge_image
 		fairywriter_snes_machine
 		fairywriter_markdown
@@ -818,9 +854,23 @@ if(BUILD_TESTING)
 	target_link_libraries(fairywriter_persistence_process_tests PRIVATE Qt6::Core)
 	add_test(NAME fairywriter_persistence_process_e2e
 		COMMAND fairywriter_persistence_process_tests $<TARGET_FILE:fairywriter>)
+	# The process test launches the real executable. Opening an output device is
+	# already best-effort, but a container or CI runner has no sound card and the
+	# backend can spend real time discovering that; keep the test deterministic
+	# by not asking for one.
 	set_tests_properties(fairywriter_persistence_process_e2e PROPERTIES
-		ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+		ENVIRONMENT "QT_QPA_PLATFORM=offscreen;FAIRYWRITER_NO_AUDIO=1"
 		TIMEOUT 180)
+
+	# A function key is only live if the host's Qt->scancode table and the
+	# cartridge's scancode->key-code map agree. Nothing else covers that seam:
+	# F5 once shipped mapped in the cartridge and missing from the host, so the
+	# key did nothing in the real application while every cartridge test passed.
+	add_test(NAME fairywriter_function_keys
+		COMMAND fairywriter --function-key-e2e-child)
+	set_tests_properties(fairywriter_function_keys PROPERTIES
+		ENVIRONMENT "QT_QPA_PLATFORM=offscreen;FAIRYWRITER_NO_AUDIO=1"
+		TIMEOUT 120)
 
 	add_executable(fairywriter_file_catalog_tests tests/file_catalog_tests.cpp src/file_catalog.cpp)
 	target_include_directories(fairywriter_file_catalog_tests PRIVATE src)

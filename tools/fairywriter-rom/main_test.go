@@ -411,3 +411,320 @@ func TestDocumentPanelEnclosesTheDocumentPlane(t *testing.T) {
 			documentBottomY+1)
 	}
 }
+
+func TestBrrWaveformsDecodeToTheShapesTheyName(t *testing.T) {
+	// The encoder is only trustworthy if it inverts the decoder's own
+	// arithmetic, so decode with the same (nibble << shift) >> 1 the DSP uses
+	// rather than restating an expectation.
+	square := brrBlock(squareWave(), 12, brrLoop|brrEnd)
+	if len(square) != 9 {
+		t.Fatalf("a BRR block is 9 bytes, got %d", len(square))
+	}
+	if square[0] != 12<<4|brrLoop|brrEnd {
+		t.Fatalf("square block header %#x does not carry shift 12, filter 0, loop and end", square[0])
+	}
+	decoded := brrDecodeFilter0(square)
+	for i, got := range decoded {
+		want := int16(14336)
+		if i >= 8 {
+			want = -14336
+		}
+		if got != want {
+			t.Fatalf("square sample %d decoded to %d, want %d", i, got, want)
+		}
+	}
+
+	triangle := brrDecodeFilter0(brrBlock(triangleWave(), 12, brrLoop|brrEnd))
+	// A triangle rises to a single peak, falls through zero to a single trough,
+	// and comes back: exactly two direction changes. Both turning points sit on
+	// a flat pair, so count sign changes among the non-zero differences rather
+	// than looking at individual samples.
+	turns, previous := 0, 0
+	for i := 1; i < len(triangle); i++ {
+		sign := 0
+		switch {
+		case triangle[i] > triangle[i-1]:
+			sign = 1
+		case triangle[i] < triangle[i-1]:
+			sign = -1
+		default:
+			continue
+		}
+		if previous != 0 && sign != previous {
+			turns++
+		}
+		previous = sign
+	}
+	if turns != 2 {
+		t.Fatalf("triangle wave changes direction %d times in one cycle, want 2", turns)
+	}
+	if triangle[0] <= 0 || triangle[15] >= 0 {
+		t.Fatal("triangle wave is not centred on zero across its cycle")
+	}
+	// And it must actually be a different shape from the square, or picking it
+	// in the menu would change nothing.
+	if bytes.Equal(brrBlock(triangleWave(), 12, 0), brrBlock(squareWave(), 12, 0)) {
+		t.Fatal("triangle and square encode to identical blocks")
+	}
+}
+
+func TestBrrEncoderRejectsUnrepresentableInput(t *testing.T) {
+	for _, bad := range []struct {
+		name    string
+		nibbles []int8
+		shift   byte
+	}{
+		{"short block", make([]int8, 15), 12},
+		{"long block", make([]int8, 17), 12},
+		{"sample above 4-bit range", append(make([]int8, 15), 8), 12},
+		{"shift past the linear range", make([]int8, 16), 13},
+	} {
+		t.Run(bad.name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatalf("brrBlock accepted %s instead of panicking", bad.name)
+				}
+			}()
+			brrBlock(bad.nibbles, bad.shift, brrLoop|brrEnd)
+		})
+	}
+}
+
+func TestSpcImageIsSelfConsistentAndFitsItsBank(t *testing.T) {
+	image, entry := spcImage()
+	// The image may cross a 256-byte page: the boot ROM handles that itself
+	// (INC $01 bumps the destination page when its 8-bit counter wraps) and the
+	// 65816 side sends Y's low byte, so both counters wrap in lockstep. What
+	// must NOT happen is the image running into the ARAM the driver writes to
+	// at run time -- the capture buffers once landed inside the driver's own
+	// code, and the envelope trace came back full of SPC700 instructions.
+	imageEnd := aramImageBase + len(image)
+	if spcCaptureBase < imageEnd {
+		t.Fatalf("capture buffer at %#x starts inside the driver image (%#x..%#x)",
+			spcCaptureBase, aramImageBase, imageEnd)
+	}
+	if spcCaptureBase+2*spcCaptureSamples > echoBufferPage*0x100 {
+		t.Fatalf("capture buffers reach %#x, into the echo buffer at %#x",
+			spcCaptureBase+2*spcCaptureSamples, echoBufferPage*0x100)
+	}
+	if spcImageOffset/0x8000 != (spcImageOffset+len(image)-1)/0x8000 {
+		t.Fatal("SPC image straddles a bank boundary; the indexed load cannot follow it")
+	}
+	if spcImageOffset+len(image) > scanMapOffset {
+		t.Fatalf("SPC image at %#x runs into the scan map at %#x", spcImageOffset, scanMapOffset)
+	}
+	// DIR names a page, so the directory has to start on a page boundary.
+	if aramImageBase%0x100 != 0 {
+		t.Fatalf("sample directory at %#x is not page-aligned", aramImageBase)
+	}
+	// Every directory pointer must land inside the image on a real block header.
+	for entryIndex := 0; entryIndex < 2; entryIndex++ {
+		start := binary.LittleEndian.Uint16(image[entryIndex*4:])
+		loop := binary.LittleEndian.Uint16(image[entryIndex*4+2:])
+		if start != loop {
+			t.Fatalf("source %d start %#x and loop %#x differ; a single-block waveform loops to itself",
+				entryIndex, start, loop)
+		}
+		offset := int(start) - aramImageBase
+		if offset < 0 || offset+9 > len(image) {
+			t.Fatalf("source %d points at %#x, outside the uploaded image", entryIndex, start)
+		}
+		if header := image[offset]; header&brrEnd == 0 || header&brrLoop == 0 {
+			t.Fatalf("source %d block header %#x does not loop; the oscillator would stop", entryIndex, header)
+		}
+	}
+	if int(entry)-aramImageBase >= len(image) || entry <= aramImageBase {
+		t.Fatalf("driver entry %#x is not inside the uploaded image", entry)
+	}
+	if image[int(entry)-aramImageBase] != 0x20 {
+		t.Fatal("driver does not begin with CLRP; its direct-page addressing would use page 1")
+	}
+	// The DSP init table has to be terminated or the driver walks off it.
+	table := dspInitTable()
+	if table[len(table)-1] != 0xff {
+		t.Fatal("DSP init table is not $ff-terminated")
+	}
+	if len(table)%2 != 1 {
+		t.Fatal("DSP init table is not whole (register, value) pairs plus a terminator")
+	}
+	if !bytes.Contains(image, table) {
+		t.Fatal("DSP init table is not present in the uploaded image")
+	}
+}
+
+func TestDspInitTableReservesTheEchoBufferBeforeEnablingIt(t *testing.T) {
+	// The echo unit writes to ARAM on its own -- EDL * 2048 bytes from ESA's
+	// page -- so this is a memory-safety invariant, not a mixing preference.
+	// Get it wrong and the DSP does not sound bad, it overwrites the SPC700
+	// program it is running.
+	table := dspInitTable()
+	values := map[byte]byte{}
+	order := map[byte]int{}
+	for i := 0; i+1 < len(table); i += 2 {
+		values[table[i]] = table[i+1]
+		order[table[i]] = i
+	}
+	// ESA and EDL must be installed before FLG clears the echo-write-disable
+	// bit; the other order lets the DSP write at whatever page ESA held out of
+	// reset for however long the table takes to reach it.
+	if order[0x6d] >= order[0x6c] || order[0x7d] >= order[0x6c] {
+		t.Fatalf("FLG at index %d is written before ESA (%d) or EDL (%d); "+
+			"echo writes would be enabled against an unset buffer address",
+			order[0x6c], order[0x6d], order[0x7d])
+	}
+	if got := values[0x6d]; got != echoBufferPage {
+		t.Fatalf("ESA is page %#x, want %#x", got, echoBufferPage)
+	}
+	if got := values[0x7d]; got > 15 {
+		t.Fatalf("EDL is %#x; only the low four bits are the delay", got)
+	}
+	// The buffer, at the largest delay the editor can select, must not reach
+	// the uploaded driver image or run off the end of ARAM.
+	image, _ := spcImage()
+	if echoBufferPage*0x100 < aramImageBase+len(image) {
+		t.Fatalf("echo buffer starts at %#x, inside the driver image at %#x..%#x",
+			echoBufferPage*0x100, aramImageBase, aramImageBase+len(image))
+	}
+	if echoBufferMaxEnd > 0x10000 {
+		t.Fatalf("echo buffer ends at %#x, past the end of ARAM", echoBufferMaxEnd)
+	}
+	if echoBufferPage*0x100 <= aramImageBase && echoBufferMaxEnd > aramImageBase {
+		t.Fatal("echo buffer at maximum delay overlaps the driver image")
+	}
+	// C0 carries the echo; with every FIR tap at zero the unit is enabled and
+	// silent, which is worse than being off because nothing says so.
+	if values[0x0f] == 0 {
+		t.Fatal("FIR tap C0 is zero; the echo would be enabled but inaudible")
+	}
+	if got := values[0x6c]; got&0x20 != 0 {
+		t.Fatalf("FLG is %#x; bit 5 set disables the echo writes just reserved for", got)
+	}
+	if got := values[0x6c]; got&0xc0 != 0 {
+		t.Fatalf("FLG is %#x; it must not leave the DSP muted or in reset", got)
+	}
+	if got := values[0x5d]; got != byte(aramImageBase>>8) {
+		t.Fatalf("DIR is %#x but the directory was uploaded to page %#x", got, aramImageBase>>8)
+	}
+	if got := values[0x05]; got&0x80 == 0 {
+		t.Fatalf("ADSR1 is %#x; bit 7 must be set or the voice follows GAIN instead", got)
+	}
+}
+
+func TestSoundPlaneRowsFitLabelSliderAndValue(t *testing.T) {
+	// Each field row is composed at render time from three pieces written at
+	// build-time-computed addresses: label, slider, value. Nothing checks they
+	// fit unless this does -- an earlier two-column layout put a label straight
+	// into its own value, and the slider was silently drawn off-plane because
+	// its index carried the plane base twice.
+	if len(soundFields) != 12 {
+		t.Fatalf("%d fields do not fill rows 1-12 one per row", len(soundFields))
+	}
+	for index, field := range soundFields {
+		row := soundFieldRow(index)
+		if row < 1 || row > 12 {
+			t.Fatalf("field %q lands on row %d, outside the editable rows", field.name, row)
+		}
+		if len(field.name) > soundLabelWidth {
+			t.Fatalf("label %q is %d characters, wider than the %d-column label field",
+				field.name, len(field.name), soundLabelWidth)
+		}
+		labelEnd := soundLabelColumn + len(field.name)
+		if labelEnd > soundSliderCol {
+			t.Fatalf("label %q ends at column %d, past the slider at %d",
+				field.name, labelEnd, soundSliderCol)
+		}
+		if soundSliderCol+soundSliderCells > soundValueCol {
+			t.Fatalf("a %d-cell slider from column %d runs into the value at %d",
+				soundSliderCells, soundSliderCol, soundValueCol)
+		}
+		if soundValueCol+3 > documentPlaneColumns {
+			t.Fatalf("the value at column %d does not fit before the row ends", soundValueCol)
+		}
+		// The value cell must be on this field's own row.
+		if got, want := soundValueCell(index), soundCell(row, soundValueCol); got != want {
+			t.Fatalf("field %q draws its value at %#x, want %#x", field.name, got, want)
+		}
+	}
+	// The scopes must not land on a field row.
+	for _, scope := range []struct {
+		name string
+		row  int
+	}{{"waveform", soundWaveRow}, {"envelope", soundEnvRow}} {
+		if scope.row <= soundFieldRow(len(soundFields)-1) {
+			t.Fatalf("%s scope starts at row %d, on top of a field row", scope.name, scope.row)
+		}
+		if scope.row+soundScopeRows > 17 {
+			t.Fatalf("%s scope runs past the bottom of the plane", scope.name)
+		}
+	}
+	if soundWaveRow+soundScopeRows > soundEnvRow {
+		t.Fatal("the two scopes overlap each other")
+	}
+	// The scope buffers must not collide with the plane they are drawn into.
+	for _, buffer := range []int{soundWaveBuffer, soundEnvBuffer} {
+		if buffer >= soundPlaneBase && buffer < soundPlaneBase+2*documentPlaneCells {
+			t.Fatalf("capture buffer %#x is inside the plane at %#x", buffer, soundPlaneBase)
+		}
+	}
+	if soundWaveBuffer+documentPlaneColumns > soundEnvBuffer {
+		t.Fatal("the two capture buffers overlap")
+	}
+}
+
+// The cartridge keeps its own mirror of the voice, and the DSP init table
+// programs the hardware. If those two disagree the sound changes the instant
+// any slider is touched, which is exactly what happened once.
+func TestCartridgeVoiceMirrorMatchesTheInstalledRegisters(t *testing.T) {
+	rom, _ := build()
+	table := dspInitTable()
+	values := map[byte]byte{}
+	for i := 0; i+1 < len(table); i += 2 {
+		values[table[i]] = table[i+1]
+	}
+	for _, field := range []struct {
+		name  string
+		state byte
+		want  byte
+	}{
+		{"attack", 0x74, values[0x05] & 0x0f},
+		{"decay", 0x75, (values[0x05] >> 4) & 0x07},
+		{"sustain level", 0x76, (values[0x06] >> 5) & 0x07},
+		{"sustain rate", 0x77, values[0x06] & 0x1f},
+	} {
+		// The reset path seeds each mirror byte with LDA #value; STA $03xx.
+		want := []byte{0xa9, field.want, 0x8d, field.state, 0x03}
+		if !bytes.Contains(rom[:scanMapOffset], want) {
+			t.Fatalf("cartridge does not seed %s to %d, the value the DSP init table installs",
+				field.name, field.want)
+		}
+	}
+}
+
+func TestSoundFieldStateBytesAreContiguousAndBounded(t *testing.T) {
+	// The cartridge reads and stages these with an indexed load off the first
+	// address, and the host sends them as one payload in this order, so a gap
+	// or a reorder would quietly address the wrong parameter.
+	for index, field := range soundFields {
+		want := uint16(0x0372 + index)
+		if field.state != want {
+			t.Fatalf("field %q holds state at %#x, want %#x -- the indexed load assumes a contiguous run",
+				field.name, field.state, want)
+		}
+		if field.high == 0 {
+			t.Fatalf("field %q has a maximum of 0 and could never be changed", field.name)
+		}
+	}
+	// Each maximum must fit the S-DSP field it is written into; one count over
+	// would overflow into the neighbouring field of the same register.
+	limits := map[string]byte{
+		"BLIPS": 1, "WAVE": 2, "ATTACK": 15, "DECAY": 7, "SUSTAIN": 7,
+		"SUS RATE": 31, "RELEASE": 31, "PITCH": 63, "VOLUME": 127,
+		"ECHO VOL": 127, "ECHO DLY": 15, "ECHO FB": 127,
+	}
+	for _, field := range soundFields {
+		if want, ok := limits[field.name]; !ok || field.high != want {
+			t.Fatalf("field %q allows up to %d, want %d (the register field's width)",
+				field.name, field.high, want)
+		}
+	}
+}

@@ -1,89 +1,259 @@
-# Durable Save, Recovery, Autosave, and Markdown Support
+# Typing blip sound: an SPC700/S-DSP audio path for FairyWriter
 
-## Summary
+## Context
 
-Refactor persistence around one invariant: a document transition is complete only after its contents and recovery state are durably committed and can be reconstructed by a fresh process.
+FairyWriter has no audio at all today. The request is a typing blip — an on/off
+checkbox plus a dedicated menu for shaping the voice (attack, decay, sustain,
+waveform: square / triangle / noise), with a default modeled on the per-character
+blip in the Mega Man X intro's command-line text crawl.
 
-ODT remains the default format. Save, Save As, loading, crash recovery, timed autosaving, and Markdown will use the same persistence coordinator and typed outcomes. The production test gate will add real process-level save/exit/relaunch coverage on macOS and Linux.
+The important discovery from exploration: **this is not a from-scratch audio
+engine.** The SPC700 and S-DSP are already emulated and already compiled into the
+production binary. `CMakeLists.txt:413-432` builds `fairywriter_snes_machine` from
+`snes/apu.c`, `snes/spc.c`, `snes/dsp.c` and `snes/audio_shadow.c`, and
+`src/snes_machine.c:3-6` already includes their headers. What is missing is only:
 
-## Core Changes
+1. `clock_position()` in `src/snes_machine.c:70` never advances the APU — it
+   clocks the PPU and DMA only, and never accumulates `snes->apuCatchupCycles`,
+   so `snes_catchupApu()` (`../snesrecomp/runner/src/snes/snes.c:151`) always has
+   zero cycles to run.
+2. Nothing drains the DSP's output ring (`dsp_getSamples`, `dsp.c`), and there is
+   no output device.
+3. The cartridge never uploads an SPC700 program, so even a clocked APU would sit
+   in its IPL boot loop. The real IPL boot ROM *is* present
+   (`apu.c:16`, `bootRom[0x40]`), so the standard upload handshake works.
 
-- Split document state into:
-  - viewport revision for cursor, selection, and mailbox updates;
-  - content generation for text or formatting changes;
-  - saved-content identity for accurate dirty detection.
-- Cursor movement, selection, searching, and scrolling must never mark a document dirty or produce checkpoints.
-- Introduce explicit types for `DocumentFormat`, immutable `DocumentSnapshot`, file fingerprints, persistence settings, and detailed persistence results instead of ambiguous booleans.
-- Centralize load, Save, Save As, conflict detection, recovery, and autosave outside the player window.
-- Capture immutable snapshots on the UI thread and perform disk work through one ordered persistence worker. Close and document-replacement operations wait for a durable result before continuing.
+So the work is: clock the APU, drain it into a real device, write a small SPC700
+driver and BRR waveforms into the cartridge, and wire a settings surface. Doing it
+this way means Attack/Decay/Sustain map **literally** onto `VxADSR1`/`VxADSR2` and
+noise is the hardware's own — nothing is simulated or invented.
 
-## Save, Load, and File Safety
+## Hardware facts this design rests on
 
-- New documents start as ODT. First Save enters the same format-and-location flow as Save As instead of reporting a conflict.
-- Save As first selects ODT, DOCX, RTF, or Markdown, defaulting to the current format and ODT for new documents. The cartridge appends the correct extension.
-- Continue opening and saving existing FODT and plain-text documents for compatibility, without offering them as new-document choices.
-- Save As New writes to a same-directory temporary file and atomically renames it only after a complete write and sync. A failed save must never leave an empty target.
-- Existing-file replacement uses strict atomic commit with direct-write fallback disabled. If the filesystem cannot provide the required safety, fail visibly while preserving the original.
-- Track size, modification time, and SHA-256. Recheck content immediately before commit so same-timestamp replacements and external edits are detected.
-- Parse and validate a load completely before replacing the active document. Corrupt, unsupported, missing, or unreadable files leave the current document untouched.
-- Avoid assumptions about path separators, case sensitivity, inode identity, or timestamp resolution. Use same-filesystem staging and capability-aware failure handling.
-- Apply one cartridge-owned dirty-transition dialog to Close, New, Open, Recent, and Recovery:
-  - **Checkpoint** writes a durable recovery state and continues the transition.
-  - **Save** saves the primary document, invoking Save As when untitled.
-  - **Discard** abandons current unsaved generations but retains older valid version history.
-  - **Cancel** returns to the document.
+Verified against the SNESdev wiki S-DSP register reference:
 
-## Autosave and Recovery
+- `VxADSR1 ($x5)` = `EDDD AAAA` — bit 7 ADSR enable, bits 6-4 decay rate (3 bits),
+  bits 3-0 attack rate (4 bits).
+- `VxADSR2 ($x6)` = `LLLR RRRR` — bits 7-5 sustain level (3 bits), bits 4-0
+  sustain rate (5 bits).
+- `GAIN ($x7)`: bit 7 clear = direct fixed envelope; bit 7 set = `1MMr rrrr`,
+  mode in bits 6-5, rate in bits 4-0. This is where "release" lives.
+- `FLG ($6C)` = `RMEN NNNN` — soft reset, mute, echo-write-disable, and the
+  4-bit **noise frequency**. `NON ($3D)` switches a voice from BRR to noise.
+- `PITCH ($x2/$x3)`: 14-bit, 2.12 fixed point. `VOL ($x0/$x1)` and
+  `MVOL ($0C/$1C)` are signed 8-bit.
+- `DIR ($5D)` is an ARAM page number; entry address = `DIR*0x100 + SRCN*4`, each
+  entry four bytes: start pointer, then loop pointer.
+- BRR block = 9 bytes: header `rrrrffle` (range, filter, loop, end) then 8 data
+  bytes holding 16 four-bit samples.
 
-- Add cartridge settings, reachable with F3:
-  - Mode: Recovery only or Save + Recovery.
-  - Interval: 1–255 minutes; default 1 minute.
-  - Retained copies: 0–255; default 5.
-  - Recovery History.
-  - Markdown Rendered/Source mode when applicable.
-- A count of 0 disables all timed persistence. Explicit Save still works, and explicit Checkpoint creates one pinned recovery state.
-- Start the elapsed-time deadline with the first content change after the last durable state. Continuous editing creates at most one unique generation per interval; idle documents cause no writes.
-- Compare each candidate snapshot with the immediately preceding durable content hash. Formatting changes count; cursor-only changes do not. An A→B→A editing sequence remains valid history.
-- For named documents in Save + Recovery mode:
-  1. Commit the recovery snapshot.
-  2. Save the identical snapshot to the primary file.
-  3. Record whether the recovery generation matches the primary fingerprint.
-- Store independent, checksummed `.fwrecover` snapshots in the application recovery directory. Each contains document identity, original path and format, canonical editor state, cursor/selection, sequence, wall-clock time, content hash, and primary-file fingerprint.
-- Rotate only after a new generation commits successfully. Never make recovery depend on a chain of deltas.
-- Retain the configured history after successful saves, but prompt at startup only for an unclean shutdown or a checkpoint newer than the primary file.
-- Startup offers the newest valid recovery first and a cartridge-owned history browser showing timestamp, document, and saved/unsaved/conflicted status. Corrupt generations are skipped with a visible warning, and the next valid generation remains recoverable.
-- Restoring recovery always produces a dirty document while preserving its original filename, format, and previous file fingerprint.
-- On the first automatic primary-save conflict or failure, retain checkpoints, stop automatic overwriting for that document, and show one actionable cartridge alert rather than repeating failures every interval.
+The DSP has no oscillators, so **square and triangle are BRR samples** we encode
+ourselves; only noise is generated in hardware.
 
-## Markdown
+### Do not extract Mega Man X sample data
 
-- Implement GitHub Flavored Markdown against the official [GFM specification](https://github.github.com/gfm/) using a pinned, vendored [cmark-gfm](https://github.com/github/cmark-gfm) parser so builds remain reproducible and offline.
-- Keep Markdown source as the authoritative representation with a source-span AST and a rendered editor projection.
-- Source mode edits exact UTF-8 Markdown. Rendered edits update semantic nodes and regenerate only the smallest affected source region; untouched source remains byte-for-byte stable.
-- Support headings, emphasis, strong text, strikethrough, links, images, block quotes, lists, task lists, code, tables, autolinks, thematic breaks, and front matter.
-- Preserve raw HTML, link destinations, image destinations, and front matter. Never execute HTML, scripts, styles, event handlers, links, or network/local image fetches.
-- Render links and images as inert text/placeholders. Show front matter as an inert rendered block editable in source mode.
-- Encode FairyWriter underline and alignment as valid inert raw-HTML presentation markup and render only the explicitly supported safe subset through FairyWriter’s own renderer.
-- Accept `.md` and `.markdown` on load; Save As creates `.md`.
+The MMX reference is for *character*, not content. Its BRR data is Capcom's. We
+generate our own square and triangle in Go and tune the envelope by ear against
+the linked recomp build until the blip reads the same way — fast attack, short
+decay, quick release, high pitch.
 
-## Test Plan
+## Decisions taken
 
-- Add `fairywriter_persistence` for deterministic component and filesystem tests and `fairywriter_persistence_process_e2e` for the real lifecycle, raising the production gate from 7 to 9 tests.
-- The process test launches the actual test-enabled production executable, injects ordinary cartridge input, creates and saves a real ODT, closes normally, launches a fresh process, opens it, and verifies content and formatting.
-- Repeat the lifecycle for DOCX, RTF, and Markdown. Markdown tests verify both rendered and source editing.
-- Kill a process after a durable checkpoint, relaunch, select recovery through the cartridge UI, verify the restored document is dirty, save it, and verify it from another fresh process.
-- Exercise recovery rotation at 0, 1, 5, and 255; adjacent deduplication; A→B→A history; cursor-only activity; formatting-only edits; corrupted-newest fallback; clean-shutdown suppression; manual checkpoint with timed saving disabled; and retained post-save history.
-- Cover first Save, Save As New, overwrite confirmation, extension enforcement, failed-write cleanup, read-only targets, missing directories, Unicode filenames, external replacement with unchanged timestamps, concurrent instances, disk-full behavior, and atomic-rename failure using real temporary filesystems rather than mocked writers.
-- Run the complete production build and 9/9 gate natively on macOS/APFS and in the Linux production job. Add a macOS CI job alongside the existing Linux gate.
-- Run the upstream GFM conformance corpus plus FairyWriter round trips. Require semantic equivalence after rendered edits and byte equality for untouched Markdown source.
-- Keep packaged macOS and Linux visual acceptance explicit: automated process tests establish persistence behavior; final cartridge dialog layout and packaged-app interaction receive a short manual smoke test on each platform.
+- **Output sink: vendored miniaudio** (single public-domain header in
+  `third_party/`). Qt Multimedia's `QAudioSink` routes through the platform media
+  backend plugin — on Linux the ffmpeg plugin — and `packaging/linux/build-linux.sh`
+  has an explicit gate that fails on unresolved plugin dependencies. miniaudio
+  wraps CoreAudio/ALSA+Pulse/WASAPI with zero packaging changes on any of the three
+  platforms and matches the existing vendoring pattern (`third_party/cmark-gfm`,
+  `third_party/snesrecomp`).
+- **UI: a new cartridge plane**, reached by F5 and by a new row in the F1 main
+  menu. The existing F3 plane is titled "SAVE AND RECOVERY" and is full (5
+  selectable rows in 8 lines).
+- **Full voice exposed**: waveform, attack, decay, sustain level, sustain rate,
+  release, pitch, volume.
 
-## Locked Defaults and Assumptions
+## Implementation
 
-- Native default and first-save default: ODT.
-- Autosave mode: Save + Recovery.
-- Interval: 1 minute, configurable through 255 minutes.
-- Recovery copies: 5, configurable from 0 through 255.
-- Recovery versions and ordinary Undo/Redo remain separate histories.
-- Recovery history survives successful saves but does not itself cause a startup prompt.
-- Full Markdown support is included in this hardening work, not deferred.
+Five phases, each independently gateable.
+
+### Phase 1 — Clock the APU and get silence out of a real device
+
+`src/snes_machine.c`
+- In `clock_position()`, accumulate `snes->apuCatchupCycles += apuCyclesPerMaster * 2`
+  (the function advances `hPos` by 2 master cycles per call). `apuCyclesPerMaster`
+  is `static const` inside `snes.c:23`; replicate the expression with a comment
+  citing that line rather than patching the vendored checkout.
+- Call `snes_catchupApu(machine->snes)` once per completed frame in
+  `fairy_snes_run_frame()`. Port reads at `$2140-$2143` already catch up on their
+  own (`snes.c:200-205`).
+- Replace the `RtlApuLock`/`RtlApuUnlock` no-ops (`snes_machine.c:29-30`) with a
+  real mutex — the audio callback runs on miniaudio's thread and the vendored core
+  expects these hooks to serialize it against the CPU thread.
+
+`src/snes_machine.h` — new C API:
+- `int fairy_snes_audio_read(FairySnesMachine*, int16_t* out, int frames)` —
+  returns 0 when fewer than 534 native samples are buffered, else calls
+  `dsp_getSamples`.
+- `uint8_t fairy_snes_debug_aram(const FairySnesMachine*, uint16_t)` and
+  `uint8_t fairy_snes_debug_dsp_reg(const FairySnesMachine*, uint8_t)` — needed by
+  the tests in later phases; add them here so the test harness grows once.
+
+New `src/audio_output.h/.cpp` — miniaudio device plus a lock-free SPSC ring.
+Producer is `advanceFrame()` (one block per emulated frame); consumer is the
+miniaudio callback. Underrun outputs silence and never stalls the guest. **Device
+init failure must be non-fatal** — the app runs silently.
+
+`src/snesrecomp_player_main.cpp` — after `fairy_snes_run_frame()` in
+`advanceFrame()` (~line 706), pull one block and push it to the ring. Output block
+size is `deviceRate/60` samples per emulated frame; `dsp_getSamples` consumes
+exactly 534 native samples per call and resamples, so the ring absorbs the drift
+between the 17 ms `QTimer` (`snesrecomp_player_main.cpp:274`) and true 60 Hz.
+
+`CMakeLists.txt` — vendor the header, add `src/audio_output.cpp` to the production
+target, link the platform audio frameworks miniaudio needs. Add one
+`THIRD_PARTY_NOTICES.md` entry.
+
+**Gate:** full `ctest` green and `fairywriter_xband_end_to_end` ×10. This phase's
+whole point is proving the added per-frame APU work does not disturb input
+timing — the handoff records a prior case where a slower `clearStage` silently
+dropped queued keystrokes.
+
+### Phase 2 — SPC700 driver, BRR waveforms, and a hard-coded blip
+
+All in `tools/fairywriter-rom/main.go`, in the existing hand-assembled style.
+
+- New bank-0 constant `spcImageOffset = 0x7000` and a matching entry in `build()`'s
+  region table (`main.go:5913-5935`), splitting `{"program", 0, len(program), scanMapOffset}`
+  into `program → spcImageOffset` and `SPC image → scanMapOffset`. The program
+  currently ends at `0x313e`, leaving ~16 KB of headroom, and the existing check
+  enforces it. Bank 0 is the right home: bank 1 has only 1490 bytes free before
+  `bank1Limit`, and the SPC image is read byte-at-a-time with `LDA.l`, so its bank
+  is irrelevant.
+- `brrEncode(samples []int16) []byte` — a real encoder in Go, so the waveforms are
+  source-owned and testable. Emit one self-looping block per waveform (square,
+  triangle) plus a 256-byte-aligned two-entry DIR page.
+- SPC700 driver (~150-200 bytes). On entry: set `DIR`, `MVOL L/R`, `FLG = $20`
+  (echo writes off, not muted, not reset), `EON = 0`, `PMON = 0`, `EVOL = 0`. Then
+  poll port 0 (`$F4`) for exactly two commands, writing DSP registers through
+  `$F2`/`$F3`:
+  - **configure** — payload is the full voice parameter block (VOL L/R, PITCH L/H,
+    SRCN, ADSR1, ADSR2, GAIN, NON bit).
+  - **blip** — `KON = 1`.
+  The SPC echoes port 0 so the 65816 can confirm the write landed.
+- 65816 IPL upload in the init path (`emitProgram`, `main.go:690`+), after PPU
+  setup and before NMI is enabled: wait for `$BB/$AA`, write the target address,
+  `$CC`, then the per-byte counter handshake, then the entry-point jump. **Every
+  wait must be bounded** by a counter that falls through to an "audio unavailable"
+  flag — an unbounded spin would hang boot and every headless test.
+- Trigger: in the printable-insert path (`insertPrintableCall`, `main.go:2312`),
+  store the blip byte to `$2140` when the enable flag in the cartridge state block
+  is set.
+
+**Gate:** `GO111MODULE=off go test ./tools/fairywriter-rom`, then the handoff's
+sequence — xband end-to-end, then full `ctest`.
+
+### Phase 3 — Settings wire and persistence
+
+- `src/document_persistence.h` — a `SoundSettings` struct beside `PersistenceSettings`
+  (`document_persistence.h:56`) with the same `load(QSettings&)` / `save(QSettings&)`
+  shape, reusing `persistenceSettings()` (`document_persistence.cpp:306`) so it
+  lands in the existing `settings.ini`.
+- `src/document_bridge.h` — `CommandGetSoundSettings = 0x0116`,
+  `CommandSetSoundSettings = 0x0115`, `EventSoundSettings = 0x8214`, following the
+  persistence-settings triple at lines 25-26 and 56.
+- `src/document_bridge.cpp` — `publishSoundSettings()` modeled directly on
+  `publishPersistenceSettings()` (line 317). Payload is nine bytes: enabled,
+  waveform, attack, decay, sustain level, sustain rate, release, pitch, volume —
+  one atomic record, so no field can tear, matching the reasoning already recorded
+  for the three-byte persistence value.
+- Cartridge side: hold the same nine bytes in the `$03xx` state block, project
+  them into the SPC configure command on change, and re-emit the host command the
+  way `settingsEmitConfig` already does (`main.go:3665`+).
+
+### Phase 4 — The cartridge sound plane
+
+- `soundPlane()` next to `settingsPlane()` (`main.go:284`), and a `soundOffset`
+  page in bank 1 — 240 bytes out of the 1490 free, which shifts `tilesOffset` up by
+  `0xf0` and leaves ~39 tiles of headroom against the 881-slot cap.
+- New mode byte value at `$031d` (`$11` is taken; use `$12`), a `renderSound`
+  routine modeled on `renderSettings` (`main.go:4840`) reusing its `emitByteDigits`
+  helper for numeric fields, and a `soundInput` handler modeled on `settingsInput`
+  (`main.go:3609`) for up/down/left/right/back.
+- New key: F5 is PS/2 set-2 scancode `0x03`; map it to key code `0x1e` in
+  `xbandScanMap()` (`main.go:650`). Codes `0x11-0x1d` are taken and `0x20`+ is the
+  printable threshold, so `0x1e` is clean.
+- Add a "SOUND..." row to `mainMenuPlane()` (`main.go:255`) and a line to
+  `helpPlane()` (`main.go:271`).
+- Both planes are 30 columns × 8 rows — the 9-row limit note at `main.go:249-254`
+  applies.
+
+### Phase 5 — Tune the default
+
+Render headless: run N frames in `snes_machine_tests`, dump `fairy_snes_audio_read`
+output to a WAV, listen, adjust. Target the MMX text-crawl character: square wave,
+near-instant attack, short decay, low sustain level, fast release, high pitch. The
+register field layout above is verified; the specific values are an ear judgment
+and should not be guessed in advance.
+
+## Files
+
+| File | Change |
+|---|---|
+| `src/snes_machine.c` / `.h` | APU cycle accumulation, per-frame catch-up, real `RtlApuLock`, audio-read + ARAM/DSP debug accessors |
+| `src/audio_output.h` / `.cpp` | New — miniaudio device and SPSC ring |
+| `src/snesrecomp_player_main.cpp` | Produce one audio block per frame; sound-settings command handling |
+| `tools/fairywriter-rom/main.go` | SPC700 driver, BRR encoder + waveforms, IPL upload, blip trigger, sound plane, F5, menu/help rows |
+| `src/document_bridge.h` / `.cpp` | Sound-settings command/event triple and publisher |
+| `src/document_persistence.h` / `.cpp` | `SoundSettings` + QSettings round-trip |
+| `CMakeLists.txt`, `THIRD_PARTY_NOTICES.md` | Vendor miniaudio, add the new sources, notices entry |
+| `tests/snes_machine_tests.cpp`, `tools/fairywriter-rom/main_test.go` | See below |
+
+## Verification
+
+Per-phase gates, in the order the handoff protocol requires:
+
+```bash
+GO111MODULE=off go test ./tools/fairywriter-rom
+```
+
+```bash
+ctest --test-dir build-arm64 -R fairywriter_xband_end_to_end --output-on-failure -VV
+```
+
+```bash
+ctest --test-dir build-arm64 --output-on-failure
+```
+
+New permanent coverage:
+
+- `main_test.go` — BRR encode/decode round-trip within quantization error; SPC
+  image fits its region and does not span a bank boundary; the sound plane is 30
+  columns × 8 rows; F5's scancode does not collide.
+- `tests/snes_machine_tests.cpp` — after N frames the driver signature is present
+  in ARAM (`fairy_snes_debug_aram`); typing a printable character sets `KON` and
+  produces non-silent samples; with blips disabled the output stays silent; a
+  sound-settings command changes `ADSR1`/`ADSR2` in the DSP; and the bounded IPL
+  upload still completes when the APU never answers (fallback flag set, no hang).
+- Ring-buffer block math covered in the audio unit test.
+
+Manual, on a real launch of the app: type in a document and confirm the blip fires
+per character and does not lag typing; open the plane with F5, toggle blips off and
+confirm silence; change waveform and each envelope field and confirm each is
+audible; quit and relaunch to confirm the settings persisted.
+
+## Risks
+
+- **Frame-timing regression.** Clocking the APU adds work to every emulated frame,
+  and `fairywriter_xband_end_to_end` is documented as sensitive to exactly this.
+  Phase 1 exists to isolate it: it changes timing without changing behavior, so a
+  regression there is unambiguous. Run it ×10 per the handoff protocol.
+- **The IPL handshake must be bounded.** An unbounded wait hangs boot and every
+  headless test. Every wait loop gets a counter and an "audio unavailable"
+  fallback.
+- **Bank 1 is tight** — 1490 bytes free. The sound plane takes 240 of it; the SPC
+  image deliberately goes to bank 0 instead. Re-measure after Phase 4.
+- **65816 branch range.** `main.go`'s `branch()` panics rather than silently
+  wrapping (a defect this file has already had twice); new code in the dispatch
+  path may need the documented inverted-condition trampoline (`main.go:715-723`).
+- Only the ADSR path is exercised by the default preset; the GAIN release modes
+  are a second code path and need their own test case.

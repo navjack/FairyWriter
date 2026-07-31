@@ -39,6 +39,12 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.3.0" date="2026-07-30">
+      <description>
+        <p>Typing now makes a sound. The cartridge uploads an SPC700 driver to the audio processor and every blip is the real S-DSP keying a voice.</p>
+        <p>Adds a typing-sound editor on F5: waveform, ADSR envelope, pitch, volume, and the echo unit, each mapped to a hardware register.</p>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-07-29">
       <description>
         <p>Bold, italic and underline now render independently in every combination, and paragraph alignment is applied per visual line.</p>

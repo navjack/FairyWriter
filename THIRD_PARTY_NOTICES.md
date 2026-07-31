@@ -15,7 +15,11 @@ The build and application use:
   original notice at `fonts/blasphemous_otf/license.txt`;
 - an external pinned `navjack/snesrecomp` checkout. FairyWriter carries only
   its own compatibility patch; see that upstream repository for its source
-  notices and third-party attribution.
+  notices and third-party attribution;
+- miniaudio 0.11.25 by David Reid, vendored as the single header
+  `third_party/miniaudio/miniaudio.h` and used only for audio output. It is
+  offered under a choice of public domain (Unlicense) or MIT-0; both texts are
+  at the end of that file.
 
 This file is a practical index, not a replacement for the license texts and
 source-level notices.

@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+## 0.3.0 — 2026-07-30 — tester preview
+
+- FairyWriter has sound. Typing now makes a blip, and it is a real one: the
+  cartridge uploads an SPC700 driver to the audio processor through the boot
+  ROM's own handshake, and every note is the S-DSP keying a voice. Nothing is
+  synthesised on the host — the desktop side only carries the samples the
+  emulated chip produced to an output device.
+- An SPC700 sound shaper on **F5**, listed in the F2 help card. Twelve settings,
+  each one a real S-DSP register field rather than a host-side approximation:
+  blips on/off, waveform (square, triangle, or the DSP's hardware noise source),
+  attack, decay, sustain level, sustain rate, release, pitch, volume, and the
+  echo unit's volume, delay and feedback. Every numeric setting has a slider you
+  can drag with the mouse or step with the arrow keys, bounded by the width of
+  the hardware field it is written into. Settings persist across restarts.
+- The shaper previews as you work: Space or Enter plays the voice, and every
+  edit auditions itself, so nothing has to be tried out by returning to the
+  document and typing.
+- Two live scopes below the sliders, and neither is an illustration. The SPC700
+  captures the DSP's own OUTX and ENVX registers into audio RAM at its own
+  clock -- once per video frame would be far too coarse for a 2 kHz waveform or
+  a 60 ms envelope -- and the cartridge streams those samples back through the
+  mailbox ports. The upper trace is the voice's actual output; the lower one is
+  its actual envelope.
+- The envelope has a release stage at all. A blip is one-shot and nothing ever
+  sent a key-off, so the voice ran attack, decay and sustain-fade and the GAIN
+  release rate was never read -- the RELEASE control did nothing. The driver now
+  performs the hardware's own note-off, clearing ADSR1 bit 7 mid-note so the
+  envelope hands over to GAIN.
+- The default blip is a 62 ms square wave — long enough to read as a pitch
+  rather than a click, and finished before the next keystroke even at twenty
+  characters a second.
+- Square and triangle are BRR waveforms encoded from source at build time. No
+  sample data is taken from any commercial ROM.
+- The echo unit writes to audio RAM on its own, so the cartridge reserves a
+  buffer for it and installs the buffer address before enabling the writes.
+
 ## 0.2.0 — 2026-07-29 — tester preview
 
 - Bold, italic and underline are now independent on screen. The cartridge had

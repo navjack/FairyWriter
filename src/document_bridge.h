@@ -26,6 +26,8 @@ public:
 	static constexpr std::uint16_t CommandSetPersistenceSettings = 0x0112;
 	static constexpr std::uint16_t CommandSetMarkdownView = 0x0113;
 	static constexpr std::uint16_t CommandTransitionDecision = 0x0114;
+	static constexpr std::uint16_t CommandGetSoundSettings = 0x0115;
+	static constexpr std::uint16_t CommandSetSoundSettings = 0x0116;
 	static constexpr std::uint32_t CommandScrollTrackTravel = 226;
 	static constexpr std::uint16_t CommandStatistics = 0x0105;
 	static constexpr std::uint16_t CommandSetWordGoal = 0x010b;
@@ -55,6 +57,7 @@ public:
 	static constexpr std::uint16_t EventPersistenceFailed = 0x8211;
 	static constexpr std::uint16_t EventPersistenceSettings = 0x8212;
 	static constexpr std::uint16_t EventTransitionRequired = 0x8213;
+	static constexpr std::uint16_t EventSoundSettings = 0x8214;
 	explicit DocumentBridge(QString recovery_root = QString());
 	DocumentEngine& engine() noexcept { return m_engine; }
 	const DocumentEngine& engine() const noexcept { return m_engine; }
@@ -80,6 +83,7 @@ public:
 	bool publishGoalProgress();
 	bool publishPersistenceFailure(const PersistenceResult& result);
 	bool publishPersistenceSettings();
+	bool publishSoundSettings();
 	bool publishTransitionRequired();
 	bool listSessions();
 	bool createSession(const QString& name);

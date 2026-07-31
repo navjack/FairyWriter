@@ -1,4 +1,5 @@
 #include "snes_machine.h"
+#include "audio_output.h"
 #include "cartridge_image.h"
 #include "document_bridge.h"
 
@@ -18,6 +19,7 @@
 #include <QOpenGLWidget>
 #include <QPainter>
 #include <QScreen>
+#include <QTemporaryDir>
 #include <QTimer>
 #include <QTextStream>
 #include <QStandardPaths>
@@ -107,6 +109,11 @@ Scan scanForKey(int key)
 	case Qt::Key_F2: return {0x06};
 	case Qt::Key_F3: return {0x04};
 	case Qt::Key_F4: return {0x0c};
+	// PS/2 set-2 F5. The cartridge maps it to key code 0x1f and opens the
+	// typing-sound plane. A key the cartridge understands is still dead until it
+	// appears here too: this table is the only thing that turns a desktop key
+	// press into a scancode the guest keyboard will ever see.
+	case Qt::Key_F5: return {0x03};
 	case Qt::Key_Exclam: return {0x16, false, true}; case Qt::Key_At: return {0x1e, false, true};
 	case Qt::Key_NumberSign: return {0x26, false, true}; case Qt::Key_Dollar: return {0x25, false, true};
 	case Qt::Key_Percent: return {0x2e, false, true}; case Qt::Key_AsciiCircum: return {0x36, false, true};
@@ -249,6 +256,10 @@ public:
 		}
 		resetMailboxSram();
 		m_bridge.publishPersistenceSettings();
+		// Published unprompted so the cartridge starts from the user's saved
+		// voice rather than the driver's built-in default. It arrives as an
+		// ordinary event, so the cartridge needs no boot-time request.
+		m_bridge.publishSoundSettings();
 		m_bridge.persistence().beginSession();
 		discoverRecovery();
 		setWindowTitle(QStringLiteral("FairyWriter"));
@@ -269,6 +280,11 @@ public:
 		setMouseTracking(true);
 		setUpdateBehavior(QOpenGLWidget::NoPartialUpdate);
 		qApp->installEventFilter(this);
+		// Best-effort. A machine with no usable output device runs silently
+		// rather than refusing to start, and every audio call below becomes a
+		// no-op. FAIRYWRITER_NO_AUDIO opts out entirely, which is what the
+		// headless test and CI configurations use.
+		if (!qEnvironmentVariableIsSet("FAIRYWRITER_NO_AUDIO")) m_audio.start();
 		advanceFrame();
 		m_timer.setTimerType(Qt::PreciseTimer);
 		m_timer.setInterval(17);
@@ -703,6 +719,31 @@ private:
 		return false;
 	}
 
+	// Move whatever the emulated S-DSP produced this frame into the output ring.
+	// The guest produces exactly one 534-sample block per emulated frame, so the
+	// steady state is one block per call; the loop only matters after a stall,
+	// where the DSP's own 15-block ring would otherwise start dropping samples.
+	void pumpAudio()
+	{
+		if (!m_audio.isActive() || !m_machine) return;
+		const int frames = m_audio.pacedFramesPerVideoFrame();
+		if (frames <= 0) return;
+		if (m_audio_block.size() < static_cast<std::size_t>(frames) * 2) {
+			m_audio_block.resize(static_cast<std::size_t>(frames) * 2);
+		}
+		int blocks = fairy_snes_audio_blocks(m_machine.get());
+		if (blocks > MaxAudioBlocksPerFrame) {
+			// Far enough behind that catching up block by block would only add
+			// latency. Drop to the newest and resync.
+			fairy_snes_audio_discard(m_machine.get());
+			blocks = 0;
+		}
+		for (int block = 0; block < blocks; ++block) {
+			if (!fairy_snes_audio_read(m_machine.get(), m_audio_block.data(), frames)) break;
+			m_audio.submit(m_audio_block.data(), static_cast<std::size_t>(frames));
+		}
+	}
+
 	void advanceFrame()
 	{
 		drainInput();
@@ -729,6 +770,7 @@ private:
 			}
 		}
 		++m_frameCounter;
+		pumpAudio();
 		if (!m_pending_document.isEmpty() && (m_frameCounter >= PendingDocumentFrame)) {
 			const QString path = m_pending_document;
 			m_pending_document.clear();
@@ -1026,6 +1068,9 @@ private:
 		event->accept();
 	}
 	std::unique_ptr<FairySnesMachine, decltype(&fairy_snes_destroy)> m_machine{nullptr, fairy_snes_destroy};
+	static constexpr int MaxAudioBlocksPerFrame = 4;
+	FairyWriter::AudioOutput m_audio;
+	std::vector<std::int16_t> m_audio_block;
 	std::deque<PendingKey> m_input;
 	QImage m_frame;
 	QPoint m_mouse;
@@ -1175,6 +1220,57 @@ bool persistenceSaveNamed(RecompPlayer& player)
 }
 
 } // namespace
+
+// Every function key crosses two tables that live in different languages: this
+// file's scanForKey, which turns a Qt key into a PS/2 scancode, and
+// xbandScanMap in tools/fairywriter-rom/main.go, which turns that scancode into
+// a cartridge key code. Either half alone is useless, and nothing else checks
+// they agree -- F5 shipped mapped in the cartridge and absent here, so the key
+// was simply dead in the real application while every cartridge-level test
+// passed. This drives each key the way a keystroke does and asserts the plane
+// it is supposed to open actually opens.
+int runFunctionKeyE2eChild()
+{
+	const QByteArray rom(
+		reinterpret_cast<const char*>(FairyWriter::cartridgeImage()),
+		static_cast<qsizetype>(FairyWriter::cartridgeImageSize()));
+	QTemporaryDir scratch;
+	if (!scratch.isValid()) return 130;
+	RecompPlayer player(rom, scratch.path(), scratch.filePath(QStringLiteral("recovery")));
+	if (!player.isValid()) return 131;
+	if (!player.persistenceTestFrames(8)) return 132;
+
+	constexpr std::uint32_t ModeByte = 0x031d;
+	struct Case { int key; const char* name; std::uint8_t mode; };
+	// Modes are the cartridge's own: $0f help, $10 save settings, $13 typing
+	// sound. Each key toggles, so pressing it twice must return to the document.
+	const Case cases[] = {
+		{Qt::Key_F2, "F2 help", 0x0f},
+		{Qt::Key_F3, "F3 save settings", 0x10},
+		{Qt::Key_F5, "F5 typing sound", 0x13},
+	};
+	for (const Case& item : cases) {
+		const Scan scan = scanForKey(item.key);
+		if (!scan.code) {
+			std::fprintf(stderr, "%s has no host scancode; the key is dead in the app\n",
+				item.name);
+			return 133;
+		}
+		if (!persistenceTap(player, scan.code, scan.extended)) return 134;
+		if (player.persistenceTestWram(ModeByte) != item.mode) {
+			std::fprintf(stderr, "%s (scancode %#04x) left mode %#04x, want %#04x\n",
+				item.name, scan.code, player.persistenceTestWram(ModeByte), item.mode);
+			return 135;
+		}
+		if (!persistenceTap(player, scan.code, scan.extended)) return 136;
+		if (player.persistenceTestWram(ModeByte) != 0) {
+			std::fprintf(stderr, "%s did not close again: mode %#04x\n",
+				item.name, player.persistenceTestWram(ModeByte));
+			return 137;
+		}
+	}
+	return 0;
+}
 
 int runPersistenceCartridgeE2eChild(const QStringList& arguments)
 {
@@ -1461,6 +1557,10 @@ int fairywriter_run_embedded_snes(int argc, char** argv)
 			== QStringLiteral("--persistence-cartridge-e2e-child")) {
 		return runPersistenceCartridgeE2eChild(
 			application.arguments().mid(1));
+	}
+	if (argc >= 2
+		&& QString::fromLocal8Bit(argv[1]) == QStringLiteral("--function-key-e2e-child")) {
+		return runFunctionKeyE2eChild();
 	}
 #endif
 	// One optional document path. Dragging a file onto the app or opening one

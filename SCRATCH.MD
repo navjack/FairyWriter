@@ -48,13 +48,12 @@
 
 ### Active working tree
 
-- Branch: `agent/release-0-3-5`, branched from public `origin/main` at `f4e289f`,
-  carrying only the 0.3.5 release cut: `VERSION`, `CHANGELOG.md`, the AppStream
-  release history, and this file plus `DEVELOPMENT_STATUS.md`. No product code.
-- `origin/main` is at `f4e289f`. PR #9 (render consistency), #10 (self-recorded
-  showcase video), #11 (documentation hygiene), #12 (Qt UI removal), #13 (showcase
-  retirement) and #14 (recorder removal) all merged on 2026-07-31 with all three
-  platform jobs green.
+- Branch: `agent/record-0-3-5-release`, branched from public `origin/main` at
+  `e3d1857`, recording the published release. Documentation only.
+- `origin/main` is at `e3d1857`, tagged `v0.3.5`. PR #9 (render consistency), #10
+  (self-recorded showcase video), #11 (documentation hygiene), #12 (Qt UI removal),
+  #13 (showcase retirement), #14 (recorder removal) and #15 (the 0.3.5 cut) all
+  merged on 2026-07-31 with all three platform jobs green.
 - **This tree now has one build configuration.** There is no
   `FAIRYWRITER_DEVELOPMENT_UI`. `FAIRYWRITER_DEVELOPER_TOOLS` is a different gate
   and still exists — it builds the standalone `fairywriter_snes_player` and
@@ -118,8 +117,16 @@ byte-for-byte the product that `origin/main` was already building green.
 - **What CI does and does not do.** `.github/workflows/ci.yml` runs on push to
   `main` and builds the three platform packages, naming each from `VERSION`. It
   **does not create a GitHub Release, and it does not react to a tag.** Tagging
-  `v0.3.5` and publishing the release against the retained artifacts is steps 7–8
-  of the `VERSIONING.md` checklist and stays manual.
+  and publishing is steps 7–8 of the `VERSIONING.md` checklist and stays manual —
+  a later agent should not go looking for the release workflow that would have
+  done it.
+- **Published.** `v0.3.5` is tagged on `e3d1857` and released as a prerelease with
+  the six artifacts retained from run `30669725342`. Each package was checksum-
+  verified against its `.sha256` sidecar before upload, and GitHub's own reported
+  digests match the sidecars afterwards:
+  `FairyWriter-0.3.5-macos-arm64.dmg` `c15ecd82…142d3ce6`,
+  `FairyWriter-0.3.5-x86_64.AppImage` `3b52b294…e631c0a1`,
+  `FairyWriter-0.3.5-windows-x64.zip` `19d2d1e1…e43b3bf7`.
 
 ### 2026-07-31 — retire the showcase video and its recorder
 
@@ -284,6 +291,11 @@ when written.
   `fairywriter_cli_version` and `fairywriter_cartridge_contract` both pass against
   the regenerated cartridge (`touch tools/fairywriter-rom/main.go` first, as
   always on this volume).
+- GitHub Actions run `30669477406` (PR #15, the 0.3.5 cut): `linux-x86_64` 2m48s,
+  `macos-arm64` 3m52s, `windows-x64` 4m16s — all pass.
+- GitHub Actions run `30669725342` (post-merge `main` at `e3d1857`): all three
+  platform jobs pass. **These are the packages `v0.3.5` publishes**; no artifact
+  was rebuilt by hand for the release.
 - Native macOS arm64 Release `ctest`: **11/11 passed**, both before and after the
   Qt UI removal, from a **clean** build directory each time. The registered set is
   `fairywriter_cartridge_contract`, `fairywriter_cartridge_conformance`,
@@ -308,14 +320,9 @@ when written.
 
 ### Next actions
 
-In order:
+Nothing is blocked on a repository step; `v0.3.5` is published. In order:
 
-1. **Publish `v0.3.5`.** CI names the artifacts from `VERSION` but does not tag
-   and does not create a GitHub Release. After the post-merge `main` run is green,
-   tag `v0.3.5` on that exact commit and publish the release against its retained
-   DMG, AppImage, ZIP and `.sha256` sidecars, flagged prerelease. Never move a tag
-   or replace a published asset; correct the source and cut a new patch instead.
-2. The packaged-app manual smoke on macOS, Linux, and Windows: first Save, format
+1. The packaged-app manual smoke on macOS, Linux, and Windows: first Save, format
    picker layout, close/relaunch/open, F3 settings/history, forced-exit recovery,
    Markdown Rendered/Source. Automated process evidence proves persistence
    semantics but not final cartridge pixels or packaged input. Windows x64 still

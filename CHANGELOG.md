@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.5 — 2026-07-31 — tester preview
 
 - The retired FocusWriter-derived Qt desktop UI has been removed from the source
   tree. It had not been part of the shipping product for some time — it built

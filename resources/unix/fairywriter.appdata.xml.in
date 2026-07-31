@@ -39,6 +39,13 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.3.5" date="2026-07-31">
+      <description>
+        <p>Typing no longer makes the page flicker: styling, proofing marks and the selection now hold through every keystroke.</p>
+        <p>Fixes Delete removing the wrong character, and selections that reached past the last character not highlighting at all.</p>
+        <p>Runs the emulated machine at its true 60.0988 Hz, and drops the retired Qt desktop UI from the source tree.</p>
+      </description>
+    </release>
     <release version="0.3.0" date="2026-07-30">
       <description>
         <p>Typing now makes a sound. The cartridge uploads an SPC700 driver to the audio processor and every blip is the real S-DSP keying a voice.</p>

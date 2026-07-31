@@ -1,8 +1,6 @@
 # Unified diffs require a single context prefix on otherwise blank lines.
 patches/*.patch -whitespace
 
-# Retained translations and third-party assets should not dominate GitHub's
-# language summary for the FairyWriter code.
-translations/** linguist-vendored
+# Retained third-party assets should not dominate GitHub's language summary for
+# the FairyWriter code.
 resources/unix/po/** linguist-vendored
-resources/images/icons/oxygen/** linguist-vendored

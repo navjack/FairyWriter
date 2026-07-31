@@ -74,13 +74,14 @@ its first physical-machine acceptance pass.
 
 ## Useful options
 
-- `FAIRYWRITER_DEVELOPMENT_UI=ON` builds the retired FocusWriter-derived Qt UI
-  for comparison; it is not the shipping product.
 - `FAIRYWRITER_DEVELOPER_TOOLS=ON` builds standalone cartridge hosts.
 - `FAIRYWRITER_SNESRECOMP_ROOT=/path` selects an already prepared runtime.
 
-The production configuration currently registers 11 tests. The development UI
-adds three legacy presentation suites and a UI-layout audit on top of that.
-Confirm the number with `ctest --test-dir build -N` rather than trusting this
-line — it has gone stale before. Automated success does not replace the manual
-keyboard, mouse, recovery, and physical-platform checks in `TESTING.md`.
+There is one build configuration. The `FAIRYWRITER_DEVELOPMENT_UI` option, which
+built the retired FocusWriter-derived Qt UI, was removed along with that UI — the
+cartridge product is the only thing this tree builds.
+
+The build registers 11 tests. Confirm the number with `ctest --test-dir build -N`
+rather than trusting this line — it has gone stale before. Automated success does
+not replace the manual keyboard, mouse, recovery, and physical-platform checks in
+`TESTING.md`.

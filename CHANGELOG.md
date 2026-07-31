@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- The retired FocusWriter-derived Qt desktop UI has been removed from the source
+  tree. It had not been part of the shipping product for some time — it built
+  only behind an option that defaulted off, and a bundle-prune step existed
+  purely to strip its resources back out before packaging — but it was still
+  three quarters of `src/`, and it carried theme artwork, icon sets, a sound set,
+  a symbol table, a font, the translation catalogues, and the spell-checking and
+  single-instance dependencies with it. Nothing users see changes: the built
+  application bundle is identical, file for file, before and after. What changes
+  is that there is now one build configuration instead of two, and every platform
+  compiles only code the cartridge product actually runs.
 - Typing no longer makes the page flicker. Every keystroke used to draw one frame
   with all styling thrown away — bold, italic and underline flattened, spelling
   and grammar marks gone, the selection highlight blanked — before the host put it

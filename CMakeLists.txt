@@ -31,16 +31,12 @@ set(CMAKE_NO_SYSTEM_FROM_IMPORTED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
-# Production depends only on qtbase. Keep the retired desktop UI's wider module
-# set behind its own option so tester builds on all platforms consume the same
-# small Qt surface.
-option(FAIRYWRITER_DEVELOPMENT_UI "Build the transitional Qt editor instead of the SNES product" OFF)
+# The product depends only on qtbase, so every platform's tester build consumes
+# the same small Qt surface. The retired FocusWriter-derived desktop UI, which
+# needed Concurrent/LinguistTools/Multimedia/Network/PrintSupport on top of this,
+# was removed along with its resources and spell-checking dependencies.
 option(FAIRYWRITER_DEVELOPER_TOOLS "Build standalone cartridge developer hosts" OFF)
 set(fairywriter_qt_components Core Gui OpenGLWidgets Widgets)
-if(FAIRYWRITER_DEVELOPMENT_UI)
-	list(APPEND fairywriter_qt_components
-		Concurrent LinguistTools Multimedia Network PrintSupport)
-endif()
 find_package(Qt6 6.8 REQUIRED COMPONENTS ${fairywriter_qt_components})
 find_package(ZLIB REQUIRED)
 include(GNUInstallDirs)
@@ -190,184 +186,14 @@ add_compile_options(
 include(cmake/AddVersionCompileDefinition.cmake)
 
 # Create program
-if(FAIRYWRITER_DEVELOPMENT_UI)
-	set(fairywriter_entry_source src/main.cpp)
-else()
 	set(fairywriter_entry_source src/fairywriter_production_main.cpp)
 	set(fairywriter_runtime_source src/snesrecomp_player_main.cpp)
-endif()
 add_version_compile_definition(${fairywriter_entry_source} VERSIONSTR)
 # The player reports the same version through --version and sets it as the
 # application version, so it needs the definition too. Set unconditionally on
 # the path rather than on ${fairywriter_runtime_source}, which is empty in the
 # development-UI configuration where fairywriter_xband_player still compiles it.
 add_version_compile_definition(src/snesrecomp_player_main.cpp VERSIONSTR)
-if(FAIRYWRITER_DEVELOPMENT_UI)
-qt_add_executable(fairywriter
-	# Headers
-	src/action_manager.h
-	src/alert.h
-	src/alert_layer.h
-	src/block_stats.h
-	src/color_button.h
-	src/deltas.h
-	src/daily_progress.h
-	src/daily_progress_dialog.h
-	src/daily_progress_label.h
-	src/document.h
-	src/cartridge_image.h
-	src/document_engine.h
-	src/document_persistence.h
-	src/markdown_codec.h
-	src/document_bridge.h
-	src/document_cache.h
-	src/document_watcher.h
-	src/document_writer.h
-	src/find_dialog.h
-	src/focal_point_control.h
-	src/file_catalog.h
-	src/focus_presentation.h
-	src/gzip.h
-	src/image_button.h
-	src/load_screen.h
-	src/locale_dialog.h
-	src/mailbox.h
-	src/paths.h
-	src/preferences.h
-	src/preferences_dialog.h
-	src/presentation_geometry.h
-	src/presentation_surface.h
-	src/scene_list.h
-	src/scene_model.h
-	src/session.h
-	src/session_manager.h
-	src/shortcut_edit.h
-	src/smart_quotes.h
-	src/snes_color.h
-	src/snes_side_panel.h
-	src/snes_style.h
-	src/sound.h
-	src/stack.h
-	src/stats.h
-	src/symbols_dialog.h
-	src/symbols_model.h
-	src/text_codec.h
-	src/theme.h
-	src/theme_palette.h
-	src/theme_preview_document.h
-	src/theme_dialog.h
-	src/theme_manager.h
-	src/theme_renderer.h
-	src/session_store.h
-	src/theme_tone_mapper.h
-	src/timer.h
-	src/timer_display.h
-	src/timer_manager.h
-	src/ui_layout_audit.h
-	src/utils.h
-	src/window.h
-	src/fileformats/docx_reader.h
-	src/fileformats/docx_writer.h
-	src/fileformats/format_manager.h
-	src/fileformats/html_writer.h
-	src/fileformats/odt_reader.h
-	src/fileformats/odt_writer.h
-	src/fileformats/rtf_reader.h
-	src/fileformats/rtf_tokenizer.h
-	src/fileformats/rtf_writer.h
-	src/fileformats/txt_reader.h
-	src/spelling/abstract_dictionary.h
-	src/spelling/abstract_dictionary_provider.h
-	src/spelling/dictionary_dialog.h
-	src/spelling/dictionary_manager.h
-	src/spelling/dictionary_ref.h
-	src/spelling/highlighter.h
-	src/spelling/spell_checker.h
-	src/3rdparty/qtzip/qtzipreader.h
-	src/3rdparty/qtzip/qtzipwriter.h
-	# Sources
-	src/action_manager.cpp
-	src/alert.cpp
-	src/alert_layer.cpp
-	src/block_stats.cpp
-	src/color_button.cpp
-	src/deltas.cpp
-	src/daily_progress.cpp
-	src/daily_progress_dialog.cpp
-	src/daily_progress_label.cpp
-	src/document.cpp
-	src/document_engine.cpp
-	src/document_persistence.cpp
-	src/markdown_codec.cpp
-	src/document_bridge.cpp
-	src/document_cache.cpp
-	src/document_watcher.cpp
-	src/document_writer.cpp
-	src/find_dialog.cpp
-	src/focal_point_control.cpp
-	src/file_catalog.cpp
-	src/focus_presentation.cpp
-	src/gzip.cpp
-	src/image_button.cpp
-	src/load_screen.cpp
-	src/locale_dialog.cpp
-	src/mailbox.cpp
-	${fairywriter_entry_source}
-	${fairywriter_runtime_source}
-	src/paths.cpp
-	src/preferences.cpp
-	src/preferences_dialog.cpp
-	src/presentation_geometry.cpp
-	src/presentation_surface.cpp
-	src/scene_list.cpp
-	src/scene_model.cpp
-	src/session.cpp
-	src/session_manager.cpp
-	src/shortcut_edit.cpp
-	src/smart_quotes.cpp
-	src/snes_style.cpp
-	src/snes_side_panel.cpp
-	src/sound.cpp
-	src/stack.cpp
-	src/stats.cpp
-	src/symbols_dialog.cpp
-	src/symbols_model.cpp
-	src/text_codec.cpp
-	src/theme.cpp
-	src/theme_dialog.cpp
-	src/theme_manager.cpp
-	src/theme_preview_document.cpp
-	src/theme_renderer.cpp
-	src/session_store.cpp
-	src/theme_tone_mapper.cpp
-	src/timer.cpp
-	src/timer_display.cpp
-	src/timer_manager.cpp
-	src/ui_layout_audit.cpp
-	src/utils.cpp
-	src/wallpaper_motion_engine.cpp
-	src/wallpaper_motion_layer.cpp
-	src/window.cpp
-	src/fileformats/docx_reader.cpp
-	src/fileformats/docx_writer.cpp
-	src/fileformats/format_manager.cpp
-	src/fileformats/html_writer.cpp
-	src/fileformats/odt_reader.cpp
-	src/fileformats/odt_writer.cpp
-	src/fileformats/rtf_reader.cpp
-	src/fileformats/rtf_tokenizer.cpp
-	src/fileformats/rtf_writer.cpp
-	src/fileformats/txt_reader.cpp
-	src/spelling/dictionary_dialog.cpp
-	src/spelling/dictionary_manager.cpp
-	src/spelling/highlighter.cpp
-	src/spelling/spell_checker.cpp
-	src/3rdparty/qtzip/qtzip.cpp
-	# Resources
-	resources/images/images.qrc
-	${translations_QM}
-)
-else()
 	qt_add_executable(fairywriter
 		src/fairywriter_production_main.cpp
 		src/snesrecomp_player_main.cpp
@@ -414,7 +240,6 @@ else()
 		src/3rdparty/qtzip/qtzipwriter.h
 		src/3rdparty/qtzip/qtzip.cpp
 	)
-endif()
 
 if(FAIRYWRITER_DEVELOPER_TOOLS)
 	# Standalone cartridge host. This deliberately bypasses RetroArch's window
@@ -551,20 +376,6 @@ if(WIN32)
 	set_target_properties(fairywriter PROPERTIES WIN32_EXECUTABLE TRUE)
 endif()
 
-if(FAIRYWRITER_DEVELOPMENT_UI)
-	target_link_libraries(fairywriter PRIVATE
-		fairywriter_cartridge_image
-		fairywriter_markdown
-		Qt6::Concurrent
-		Qt6::Core
-		Qt6::Gui
-		Qt6::Multimedia
-		Qt6::Network
-		Qt6::PrintSupport
-		Qt6::Widgets
-		ZLIB::ZLIB
-	)
-else()
 	target_link_libraries(fairywriter PRIVATE
 		fairywriter_audio
 		fairywriter_cartridge_image
@@ -576,67 +387,7 @@ else()
 		Qt6::Widgets
 		ZLIB::ZLIB
 	)
-endif()
 
-if(FAIRYWRITER_DEVELOPMENT_UI)
-# Blasphemous is redistributable under CC BY 3.0 and is always available as a
-# bundled pixel-font fallback.
-set(blasphemous_font ${CMAKE_SOURCE_DIR}/fonts/blasphemous_otf/blasphemous.otf)
-set_source_files_properties(${blasphemous_font} PROPERTIES QT_RESOURCE_ALIAS Blasphemous.otf)
-qt_add_resources(fairywriter "fairywriter_fonts"
-	PREFIX "/fonts"
-	FILES ${blasphemous_font}
-)
-
-
-# Create translations
-file(GLOB translations_SRCS translations/*.ts)
-qt_add_translations(fairywriter
-	TS_FILES ${translations_SRCS}
-	QM_FILES_OUTPUT_VARIABLE translations_QM
-	LUPDATE_OPTIONS -no-obsolete -locations none
-)
-
-# Add spellchecking support
-if(APPLE)
-	target_sources(fairywriter PRIVATE
-		src/spelling/dictionary_provider_nsspellchecker.h
-		src/spelling/dictionary_provider_nsspellchecker.mm
-	)
-
-	find_library(APPKIT AppKit)
-	target_link_libraries(fairywriter PRIVATE ${APPKIT})
-elseif(NOT WIN32)
-	find_package(PkgConfig REQUIRED)
-	pkg_check_modules(Hunspell REQUIRED IMPORTED_TARGET hunspell)
-
-	target_sources(fairywriter PRIVATE
-		src/spelling/dictionary_provider_hunspell.h
-		src/spelling/dictionary_provider_hunspell.cpp
-		src/spelling/dictionary_provider_voikko.h
-		src/spelling/dictionary_provider_voikko.cpp
-	)
-
-	target_link_libraries(fairywriter PRIVATE PkgConfig::Hunspell)
-endif()
-
-# Make single instance
-find_package(KDSingleApplication-qt6)
-if(TARGET KDAB::kdsingleapplication)
-	target_link_libraries(fairywriter PRIVATE KDAB::kdsingleapplication)
-else()
-	message(STATUS "Using 3rdparty KDSingleApplication")
-
-	target_compile_definitions(fairywriter PRIVATE KDSINGLEAPPLICATION_STATIC_BUILD)
-
-	target_include_directories(fairywriter PRIVATE src/3rdparty/kdsingleapplication)
-
-	target_sources(fairywriter PRIVATE
-		src/3rdparty/kdsingleapplication/kdsingleapplication.cpp
-		src/3rdparty/kdsingleapplication/kdsingleapplication_localsocket.cpp
-	)
-endif()
-endif()
 
 # Optimize build
 option(ENABLE_LINK_TIME_OPTIMIZATION "Enable link time optimization" OFF)
@@ -656,16 +407,8 @@ if(ENABLE_STRIP)
 	)
 endif()
 
-# Create symbols only for the disposable desktop development UI. The cartridge
-# production target has one fixed visual identity and no host theme/symbol UI.
-if(FAIRYWRITER_DEVELOPMENT_UI)
-	add_subdirectory(resources/symbols)
-endif()
-
 # Install
 if(APPLE)
-	set(datadir "../Resources")
-
 	set_target_properties(fairywriter PROPERTIES
 		OUTPUT_NAME FairyWriter
 		MACOSX_BUNDLE TRUE
@@ -674,44 +417,25 @@ if(APPLE)
 
 	include(cmake/BundleResources.cmake)
 	bundle_data(fairywriter ${CMAKE_SOURCE_DIR}/resources/mac/fairywriter.icns Resources)
-	if(FAIRYWRITER_DEVELOPMENT_UI)
-		bundle_data(fairywriter ${CMAKE_SOURCE_DIR}/resources/images/icons/oxygen/hicolor Resources/icons/hicolor)
-		bundle_data(fairywriter ${CMAKE_SOURCE_DIR}/resources/sounds Resources/sounds)
-		bundle_data(fairywriter ${CMAKE_SOURCE_DIR}/resources/symbols/symbols1700.dat Resources)
-		bundle_data(fairywriter ${CMAKE_SOURCE_DIR}/resources/themes Resources/themes)
-		bundle_translations(fairywriter "${translations_QM}")
-	else()
-		add_custom_command(TARGET fairywriter POST_BUILD
-			COMMAND "${CMAKE_COMMAND}"
-				-DFAIRYWRITER_BUNDLE=$<TARGET_BUNDLE_DIR:fairywriter>
-				-P "${CMAKE_SOURCE_DIR}/cmake/PruneProductionBundle.cmake"
-			COMMAND /usr/bin/codesign
-				--force
-				--sign -
-				$<TARGET_BUNDLE_DIR:fairywriter>
-			COMMENT "Pruning and sealing the cartridge product bundle"
-			VERBATIM
-		)
-	endif()
+	add_custom_command(TARGET fairywriter POST_BUILD
+		COMMAND "${CMAKE_COMMAND}"
+			-DFAIRYWRITER_BUNDLE=$<TARGET_BUNDLE_DIR:fairywriter>
+			-P "${CMAKE_SOURCE_DIR}/cmake/PruneProductionBundle.cmake"
+		COMMAND /usr/bin/codesign
+			--force
+			--sign -
+			$<TARGET_BUNDLE_DIR:fairywriter>
+		COMMENT "Pruning and sealing the cartridge product bundle"
+		VERBATIM
+	)
 elseif(WIN32)
 	# windeployqt consumes this minimal install tree. Tester packaging supplies
 	# the Qt runtime, vcpkg application-local dependencies, licenses, and testing
 	# guide beside the executable.
-	set(datadir ".")
 	install(TARGETS fairywriter RUNTIME DESTINATION .)
 else()
-	file(RELATIVE_PATH datadir ${CMAKE_INSTALL_FULL_BINDIR} ${CMAKE_INSTALL_FULL_DATADIR}/fairywriter)
-
 	install(TARGETS fairywriter RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 	install(DIRECTORY resources/images/icons/hicolor DESTINATION ${CMAKE_INSTALL_DATADIR}/icons)
-	if(FAIRYWRITER_DEVELOPMENT_UI)
-		target_sources(fairywriter PRIVATE resources/images/icons/icons.qrc)
-		install(FILES ${translations_QM} DESTINATION ${CMAKE_INSTALL_DATADIR}/fairywriter/translations)
-		install(DIRECTORY resources/images/icons/oxygen/hicolor DESTINATION ${CMAKE_INSTALL_DATADIR}/fairywriter/icons)
-		install(DIRECTORY resources/sounds DESTINATION ${CMAKE_INSTALL_DATADIR}/fairywriter)
-		install(DIRECTORY resources/themes DESTINATION ${CMAKE_INSTALL_DATADIR}/fairywriter)
-		install(FILES resources/symbols/symbols1700.dat DESTINATION ${CMAKE_INSTALL_DATADIR}/fairywriter)
-	endif()
 	install(FILES ${CMAKE_CURRENT_BINARY_DIR}/fairywriter.1
 		DESTINATION ${CMAKE_INSTALL_MANDIR}/man1 COMPONENT doc)
 
@@ -719,7 +443,6 @@ else()
 	process_and_install_metainfo(PO_DIR ${CMAKE_SOURCE_DIR}/resources/unix/po)
 endif()
 
-set_property(SOURCE src/main.cpp APPEND PROPERTY COMPILE_DEFINITIONS FAIRYWRITER_DATADIR="${datadir}")
 
 # Keep presentation invariants testable without a window system or Qt event loop.
 include(CTest)
@@ -877,80 +600,10 @@ if(BUILD_TESTING)
 	target_link_libraries(fairywriter_file_catalog_tests PRIVATE Qt6::Core)
 	add_test(NAME fairywriter_file_catalog COMMAND fairywriter_file_catalog_tests)
 
-	# The three suites below cover the retired Qt theming/wallpaper presentation
-	# track (theme.cpp, snes_style.cpp, wallpaper_motion_engine.cpp), none of
-	# which is in the shipping cartridge product. Keeping them out of the
-	# production configuration means all three platforms build and run exactly
-	# the same set of tests, instead of Windows needing dead-track sources to
-	# compile. Build with -DFAIRYWRITER_DEVELOPMENT_UI=ON to run them.
-	if(FAIRYWRITER_DEVELOPMENT_UI)
-	add_executable(fairywriter_presentation_tests
-		tests/presentation_tests.cpp
-		src/presentation_geometry.cpp
-		src/presentation_surface.cpp
-		src/snes_style.cpp
-		src/snes_side_panel.cpp
-		src/theme.cpp
-		src/theme_tone_mapper.cpp
-		src/utils.cpp
-	)
-	target_include_directories(fairywriter_presentation_tests PRIVATE src)
-	target_compile_definitions(fairywriter_presentation_tests PRIVATE
-		FAIRYWRITER_TEST_THEME_PATH="${CMAKE_SOURCE_DIR}/resources/themes"
-	)
-	target_link_libraries(fairywriter_presentation_tests PRIVATE
-		Qt6::Concurrent
-		Qt6::Core
-		Qt6::Gui
-		Qt6::Widgets
-	)
-	add_test(NAME fairywriter_presentation COMMAND fairywriter_presentation_tests -platform offscreen)
-	set_tests_properties(fairywriter_presentation PROPERTIES
-		ENVIRONMENT "FAIRYWRITER_PRESENTATION_AUDIT_DIR=${CMAKE_CURRENT_BINARY_DIR}/presentation-audit"
-	)
-
-	add_executable(fairywriter_focus_presentation_tests
-		tests/focus_presentation_tests.cpp
-		src/focus_presentation.cpp
-	)
-	target_include_directories(fairywriter_focus_presentation_tests PRIVATE src)
-	target_link_libraries(fairywriter_focus_presentation_tests PRIVATE Qt6::Core Qt6::Test)
-	add_test(NAME fairywriter_focus_presentation COMMAND fairywriter_focus_presentation_tests)
-
-	add_executable(fairywriter_wallpaper_motion_tests
-		tests/wallpaper_motion_tests.cpp
-		src/presentation_geometry.cpp
-		src/presentation_surface.cpp
-		src/snes_style.cpp
-		src/snes_side_panel.cpp
-		src/theme.cpp
-		src/theme_tone_mapper.cpp
-		src/utils.cpp
-		src/wallpaper_motion_engine.cpp
-	)
-	target_include_directories(fairywriter_wallpaper_motion_tests PRIVATE src)
-	target_link_libraries(fairywriter_wallpaper_motion_tests PRIVATE
-		Qt6::Concurrent
-		Qt6::Core
-		Qt6::Gui
-		Qt6::Test
-		Qt6::Widgets
-	)
-	add_test(NAME fairywriter_wallpaper_motion COMMAND fairywriter_wallpaper_motion_tests -platform offscreen)
-	endif()
-
 	add_test(NAME fairywriter_cli_version COMMAND fairywriter --version)
 	set_tests_properties(fairywriter_cli_version PROPERTIES
 		ENVIRONMENT "QT_QPA_PLATFORM=fairywriter-intentionally-invalid"
 		PASS_REGULAR_EXPRESSION "^FairyWriter ${PROJECT_VERSION}"
 	)
 
-	if(FAIRYWRITER_DEVELOPMENT_UI)
-		add_test(NAME fairywriter_ui_layout COMMAND fairywriter --verify-ui-layout)
-		set_tests_properties(fairywriter_ui_layout PROPERTIES
-			ENVIRONMENT "QT_QPA_PLATFORM=offscreen;FAIRYWRITER_UI_AUDIT_DIR=${CMAKE_CURRENT_BINARY_DIR}/ui-layout-audit"
-			PASS_REGULAR_EXPRESSION "FairyWriter UI layout audit passed"
-			TIMEOUT 60
-		)
-	endif()
 endif()

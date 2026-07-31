@@ -44,7 +44,6 @@ touch "${source_root}/tools/fairywriter-rom/main.go"
 "${cmake_bin}" -S "${source_root}" -B "${build_root}" \
 	-DCMAKE_BUILD_TYPE=Release \
 	-DCMAKE_PREFIX_PATH="${qt_root}" \
-	-DFAIRYWRITER_DEVELOPMENT_UI=OFF \
 	-DFAIRYWRITER_DEVELOPER_TOOLS=OFF \
 	-DBUILD_TESTING=ON
 "${cmake_bin}" --build "${build_root}" --parallel

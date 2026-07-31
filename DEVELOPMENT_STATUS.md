@@ -6,6 +6,76 @@ adds independent style combinations and rendered paragraph alignment on top of
 the browser row-selection fix. The number is claimed here in source; the tag and
 its assets only exist once the three native package jobs pass on a merged commit.
 
+## 2026-07-31 render consistency: the optimistic frame agrees
+
+Invariant: the frame the cartridge draws on its own must be the frame the host is
+about to publish. Anything the two disagree about is on screen as a flash, so the
+local render may be stale by a frame but may never show a different state.
+
+- **The reported symptom — styling and selection blinking while typing — was one
+  line.** `emitDocumentRenderCall` began with `STZ $1f`, and `$1f` bit 7 is the
+  draw loop's styling gate (`BIT $1f`). Every local edit and every cursor key
+  therefore rendered a frame with the rich-style glyph pages, the spelling and
+  grammar palettes, and the selection highlight all discarded, and the host
+  restored them about two frames later. With `richStyleVisualsEnabled` true in
+  production, that is every styled document, on every key.
+- The clear was not arbitrary: `$0b00` (per-cell style/proofing bits) and `$0d00`
+  (per-cell alignment) are indexed by cell, and an insert shifts cells, so a
+  retained map would have been off by one. The fix is to shift those two arrays in
+  the same loops that already shift the text at `$0500`, and to give an inserted
+  cell the preceding cell's style — which is what `DocumentEngine` publishes, since
+  a typed character takes the format at the cursor.
+- **Delete was shifting `$0201`/`$0200`, which nothing reads** — the same typo the
+  backspace path's own comment records having fixed. It decremented the length
+  without compacting the text, so Delete's optimistic frame dropped the *last*
+  character rather than the one at the cursor. The ROM contract test held this in
+  place instead of catching it: it pinned `9d 00 02` as the "guest document buffer
+  write" next to `bd 00 05` as the read. Both halves now name `$0500`, and the two
+  per-cell maps are pinned alongside them.
+- **A selection reaching the end of the viewport text never highlighted at all.**
+  The decode captures a position only on a character it visits, and it never
+  visits the offset one past the last one. The cursor already had an explicit
+  catch-up after the loop; the selection bounds had none, so `$52` kept the
+  previous viewport's value (zero on a fresh document) and the range was empty.
+  Shift+End and select-all land exactly there. Both bounds now get the catch-up —
+  the start needs it too, or a collapsed cursor at the end would pair a stale `$50`
+  with a correct `$52` and highlight the whole line.
+- Shift+arrow now grows the range locally. The anchor never has to be stored:
+  `$00` is the selection's active edge, because the host publishes
+  `m_cursor.position()`, so whichever of `$50`/`$52` the cursor is *not* on is the
+  anchor and the other one moves. Crossing the anchor falls out of the same rule —
+  the range shrinks to empty and the next key re-seeds from the anchor that stayed
+  put.
+- **`STA $1f` in the viewport decode ran under `REP #$20`**, so it owned `$1f` and
+  `$20`. `$20`-`$23` is the SNES Mouse packet buffer and `$20` is the signature
+  byte its poll tests with `AND #$f0`. Survivable only because the poll rotates all
+  four bytes in fresh before reading them. Seventh instance of this family; the
+  store is now 8-bit.
+- **The VBlank upload waited on the level of `$4212` bit 7, not its rising edge.**
+  The upload is 48 DMA setups and costs about half a VBlank in CPU time, so
+  arriving late started a transfer that could not finish inside it. How much VBlank
+  it got depended on how long the preceding render happened to take, and the sound
+  plane's streamed redraw reaches it from inside the main loop's own in-VBlank
+  branch, so that path took the late window every time. It now drains the current
+  VBlank first.
+- Host pacing was a 17 ms timer — 58.8 fps against a 60.0988 Hz guest on a vsynced
+  surface, beating about once a second. The true NTSC period is now carried in a
+  fractional accumulator.
+- Coverage: seven new cases in `snes_machine_tests` pin styling, proofing and the
+  selection across each cursor key, across an insert at the end and at the start
+  (which is what proves the maps shift with the text), the selection collapsing on
+  an edit, Shift+Right extending it, and a selection running to the end of the
+  text. Each was confirmed to fail on the cartridge built without its fix. The
+  harness has no host, so nothing republishes the viewport and the defect is a
+  permanent state rather than a transient — that is what makes it assertable.
+  Production stays at 11/11 ctest with `fairywriter_xband_end_to_end` green ten
+  consecutive times.
+- Verified by rendering and looking, not only by assertion: a document with
+  bold+italic+underline text, a spell-flagged word and a live selection was
+  rendered before and after a keystroke and the two frames compared. That is how
+  the end-of-text selection defect surfaced at all — every byte assertion in the
+  suite passed while the highlight was simply not on screen.
+
 ## 2026-07-29 rich style combinations and paragraph alignment
 
 Bold, italic and underline are independent properties of a character, but the

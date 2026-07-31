@@ -112,7 +112,15 @@ func TestCartridgeImageOwnsRealSnesContract(t *testing.T) {
 		{0xad, 0x12, 0x42},
 		{0xa9, 0x18, 0x8d, 0x01, 0x43}, // staged tile-plane DMA to VMDATAL
 		{0xbd, 0x00, 0x05},             // guest document buffer read
-		{0x9d, 0x00, 0x02},             // guest document buffer write
+		// Both halves have to name the same buffer. This pinned $0200 while the
+		// read pinned $0500, so it held the Delete path's typo in place instead of
+		// catching it: Delete shifted a region nothing reads, leaving the text
+		// uncompacted while the length dropped.
+		{0x9d, 0x00, 0x05}, // guest document buffer write
+		{0xbd, 0x00, 0x0b}, // per-cell style/proofing map read
+		{0x9d, 0x00, 0x0b}, // per-cell style/proofing map write -- edits shift it with the text
+		{0xbd, 0x00, 0x0d}, // per-cell paragraph alignment read
+		{0x9d, 0x00, 0x0d}, // per-cell paragraph alignment write
 		{0xa9, 0x7f, 0x8d, 0x01, 0x42}, // IOBIT low begins XBAND transfer
 		{0xad, 0x17, 0x40, 0x29, 0x03}, // two DATA bits per read
 		{0xc9, 0x78},                   // XBAND keyboard ID

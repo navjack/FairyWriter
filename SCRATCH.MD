@@ -48,11 +48,16 @@
 
 ### Active working tree
 
-- Branch: `agent/hygiene-docs`, branched from public `origin/main` at `4947151`,
-  carrying this documentation-hygiene pass. Clean tree.
-- `origin/main` is at `4947151`. Nothing is in flight: PR #9 (render consistency)
-  and PR #10 (self-recorded showcase video) both merged on 2026-07-31 with all
-  three platform jobs green.
+- Branch: `agent/drop-legacy-ui`, branched from public `origin/main` at `7183d73`,
+  carrying the removal of the retired FocusWriter Qt UI.
+- `origin/main` is at `7183d73`. PR #9 (render consistency), #10 (self-recorded
+  showcase video) and #11 (documentation hygiene) all merged on 2026-07-31 with
+  all three platform jobs green.
+- **This tree now has one build configuration.** There is no
+  `FAIRYWRITER_DEVELOPMENT_UI`. `FAIRYWRITER_DEVELOPER_TOOLS` is a different gate
+  and still exists — it builds the standalone `fairywriter_snes_player` and
+  `fairywriter_xband_player` cartridge hosts, which are bring-up tools, not tester
+  builds.
 - Product work happens in a worktree branched from `origin/main`, never in the
   legacy checkout that hosts this repository's `.git`. That local `main` is an
   unrelated private history containing packaged applications and personal
@@ -91,43 +96,50 @@
   fixes and the generated showcase video, both merged but not yet released. They
   become the next version's entry when one is cut.
 
-### 2026-07-31 — self-recorded showcase video
+### 2026-07-31 — remove the retired FocusWriter Qt UI
 
-Invariant: the showcase is generated, not captured. One emulated frame is one
-video frame and one S-DSP block, so picture and sound cannot drift and the same
-commit reproduces the same file.
+Invariant: this tree builds one thing. The cartridge product was already the only
+shipping configuration; what remained was a second, non-shipping configuration
+that nothing gated against and that no CI job exercised.
 
-- `--showcase-record` is a scripted child mode beside the existing
-  `--*-e2e-child` entry points. It drives the same `RecompPlayer` a real session
-  runs and dumps each 256x224 framebuffer as raw BGRA plus each DSP block as 800
-  stereo s16 frames, which locks 48 kHz to 60 fps with no fractional
-  accumulator. `FAIRYWRITER_NO_AUDIO` is set so `pumpAudio` does not consume the
-  same blocks; with an output device open, each consumer would get half the
-  audio.
-- The storyboard is `showcasePerform`. Keystrokes go through the XBAND scan
-  table and the pointer moves in bounded relative packets from the cartridge's
-  own (128,112) start, so the toolbar card and the shaper's faders are
-  hit-tested by the guest exactly as for a real mouse. Slider sweeps hold the
-  button down and walk cell by cell, which the cartridge re-hit-tests every
-  frame, so the DSP and both scopes follow continuously.
-- Two failures worth not repeating, both found by looking at the frames rather
-  than by any assertion. First: `DocumentEngine` refuses a style toggle without
-  a selection, so "arm a style and type into it" renders nothing — the demo
-  types a word, selects it back, and clicks the toolbar. The styles then stack
-  on their own because each word inherits the previous word's format, which is
-  exactly the 0.2.0 claim, and an added "select the line and add bold over the
-  top" beat silently *un*-bolded everything because the toggle reads the format
-  at the cursor and the cursor was sitting on already-bold text. Second: the
-  shaper persists every edit to `settings.ini`, so the second recording opened
-  on the first one's voice; the recorder now resets sound and persistence
-  settings to defaults before it starts.
-- The recorder runs under its own application name and a scratch catalog root,
-  keeping it off the developer's real saved settings and keeping real home
-  directory filenames out of a public video.
-- Reviewing this kind of artifact means rendering it and looking: a waveform
-  overview caught a 15-second silent hole in the middle of the first take, and a
-  zoomed crop of the text row caught the un-bolding. Neither is visible in a
-  pass/fail signal.
+- **556 files, ~122k lines deleted.** 114 of the 183 files in `src/` were
+  reachable only from the `FAIRYWRITER_DEVELOPMENT_UI` target; 69 remain. Plus 390
+  files under `resources/` (themes, sounds, symbols, the Oxygen icon set), 46
+  translation catalogues, 3 legacy test suites, and the Blasphemous font.
+- **The removal is invisible.** The built `FairyWriter.app` is identical file for
+  file before and after — `Info.plist`, the executable, `fairywriter.icns`,
+  `_CodeSignature`. That was the acceptance criterion and it is worth keeping in
+  mind: `cmake/PruneProductionBundle.cmake` had been deleting this material back
+  out of the bundle at build time, so the shipped artifact never contained it.
+- **How the dead set was derived, and the one trap.** An `#include` closure from
+  every `src/` path CMakeLists still names, seeded also from `tests/`. Two seeds
+  had to be removed first or the closure kept the whole legacy tree alive:
+  `set_property(SOURCE src/main.cpp ...)` for `FAIRYWRITER_DATADIR`, and a stale
+  reference in `fairywriter_core_tests`. The closure then produced one **false
+  positive**: `src/snesrecomp_support/variables.h` looked unreachable because it
+  is included by the *vendored* `third_party/snesrecomp/runner/src/snes/{cpu,snes}.c`
+  through the include path at `CMakeLists.txt:292`, not by anything under `src/`.
+  **Any future dead-code sweep must scan `third_party/` includes too**, or it will
+  delete that header and break the machine build.
+- `presentation_geometry.cpp` and `snes_color.h` are *not* legacy despite living
+  beside it — `fairywriter_core_tests`, one of the production 11, uses both.
+- **What `PruneProductionBundle.cmake` still does.** The plan for this pass said
+  it could be deleted. That was wrong: `mac_deploy.sh:100` runs it *after*
+  `macdeployqt`, which copies Qt's own `*.lproj` localizations in even under
+  `-no-plugins`. The POST_BUILD invocation cannot see those. The script is kept,
+  reduced to the `*.lproj` sweep, with the reason written into it.
+- **Dependencies dropped**: Qt Concurrent, LinguistTools, Multimedia, Network and
+  PrintSupport; Hunspell and Voikko via `pkg_check_modules`; KDSingleApplication.
+  Linux packaging no longer needs a spell-checker present to configure.
+- `CREDITS.md` is untouched, translators included. FairyWriter is still a
+  GPL-3.0-or-later derivative of FocusWriter 1.9.0 and deleting UI code does not
+  retire that attribution. `THIRD_PARTY_NOTICES.md` lost only the two entries
+  whose assets left the tree (Oxygen, Blasphemous) and says so explicitly, so the
+  absence does not read as an oversight.
+- Validation: clean configure from an empty build directory (a stale
+  `CMakeCache.txt` would hide a removed dependency), `ctest` 11/11, and the full
+  `./mac_deploy.sh` gate — build, tests, Qt deploy, prune, ad-hoc sign, the
+  arm64/version/no-Homebrew-leak/no-loose-ROM audits, and a verified DMG.
 
 ### Discoveries that constrain future work
 
@@ -192,22 +204,27 @@ and `docs/SNES_FRONTEND.md` was corrected to match in this pass. Historical
 "10/10 passed" entries in the pass history below are left alone — they were true
 when written.
 
-- Native macOS arm64 Release `ctest --test-dir build --output-on-failure` on
-  `agent/hygiene-docs`: **11/11 passed** in 13.00 seconds. The registered set is
+- Native macOS arm64 Release `ctest`: **11/11 passed**, both before and after the
+  Qt UI removal, from a **clean** build directory each time. The registered set is
   `fairywriter_cartridge_contract`, `fairywriter_cartridge_conformance`,
   `fairywriter_xband_end_to_end`, `fairywriter_core`, `fairywriter_mailbox`,
   `fairywriter_document_engine`, `fairywriter_persistence`,
   `fairywriter_persistence_process_e2e`, `fairywriter_function_keys`,
   `fairywriter_file_catalog`, `fairywriter_cli_version`.
+- Full `./mac_deploy.sh` gate passes after the removal: build, 11/11 tests, Qt
+  deploy, prune, ad-hoc sign, the arm64/version/no-Homebrew-leak/no-loose-ROM
+  audits, and a checksum-verified `FairyWriter-0.3.0-macos-arm64.dmg`.
+- The built `FairyWriter.app` is identical file for file before and after the
+  removal: `Contents/Info.plist`, `Contents/MacOS/FairyWriter`,
+  `Contents/Resources/fairywriter.icns`, `Contents/_CodeSignature/CodeResources`.
 - GitHub Actions run `30657181192` (PR #9, render consistency): `linux-x86_64`
   2m44s, `macos-arm64` 4m1s, `windows-x64` 5m30s — all pass.
 - GitHub Actions run `30657855027` (PR #10, self-recorded showcase): `linux-x86_64`
   2m46s, `macos-arm64` 3m34s, `windows-x64` 3m24s — all pass.
-- Not re-run in this pass, and therefore not claimed as current: the local macOS
-  DMG packaging gate, the Qt 6.8.3 Linux container gate, and the ×10 repeat of the
-  timing-sensitive XBAND gate. Their last recorded results, with the package
-  hashes of the binaries they were run against, are in the pass history below.
-  This pass changed documentation only.
+- Not re-run in this pass, and therefore not claimed as current: the Qt 6.8.3
+  Linux container gate and the ×10 repeat of the timing-sensitive XBAND gate.
+  Their last recorded results, with the package hashes of the binaries they were
+  run against, are in the pass history below.
 
 ### Next actions
 
@@ -218,23 +235,12 @@ when written.
 
 Queued after that, in order:
 
-2. Remove the retired FocusWriter Qt UI. 136 of 182 files in `src/` are reachable
-   only from the `FAIRYWRITER_DEVELOPMENT_UI` target, along with
-   `resources/themes`, `resources/sounds`, `resources/symbols`,
-   `resources/images/icons/oxygen`, `translations/`, the Blasphemous font, three
-   test executables, and the Hunspell/Voikko/KDSingleApplication/Qt
-   Multimedia+Network+PrintSupport dependencies.
-   `cmake/PruneProductionBundle.cmake` exists only to delete that material back
-   out of the shipped bundle and goes with it. Keep `COPYING`, `CREDITS.md`,
-   `THIRD_PARTY_NOTICES.md`, `docs/UPSTREAM_CHANGELOG.md`, and the FocusWriter
-   attribution — deleting the UI does not retire the GPL obligation, and the
-   document/file-format code the product depends on is still FocusWriter-derived.
-3. The packaged-app manual smoke on macOS, Linux, and Windows: first Save, format
+2. The packaged-app manual smoke on macOS, Linux, and Windows: first Save, format
    picker layout, close/relaunch/open, F3 settings/history, forced-exit recovery,
    Markdown Rendered/Source. Automated process evidence proves persistence
    semantics but not final cartridge pixels or packaged input. Windows x64 still
    awaits its first physical-host acceptance.
-4. Keep the long-document caret, scrollbar, wrap, and stale-cell checks in the
+3. Keep the long-document caret, scrollbar, wrap, and stale-cell checks in the
    same human pass; their automated evidence is green but does not replace visual
    inspection. The 0.3.0 audio path adds its own live checks — typing latency
    with blips on, each envelope field audible, persistence across restart.
@@ -259,6 +265,44 @@ Newest first. These sections are superseded detail, retained per the
 durable-working-memory contract at the top of this file: the current resume
 point is above, and nothing here is deleted merely because it is historical.
 Each heading carries the date of the pass it records.
+
+### 2026-07-31 — self-recorded showcase video
+
+Invariant: the showcase is generated, not captured. One emulated frame is one
+video frame and one S-DSP block, so picture and sound cannot drift and the same
+commit reproduces the same file.
+
+- `--showcase-record` is a scripted child mode beside the existing
+  `--*-e2e-child` entry points. It drives the same `RecompPlayer` a real session
+  runs and dumps each 256x224 framebuffer as raw BGRA plus each DSP block as 800
+  stereo s16 frames, which locks 48 kHz to 60 fps with no fractional
+  accumulator. `FAIRYWRITER_NO_AUDIO` is set so `pumpAudio` does not consume the
+  same blocks; with an output device open, each consumer would get half the
+  audio.
+- The storyboard is `showcasePerform`. Keystrokes go through the XBAND scan
+  table and the pointer moves in bounded relative packets from the cartridge's
+  own (128,112) start, so the toolbar card and the shaper's faders are
+  hit-tested by the guest exactly as for a real mouse. Slider sweeps hold the
+  button down and walk cell by cell, which the cartridge re-hit-tests every
+  frame, so the DSP and both scopes follow continuously.
+- Two failures worth not repeating, both found by looking at the frames rather
+  than by any assertion. First: `DocumentEngine` refuses a style toggle without
+  a selection, so "arm a style and type into it" renders nothing — the demo
+  types a word, selects it back, and clicks the toolbar. The styles then stack
+  on their own because each word inherits the previous word's format, which is
+  exactly the 0.2.0 claim, and an added "select the line and add bold over the
+  top" beat silently *un*-bolded everything because the toggle reads the format
+  at the cursor and the cursor was sitting on already-bold text. Second: the
+  shaper persists every edit to `settings.ini`, so the second recording opened
+  on the first one's voice; the recorder now resets sound and persistence
+  settings to defaults before it starts.
+- The recorder runs under its own application name and a scratch catalog root,
+  keeping it off the developer's real saved settings and keeping real home
+  directory filenames out of a public video.
+- Reviewing this kind of artifact means rendering it and looking: a waveform
+  overview caught a 15-second silent hole in the middle of the first take, and a
+  zoomed crop of the text row caught the un-bolding. Neither is visible in a
+  pass/fail signal.
 
 ### 2026-07-31 — render consistency / no flash
 

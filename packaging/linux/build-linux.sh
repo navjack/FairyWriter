@@ -68,7 +68,6 @@ mkdir -p "${GOCACHE}"
 cmake -S /src -B "${build_root}" -G Ninja \
 	-DCMAKE_BUILD_TYPE=Release \
 	-DCMAKE_PREFIX_PATH="${QTDIR}" \
-	-DFAIRYWRITER_DEVELOPMENT_UI=OFF \
 	-DFAIRYWRITER_DEVELOPER_TOOLS=OFF \
 	-DBUILD_TESTING=ON
 cmake --build "${build_root}" --parallel

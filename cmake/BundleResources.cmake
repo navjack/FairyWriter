@@ -29,24 +29,3 @@ function(bundle_data target source destination)
 	target_sources(${target} PRIVATE ${files})
 endfunction()
 
-# Add translations to a macOS bundle.
-function(bundle_translations target translations)
-	foreach(file ${translations})
-		# Set each translation to be located under Resources
-		set_property(
-			SOURCE ${file}
-			PROPERTY
-			MACOSX_PACKAGE_LOCATION Resources/translations
-		)
-
-		# Inform macOS about translation for native dialogs
-		get_filename_component(resource ${file} NAME)
-		string(REGEX REPLACE "[^_]*_([^\\.]*)\\..*" "\\1.lproj" lang ${resource})
-		add_custom_command(
-			TARGET ${target}
-			POST_BUILD
-			COMMAND ${CMAKE_COMMAND}
-			ARGS -E make_directory $<TARGET_BUNDLE_CONTENT_DIR:${target}>/Resources/${lang}
-		)
-	endforeach()
-endfunction()

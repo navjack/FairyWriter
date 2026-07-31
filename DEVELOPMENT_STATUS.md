@@ -47,6 +47,36 @@ already been violated more than once.
 - Broad feature expansion beyond the constrained one-font proofing/rich-style
   target.
 
+## 2026-07-31 the retired FocusWriter Qt UI is gone
+
+The tree builds one thing now. `FAIRYWRITER_DEVELOPMENT_UI` and everything only it
+reached have been deleted: 114 of the 183 files in `src/` (69 remain), 390 files
+under `resources/` — themes, sounds, the symbol table, the Oxygen icon set — 46
+translation catalogues, the Blasphemous font, and the three legacy presentation
+test suites. 556 files, about 122,000 lines.
+
+- The build no longer needs Qt Concurrent, LinguistTools, Multimedia, Network or
+  PrintSupport, nor Hunspell, Voikko, or KDSingleApplication. Production depends
+  on Qt Core/Gui/Widgets/OpenGLWidgets, ZLIB, Go, and the pinned `snesrecomp`
+  checkout. Linux no longer needs a spell-checker present merely to configure.
+- Nothing users see changed. The built `FairyWriter.app` is identical file for
+  file before and after, because `cmake/PruneProductionBundle.cmake` had been
+  stripping this material out of the bundle at build time all along.
+- That prune script is **kept**, reduced to sweeping Qt's `*.lproj`
+  localizations. `mac_deploy.sh` runs it after `macdeployqt`, which copies those
+  in even under `-no-plugins`; the POST_BUILD invocation cannot see them.
+- `FAIRYWRITER_DEVELOPER_TOOLS` is unaffected. It gates the standalone
+  `fairywriter_snes_player` and `fairywriter_xband_player` cartridge hosts, which
+  are bring-up tools and were never part of the retired UI.
+- `CREDITS.md` is unchanged, translators included: FairyWriter remains a
+  GPL-3.0-or-later derivative of FocusWriter 1.9.0, and the document and
+  file-format code the cartridge product depends on is still FocusWriter-derived.
+  `THIRD_PARTY_NOTICES.md` dropped only the Oxygen and Blasphemous entries, whose
+  assets left the tree, and records that it did so.
+- Verified by a clean configure from an empty build directory, `ctest` 11/11
+  before and after, and a full `./mac_deploy.sh` gate ending in a
+  checksum-verified DMG.
+
 ## 2026-07-31 render consistency: the optimistic frame agrees
 
 Invariant: the frame the cartridge draws on its own must be the frame the host is

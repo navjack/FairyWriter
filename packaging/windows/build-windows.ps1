@@ -55,7 +55,6 @@ if ($LASTEXITCODE -ne 0) { throw "vcpkg failed to install zlib:x64-windows" }
     "-DVCPKG_TARGET_TRIPLET=x64-windows" `
     "-DCMAKE_PREFIX_PATH=$QtPrefix" `
     "-DFAIRYWRITER_SNESRECOMP_ROOT=$SnesrecompRoot" `
-    "-DFAIRYWRITER_DEVELOPMENT_UI=OFF" `
     "-DFAIRYWRITER_DEVELOPER_TOOLS=OFF" `
     "-DBUILD_TESTING=ON"
 if ($LASTEXITCODE -ne 0) { throw "CMake configure failed" }

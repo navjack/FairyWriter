@@ -1777,6 +1777,264 @@ int main(int argc, char** argv)
 	}
 	fairy_snes_destroy(machine);
 
+	// A local edit or cursor move must not strip styling, proofing or the
+	// selection highlight.
+	//
+	// The cartridge draws an immediate optimistic frame on every keystroke, and
+	// the host's authoritative viewport only lands about two frames later. Any
+	// disagreement between the two is visible as a flash, and the local render
+	// used to discard exactly the state that is hardest to miss: `STZ $1f`
+	// cleared the draw loop's styling flag, so bold/italic/underline, spelling
+	// and grammar colours, and the selection highlight all blinked off on every
+	// key and snapped back when the host caught up.
+	//
+	// This harness has no host, so nothing ever republishes the viewport:
+	// whatever the local render leaves on screen stays there. That turns the
+	// defect from a two-frame transient into a permanent state, which is what
+	// makes it assertable at all.
+	{
+		// Cells 0-1 bold+italic (attribute 0x09, character +128), cell 6 a
+		// spelling issue (attribute 0x0c), cells 2-4 selected (0x0c, which wins
+		// over anything underneath it). Assertions are on the attribute plane
+		// plus the two styled character bytes; the caret glyph rewrites the
+		// character byte of whichever cell it sits on but deliberately leaves
+		// that cell's attribute alone, so the attribute plane is stable under
+		// cursor movement and the character bytes are only checked for cells the
+		// caret is kept away from.
+		constexpr std::string_view styled_text = "abcdefgh";
+		const std::uint8_t wantAttr[8] = {0x09, 0x09, 0x0c, 0x0c, 0x0c, 0x08, 0x0c, 0x08};
+
+		const auto commitStyled = [&](FairySnesMachine* m, std::uint8_t cursor,
+			bool selected) {
+			fairy_snes_debug_bus_write(m, ViewportSram + 8, cursor);
+			fairy_snes_debug_bus_write(m, ViewportSram + 12, selected ? 2 : 0);
+			fairy_snes_debug_bus_write(m, ViewportSram + 16, selected ? 5 : 0);
+			fairy_snes_debug_bus_write(m, ViewportSram + 20, 0);
+			fairy_snes_debug_bus_write(m, ViewportSram + 28, 1);
+			fairy_snes_debug_bus_write(m, ViewportSram + 32,
+				static_cast<std::uint8_t>(styled_text.size()));
+			fairy_snes_debug_bus_write(m, ViewportSram + 34, 1);
+			fairy_snes_debug_bus_write(m, ViewportSram + 124, 2); // two format runs
+			fairy_snes_debug_bus_write(m, ViewportSram + 125, 0);
+			// Run 0: cells [0,2) bold+italic. Run stride is eight bytes.
+			fairy_snes_debug_bus_write(m, ViewportSram + 384, 0);
+			fairy_snes_debug_bus_write(m, ViewportSram + 385, 0);
+			fairy_snes_debug_bus_write(m, ViewportSram + 386, 2);
+			fairy_snes_debug_bus_write(m, ViewportSram + 387, 0);
+			fairy_snes_debug_bus_write(m, ViewportSram + 388, 0x03);
+			// Run 1: cell 6 flagged by the spell checker.
+			fairy_snes_debug_bus_write(m, ViewportSram + 392, 6);
+			fairy_snes_debug_bus_write(m, ViewportSram + 393, 0);
+			fairy_snes_debug_bus_write(m, ViewportSram + 394, 1);
+			fairy_snes_debug_bus_write(m, ViewportSram + 395, 0);
+			fairy_snes_debug_bus_write(m, ViewportSram + 396, 0x08);
+			for (std::size_t i = 0; i < styled_text.size(); ++i) {
+				fairy_snes_debug_bus_write(m,
+					ViewportTextSram + static_cast<std::uint32_t>(i), styled_text[i]);
+			}
+			fairy_snes_debug_bus_write(m, 0x70000a, 2);
+			return runFrames(m, 6);
+		};
+
+		const auto checkStyled = [&](FairySnesMachine* m, const char* after,
+			int cells) {
+			for (int i = 0; i < cells; ++i) {
+				if (fairy_snes_debug_wram(m, 0x1200 + i) != wantAttr[i]) {
+					std::fprintf(stderr,
+						"styling lost after %s: cell %d attr got=%02x want=%02x "
+						"(row %02x %02x %02x %02x %02x %02x %02x %02x)\n",
+						after, i, fairy_snes_debug_wram(m, 0x1200 + i), wantAttr[i],
+						fairy_snes_debug_wram(m, 0x1200), fairy_snes_debug_wram(m, 0x1201),
+						fairy_snes_debug_wram(m, 0x1202), fairy_snes_debug_wram(m, 0x1203),
+						fairy_snes_debug_wram(m, 0x1204), fairy_snes_debug_wram(m, 0x1205),
+						fairy_snes_debug_wram(m, 0x1206), fairy_snes_debug_wram(m, 0x1207));
+					return false;
+				}
+			}
+			// The bold+italic glyph page is carried by bit 7 of the character
+			// byte, which the attribute plane cannot show on its own.
+			if (fairy_snes_debug_wram(m, 0x1000) != ('a' | 0x80)
+				|| fairy_snes_debug_wram(m, 0x1001) != ('b' | 0x80)) {
+				std::fprintf(stderr,
+					"bold glyph page lost after %s: chars got=%02x %02x want=%02x %02x\n",
+					after, fairy_snes_debug_wram(m, 0x1000),
+					fairy_snes_debug_wram(m, 0x1001),
+					static_cast<unsigned>('a' | 0x80), static_cast<unsigned>('b' | 0x80));
+				return false;
+			}
+			return true;
+		};
+
+		// Cursor keys shift no cells at all, so the per-cell style map, the
+		// alignment map and the selection bounds are all still exactly right
+		// after one: there was never a reason to drop them.
+		const struct { std::uint8_t code; bool extended; const char* name; } navKeys[] = {
+			{0x74, true, "Right"}, {0x6b, true, "Left"},
+			{0x75, true, "Up"}, {0x72, true, "Down"},
+		};
+		for (const auto& key : navKeys) {
+			FairySnesMachine* m = fairy_snes_create(rom.data(), rom.size());
+			if (!m || !runFrames(m, 3)) return 174;
+			if (!commitStyled(m, 5, true)) return 175;
+			if (!checkStyled(m, "the initial commit", 8)) return 176;
+			if (!fairy_snes_key_event(m, key.code, true, key.extended)
+				|| !runFrames(m, 6)) return 177;
+			if (!checkStyled(m, key.name, 8)) return 178;
+			fairy_snes_destroy(m);
+		}
+
+		// Typing past the end of the styled text shifts nothing before the
+		// caret, so every styled cell must survive the insert untouched.
+		{
+			FairySnesMachine* m = fairy_snes_create(rom.data(), rom.size());
+			if (!m || !runFrames(m, 3)) return 179;
+			if (!commitStyled(m, static_cast<std::uint8_t>(styled_text.size()), false)) return 180;
+			if (!fairy_snes_key_event(m, 0x1a, true, false) || !runFrames(m, 6)) return 181; // 'z'
+			// No selection in this commit, so cells 2-4 are plain.
+			for (int i = 0; i < 8; ++i) {
+				const std::uint8_t want = (i < 2) ? 0x09 : (i == 6 ? 0x0c : 0x08);
+				if (fairy_snes_debug_wram(m, 0x1200 + i) != want) {
+					std::fprintf(stderr,
+						"styling lost after typing at the end: cell %d attr got=%02x want=%02x\n",
+						i, fairy_snes_debug_wram(m, 0x1200 + i), want);
+					return 182;
+				}
+			}
+			fairy_snes_destroy(m);
+		}
+
+		// Typing at the start shifts every cell right by one, so the style map
+		// has to move with the text rather than being discarded: the two styled
+		// cells belong to the characters, not to the positions.
+		{
+			FairySnesMachine* m = fairy_snes_create(rom.data(), rom.size());
+			if (!m || !runFrames(m, 3)) return 183;
+			if (!commitStyled(m, 0, false)) return 184;
+			if (!fairy_snes_key_event(m, 0x1a, true, false) || !runFrames(m, 6)) return 185; // 'z'
+			// The inserted cell has no preceding character to inherit from, so
+			// it takes the plain baseline; everything else moves up one.
+			const std::uint8_t want[9] = {0x08, 0x09, 0x09, 0x08, 0x08, 0x08, 0x08, 0x0c, 0x08};
+			for (int i = 0; i < 9; ++i) {
+				if (fairy_snes_debug_wram(m, 0x1200 + i) != want[i]) {
+					std::fprintf(stderr,
+						"style map did not shift with an insert at the start: cell %d attr "
+						"got=%02x want=%02x (row %02x %02x %02x %02x %02x %02x %02x %02x %02x)\n",
+						i, fairy_snes_debug_wram(m, 0x1200 + i), want[i],
+						fairy_snes_debug_wram(m, 0x1200), fairy_snes_debug_wram(m, 0x1201),
+						fairy_snes_debug_wram(m, 0x1202), fairy_snes_debug_wram(m, 0x1203),
+						fairy_snes_debug_wram(m, 0x1204), fairy_snes_debug_wram(m, 0x1205),
+						fairy_snes_debug_wram(m, 0x1206), fairy_snes_debug_wram(m, 0x1207),
+						fairy_snes_debug_wram(m, 0x1208));
+					return 186;
+				}
+			}
+			// 'b' has moved to cell 2 and must still carry its bold+italic page.
+			// Cell 1 holds 'a' but cannot be checked here: the cursor is at 1
+			// after the insert, and the caret deliberately replaces the character
+			// byte of the cell it sits on while leaving that cell's attribute
+			// (asserted above) alone.
+			if (fairy_snes_debug_wram(m, 0x1002) != ('b' | 0x80)) {
+				std::fprintf(stderr,
+					"styled glyph did not follow its character: got=%02x want=%02x\n",
+					fairy_snes_debug_wram(m, 0x1002), static_cast<unsigned>('b' | 0x80));
+				return 187;
+			}
+			fairy_snes_destroy(m);
+		}
+
+		// Typing replaces a selection in DocumentEngine, so the optimistic frame
+		// must drop the highlight immediately rather than holding a stale one up
+		// for two frames -- that would be a new disagreement, not a fixed one.
+		{
+			FairySnesMachine* m = fairy_snes_create(rom.data(), rom.size());
+			if (!m || !runFrames(m, 3)) return 188;
+			if (!commitStyled(m, 5, true)) return 189;
+			if (!fairy_snes_key_event(m, 0x1a, true, false) || !runFrames(m, 6)) return 190; // 'z'
+			for (int i = 0; i < 9; ++i) {
+				if (fairy_snes_debug_wram(m, 0x1200 + i) == 0x0c
+					&& i != 7) { // cell 7 is the spelling flag, shifted up by one
+					std::fprintf(stderr,
+						"selection highlight survived an edit at cell %d\n", i);
+					return 191;
+				}
+			}
+			fairy_snes_destroy(m);
+		}
+
+		// Shift+arrow publishes an Extend command and the host grows the
+		// selection, but the local frame has to grow it too or the highlight
+		// blinks off and returns one cell wider.
+		{
+			FairySnesMachine* m = fairy_snes_create(rom.data(), rom.size());
+			if (!m || !runFrames(m, 3)) return 192;
+			if (!commitStyled(m, 5, true)) return 193;
+			if (!fairy_snes_key_event(m, 0x12, true, false) || !runFrames(m, 2)) return 194; // Shift
+			if (!fairy_snes_key_event(m, 0x74, true, true) || !runFrames(m, 6)) return 195; // Right
+			// The cursor was the selection's active edge at 5, so [2,5) becomes
+			// [2,6) and cell 5 joins the highlight.
+			const std::uint8_t want[8] = {0x09, 0x09, 0x0c, 0x0c, 0x0c, 0x0c, 0x0c, 0x08};
+			for (int i = 0; i < 8; ++i) {
+				if (fairy_snes_debug_wram(m, 0x1200 + i) != want[i]) {
+					std::fprintf(stderr,
+						"Shift+Right did not extend the local selection: cell %d attr "
+						"got=%02x want=%02x (row %02x %02x %02x %02x %02x %02x %02x %02x)\n",
+						i, fairy_snes_debug_wram(m, 0x1200 + i), want[i],
+						fairy_snes_debug_wram(m, 0x1200), fairy_snes_debug_wram(m, 0x1201),
+						fairy_snes_debug_wram(m, 0x1202), fairy_snes_debug_wram(m, 0x1203),
+						fairy_snes_debug_wram(m, 0x1204), fairy_snes_debug_wram(m, 0x1205),
+						fairy_snes_debug_wram(m, 0x1206), fairy_snes_debug_wram(m, 0x1207));
+					return 196;
+				}
+			}
+			fairy_snes_destroy(m);
+		}
+	}
+
+	// A selection that runs to the end of the viewport text must still highlight.
+	// The decode loop matches a position only on a character it actually visits,
+	// and it never visits the offset one past the last one, so the end bound was
+	// captured nowhere and stayed at whatever the previous viewport left -- zero on
+	// a fresh document, which makes the range empty and the highlight vanish.
+	// Shift+End and select-all land exactly here.
+	machine = fairy_snes_create(rom.data(), rom.size());
+	if (!machine || !runFrames(machine, 3)) return 197;
+	{
+		constexpr std::string_view tail_text = "abcdefgh";
+		fairy_snes_debug_bus_write(machine, ViewportSram + 8,
+			static_cast<std::uint8_t>(tail_text.size()));
+		fairy_snes_debug_bus_write(machine, ViewportSram + 12, 5); // selection [5, 8)
+		fairy_snes_debug_bus_write(machine, ViewportSram + 16,
+			static_cast<std::uint8_t>(tail_text.size()));
+		fairy_snes_debug_bus_write(machine, ViewportSram + 20, 0);
+		fairy_snes_debug_bus_write(machine, ViewportSram + 28, 1);
+		fairy_snes_debug_bus_write(machine, ViewportSram + 32,
+			static_cast<std::uint8_t>(tail_text.size()));
+		fairy_snes_debug_bus_write(machine, ViewportSram + 34, 1);
+		fairy_snes_debug_bus_write(machine, ViewportSram + 124, 0);
+		fairy_snes_debug_bus_write(machine, ViewportSram + 125, 0);
+		for (std::size_t i = 0; i < tail_text.size(); ++i) {
+			fairy_snes_debug_bus_write(machine,
+				ViewportTextSram + static_cast<std::uint32_t>(i), tail_text[i]);
+		}
+		fairy_snes_debug_bus_write(machine, 0x70000a, 2);
+		if (!runFrames(machine, 6)) return 198;
+		const std::uint8_t want[8] = {0x08, 0x08, 0x08, 0x08, 0x08, 0x0c, 0x0c, 0x0c};
+		for (int i = 0; i < 8; ++i) {
+			if (fairy_snes_debug_wram(machine, 0x1200 + i) != want[i]) {
+				std::fprintf(stderr,
+					"selection to the end of the text did not highlight: cell %d attr "
+					"got=%02x want=%02x (row %02x %02x %02x %02x %02x %02x %02x %02x)\n",
+					i, fairy_snes_debug_wram(machine, 0x1200 + i), want[i],
+					fairy_snes_debug_wram(machine, 0x1200), fairy_snes_debug_wram(machine, 0x1201),
+					fairy_snes_debug_wram(machine, 0x1202), fairy_snes_debug_wram(machine, 0x1203),
+					fairy_snes_debug_wram(machine, 0x1204), fairy_snes_debug_wram(machine, 0x1205),
+					fairy_snes_debug_wram(machine, 0x1206), fairy_snes_debug_wram(machine, 0x1207));
+				return 199;
+			}
+		}
+	}
+	fairy_snes_destroy(machine);
+
 	// Rich style (bold/italic/underline): the three flags are independent, so
 	// every combination has to reach the screen as its own glyph page. The page
 	// index is the flag mask itself; its bit 0 lands in the character byte

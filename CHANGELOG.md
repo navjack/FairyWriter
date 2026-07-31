@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- Typing no longer makes the page flicker. Every keystroke used to draw one frame
+  with all styling thrown away — bold, italic and underline flattened, spelling
+  and grammar marks gone, the selection highlight blanked — before the host put it
+  back a couple of frames later. The cartridge now keeps that state through its
+  own local frame and moves it with the text it edits, so what you see while
+  typing is what the document already is.
+- Delete removes the character under the cursor. It was shifting a scratch region
+  nothing reads, so for two frames the line dropped its *last* character instead,
+  then snapped back.
+- Selecting to the end of the visible text highlights it. The end of a selection
+  was never recorded when it landed past the final character — which is exactly
+  where Shift+End and select-all put it — so the highlight silently did not
+  appear at all.
+- Shift+arrow grows the highlight with the caret instead of trailing a character
+  behind it.
+- Smoother motion: the emulated machine is driven at its true 60.0988 Hz rather
+  than a rounded 58.8, which removes a dropped or repeated frame roughly once a
+  second.
+
 ## 0.3.0 — 2026-07-30 — tester preview
 
 - FairyWriter has sound. Typing now makes a blip, and it is a real one: the

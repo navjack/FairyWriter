@@ -9,7 +9,7 @@
 > because some entries are historical. Move superseded detail into the archive
 > instead of deleting the file.
 
-## Current resume point — 2026-07-29
+## Current resume point — 2026-07-31
 
 ### Product and ownership invariants
 
@@ -104,7 +104,64 @@
   a merged commit whose three native package jobs pass, per the release
   checklist. `v0.1.0` remains published and untouched.
 
-### Completed in the current pass (rich style combinations and alignment)
+### Completed in the current pass (render consistency / no flash)
+
+Invariant: the frame the cartridge draws on its own must be the frame the host is
+about to publish. The local render may be stale by a frame; it may never show a
+different state. Every flash in this product is that invariant being broken.
+
+- Reported symptom: styling and the selection blink while typing. Cause was
+  `emitDocumentRenderCall`'s leading `STZ $1f`. `$1f` bit 7 is the draw loop's
+  styling gate (`BIT $1f`), so every local edit *and every cursor key* drew a
+  frame with rich-style glyph pages, spelling/grammar palettes and the selection
+  highlight all thrown away, and the host restored them ~2 frames later.
+- Keeping the flag required maintaining the state behind it. `$0b00` (per-cell
+  style/proofing) and `$0d00` (per-cell alignment) are indexed by cell, so the
+  three edit paths now shift them in the same loops that shift the text at
+  `$0500`. An inserted cell inherits the preceding cell's style, which is what
+  `DocumentEngine` publishes.
+- **Delete was shifting `$0201`/`$0200`, which nothing in the ROM reads** — the
+  same typo backspace's own comment records having fixed. It dropped the *last*
+  character for two frames instead of the one at the cursor. The ROM contract
+  test *pinned* this: `9d 00 02` labelled "guest document buffer write" sitting
+  next to `bd 00 05` as the read. **When a contract test pins two halves of one
+  operation, check that they name the same thing** — this one held a defect in
+  place for as long as it existed.
+- **A selection reaching the end of the viewport text never highlighted.** The
+  decode matches a position only on a character it visits and never visits the
+  offset one past the last. The cursor had an explicit post-loop catch-up
+  (`LDA $46; CMP $40; BNE +2; STY $00`); the selection bounds had none. Shift+End
+  and select-all land exactly there. Both bounds now get it — the start needs it
+  too or a collapsed cursor at the end pairs a stale `$50` with a correct `$52`
+  and highlights the whole line.
+- Shift+arrow extends locally. **The anchor never needs storing:** `$00` is the
+  active edge (the host publishes `m_cursor.position()`), so whichever of
+  `$50`/`$52` the cursor is not on is the anchor and the other one moves.
+  Crossing the anchor falls out of the same rule.
+- `STA $1f` in the viewport decode ran under `REP #$20` and so owned `$1f` *and*
+  `$20` — the SNES Mouse packet buffer's signature byte. Latent only because the
+  poll rotates all four bytes in fresh before reading. **Seventh instance of the
+  register-width family.**
+- The VBlank upload waited on the *level* of `$4212` bit 7, not its rising edge.
+  The upload is 48 DMA setups, about half a VBlank of CPU time, so a late arrival
+  could not finish inside it — and `soundStreamRenderCall` reaches it from inside
+  the main loop's own in-VBlank branch, so that path was always late. It drains
+  the current VBlank first now.
+- Host pacing: 17 ms (58.8 fps) against a 60.0988 Hz guest on a vsynced surface
+  beat about once a second. True NTSC period now carried in a fractional
+  accumulator (`scheduleNextFrame`).
+- **Test-harness leverage worth reusing:** `snes_machine_tests` has no host, so
+  nothing republishes the viewport and a bad optimistic frame becomes a permanent
+  state instead of a two-frame transient. That is the only reason this class of
+  defect is assertable at all. Seven new cases; each confirmed to fail on the
+  cartridge built without its fix.
+- **Rendering and looking is again what found the deepest defect.** Every byte
+  assertion in the suite passed while the end-of-text selection simply was not on
+  screen. A scratch tool that dumps the framebuffer crop to PPM around a single
+  keystroke is cheap to rebuild — link `lookflash`-style against
+  `libfairywriter_cartridge_image.a` + `libfairywriter_snes_machine.a`.
+
+### Completed in the previous pass (rich style combinations and alignment)
 
 Invariant: bold, italic and underline are independent properties of a character
 and every combination has its own glyph page; paragraph alignment is cartridge
@@ -753,6 +810,16 @@ and without the fix and confirming the new test fails then passes.
   only *look* free — they are the high halves of existing 16-bit pairs), and
   `$0313`, `$0314`, `$031a`-`$031c`, `$032b`, `$032e`, `$032f`, `$0333`,
   `$033a`-`$033f`, `$0346`, `$0347`, `$0350`, `$0351` in the `$03xx` page.
+  **This list has since decayed** — `$0333` is the scroll-drag flag and
+  `$0350`/`$0351` the pointer's last emitted cell. In zero page `$5c`/`$5d` are
+  *not* free either: the sound plane's render and input both use them. Re-scan
+  before claiming a byte rather than trusting this list.
+- **The per-cell arrays the draw loop reads are `$0500` (text), `$0b00`
+  (style/proofing bits) and `$0d00` (paragraph alignment), all bounded to 239
+  cells and all page-aligned.** They are parallel: anything that shifts one must
+  shift all three, or the optimistic frame disagrees with the host's next
+  viewport and the difference shows as a flash. 8-bit `X` addresses them exactly
+  as the draw loop's 16-bit `X` does, because the count never exceeds 239.
 - **CMake does not reliably regenerate the cartridge from `main.go` on this
   volume.** Timestamp comparison silently skipped regeneration more than once
   during this session, producing test results for the wrong ROM. Always

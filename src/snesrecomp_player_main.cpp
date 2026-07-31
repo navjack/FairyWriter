@@ -286,10 +286,19 @@ public:
 		// headless test and CI configurations use.
 		if (!qEnvironmentVariableIsSet("FAIRYWRITER_NO_AUDIO")) m_audio.start();
 		advanceFrame();
+		// A 17 ms interval is 58.8 fps against a guest that runs at 60.0988 Hz on a
+		// surface that presents at the display's rate, so the two beat roughly once
+		// a second and a guest frame is dropped or shown twice each time. The timer
+		// only has millisecond resolution, so the true period is carried in a
+		// fractional accumulator and the interval alternates between 16 and 17 ms to
+		// average it out.
 		m_timer.setTimerType(Qt::PreciseTimer);
-		m_timer.setInterval(17);
-		connect(&m_timer, &QTimer::timeout, this, [this] { advanceFrame(); });
-		m_timer.start();
+		m_timer.setSingleShot(true);
+		connect(&m_timer, &QTimer::timeout, this, [this] {
+			advanceFrame();
+			scheduleNextFrame();
+		});
+		scheduleNextFrame();
 		m_recovery_timer.setSingleShot(true);
 		m_recovery_timer.setInterval(
 			static_cast<int>(m_bridge.persistence().settings().interval_minutes)
@@ -1101,6 +1110,18 @@ private:
 	QString m_pending_document;
 	static constexpr std::uint64_t PendingDocumentFrame = 30;
 	std::uint64_t m_frameCounter = 0;
+
+	// One NTSC frame is 1364 * 262 master cycles at 21.477272 MHz.
+	static constexpr double NtscFramePeriodMs = 1364.0 * 262.0 * 1000.0 / 21477272.0;
+	double m_frameDebtMs = 0.0;
+
+	void scheduleNextFrame()
+	{
+		m_frameDebtMs += NtscFramePeriodMs;
+		const int interval = static_cast<int>(m_frameDebtMs);
+		m_frameDebtMs -= interval;
+		m_timer.start(interval);
+	}
 };
 
 #ifdef FAIRYWRITER_PERSISTENCE_TESTING

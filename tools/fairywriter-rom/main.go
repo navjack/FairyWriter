@@ -2694,9 +2694,16 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	b(0xa9, 0x10, 0x00) // clamp to mailbox cap (16 runs)
 	runCountClamp := len(p)
 	branch(bccRunCountClamp, runCountClamp)
-	b(0x85, 0x1f)                   // staged run count for draw-loop fast-path flagging
 	b(0x0a, 0x0a, 0x0a, 0x85, 0x1a) // run bytes = count * 8 (DIAG: was followed by STZ $1b)
-	b(0xe2, 0x20)                   // SEP #$20
+	b(0x4a, 0x4a, 0x4a)             // back to the clamped count
+	// 8-bit before the store. A 16-bit `STA $1f` here owned $1f *and* $20, and
+	// $20-$23 is the SNES Mouse packet buffer ($20 is the signature byte the poll
+	// tests with `AND #$f0`). It was survivable only because the poll rotates all
+	// four bytes in fresh before reading them -- the seventh instance of the
+	// register-width family this file keeps hitting, and the one that would have
+	// been a live defect the moment anything read $20 before the next poll.
+	b(0xe2, 0x20) // SEP #$20
+	b(0x85, 0x1f) // staged run count for draw-loop fast-path flagging
 	b(0xa5, 0x1f)
 	beqNoProofRuns := len(p)
 	b(0xf0, 0)
@@ -2795,6 +2802,17 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	branch(bcsProofDone, proofDone)
 	b(0xc2, 0x20)                                     // REP #$20
 	b(0xa5, 0x46, 0xc5, 0x40, 0xd0, 0x02, 0x84, 0x00) // LDA $46; CMP $40; BNE +2; STY $00
+	// The decode loop can only match a position it actually visits, and it never
+	// visits the offset one past the last character -- so a position sitting at the
+	// end of the decoded text was captured here for the cursor and nowhere for the
+	// selection. A selection running to the end of the viewport therefore left $52
+	// holding whatever the previous viewport put there (zero on a fresh document),
+	// which makes the range empty and the highlight silently absent: shift+End and
+	// select-all rendered no selection at all. The start bound needs the same catch
+	// -up or a collapsed cursor at the end would pair a stale $50 with a correct
+	// $52 and highlight the whole line.
+	b(0xa5, 0x46, 0xc5, 0x42, 0xd0, 0x02, 0x84, 0x50) // LDA $46; CMP $42; BNE +2; STY $50
+	b(0xa5, 0x46, 0xc5, 0x44, 0xd0, 0x02, 0x84, 0x52) // LDA $46; CMP $44; BNE +2; STY $52
 	b(0x84, 0x08)
 	b(0xe2, 0x20) // SEP #$20: restore 8-bit A before render (mirrors the empty path); render's PHA/PLB assumes 8-bit A.
 	viewportRenderCalls = append(viewportRenderCalls, len(p))
@@ -2972,11 +2990,78 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 
 	var dispatchExit int
 	var renderCalls []int
+	// The cartridge draws an immediate optimistic frame on every keystroke and the
+	// host's authoritative viewport only lands about two frames later, so anything
+	// the two disagree about is on screen as a visible flash. This emitter used to
+	// begin with `STZ $1f`, which clears the draw loop's styling flag: every local
+	// render therefore threw away bold/italic/underline, the spelling and grammar
+	// colours, and the selection highlight, and the host put them all back a couple
+	// of frames later. Typing anywhere near styled or selected text flickered.
+	//
+	// The flag is kept now, and the state behind it is maintained locally instead:
+	// cursor keys shift no cells, so the maps are already right, and the three edit
+	// paths shift `$0b00`/`$0d00` alongside the text they shift at `$0500`. Same
+	// principle as `verticalMove` below -- make the optimistic frame agree with what
+	// is about to be published rather than blanking it.
 	var emitDocumentRenderCall func()
 	emitDocumentRenderCall = func() {
-		b(0x64, 0x1f) // local edits render plain baseline until host viewport repopulates proofing runs
 		renderCalls = append(renderCalls, len(p))
 		b(0x20, 0, 0)
+	}
+
+	// Typing replaces a selection in DocumentEngine, so the optimistic frame has to
+	// drop the highlight at the same moment it changes the text. Holding the old
+	// range up for the two frames before the host catches up would just trade one
+	// disagreement for another. A 8-bit on entry and on exit.
+	emitCollapseSelection := func() {
+		b(0xc2, 0x20)             // REP #$20
+		b(0xa5, 0x00)             // LDA $00 (guest cursor)
+		b(0x85, 0x50, 0x85, 0x52) // STA $50; STA $52 -- an empty range highlights nothing
+		b(0xe2, 0x20)             // SEP #$20
+	}
+
+	// Shift+arrow publishes an Extend command and the host grows the selection two
+	// frames later; without the same move here the highlight lags a character
+	// behind every key. `$04` is the XBAND shift-held flag.
+	//
+	// The anchor never has to be stored: `$00` is the selection's active edge -- the
+	// host publishes `m_cursor.position()`, which for a selection is exactly that --
+	// so whichever of `$50`/`$52` the cursor is *not* sitting on is the anchor, and
+	// the other one is what moves. Crossing the anchor falls out of the same rule:
+	// the range shrinks to empty, and the next key re-seeds from the anchor that
+	// stayed put. `forward` picks the direction; call this while `$00` still holds
+	// the pre-move cursor.
+	emitSelectionExtend := func(forward bool) {
+		active, other := byte(0x52), byte(0x50) // bound the cursor moves
+		step := byte(0x1a)                      // INC A
+		if !forward {
+			active, other = 0x50, 0x52
+			step = 0x3a // DEC A
+		}
+		b(0xa5, 0x04) // LDA $04 (Shift held?)
+		beqNoExtend := len(p)
+		b(0xf0, 0)
+		b(0xc2, 0x20)             // REP #$20
+		b(0xa5, 0x50, 0xc5, 0x52) // LDA $50; CMP $52 -- is there a live range?
+		bneHaveRange := len(p)
+		b(0xd0, 0)
+		b(0xa5, 0x00, 0x85, 0x50, 0x85, 0x52) // collapsed: anchor the new range at the cursor
+		haveRange := len(p)
+		branch(bneHaveRange, haveRange)
+		b(0xa5, 0x00, 0xc5, active) // is the cursor on the bound that moves?
+		bneOtherEdge := len(p)
+		b(0xd0, 0)
+		b(step, 0x85, active)
+		braExtendDone := len(p)
+		b(0x80, 0)
+		otherEdge := len(p)
+		branch(bneOtherEdge, otherEdge)
+		b(0xa5, 0x00, step, 0x85, other)
+		extendDone := len(p)
+		branch(braExtendDone, extendDone)
+		b(0xe2, 0x20) // SEP #$20
+		noExtend := len(p)
+		branch(beqNoExtend, noExtend)
 	}
 
 	b(0xad, 0x1d, 0x03)
@@ -3279,16 +3364,41 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	bcsInsertDone := len(p)
 	b(0xb0, 0)
 	b(0xa6, 0x08)
+	// The text at $0500 is not the only per-cell array the draw loop reads: $0b00
+	// holds each cell's style/proofing bits and $0d00 its paragraph alignment, both
+	// projected from the host's format runs. An insert shifts cells, so all three
+	// have to move together -- shifting only the text is what made the local render
+	// have to discard styling wholesale. Each group below leaves X back on the
+	// source cell, so the three copies share one loop and one bound.
 	shiftRight := len(p)
 	b(0xe4, 0x00)
 	beqPlace := len(p)
 	b(0xf0, 0)
-	b(0xca, 0xbd, 0x00, 0x05, 0xe8, 0x9d, 0x00, 0x05, 0xca)
+	b(0xca)                                     // DEX (X = source cell)
+	b(0xbd, 0x00, 0x05, 0xe8, 0x9d, 0x00, 0x05, 0xca) // text
+	b(0xbd, 0x00, 0x0b, 0xe8, 0x9d, 0x00, 0x0b, 0xca) // style/proofing bits
+	b(0xbd, 0x00, 0x0d, 0xe8, 0x9d, 0x00, 0x0d, 0xca) // paragraph alignment
 	braShiftRight := len(p)
 	b(0x80, 0)
 	branch(braShiftRight, shiftRight)
 	place := len(p)
 	branch(beqPlace, place)
+	// The new character inherits the preceding cell's style and alignment, which
+	// is what DocumentEngine will publish: a typed character takes the format at
+	// the cursor. At cursor 0 there is no preceding cell, so it starts plain.
+	b(0xa6, 0x00) // LDX $00
+	beqInsertPlain := len(p)
+	b(0xf0, 0)
+	b(0xca)                                     // DEX (the preceding cell)
+	b(0xbd, 0x00, 0x0b, 0xe8, 0x9d, 0x00, 0x0b, 0xca)
+	b(0xbd, 0x00, 0x0d, 0xe8, 0x9d, 0x00, 0x0d)
+	braInsertStyled := len(p)
+	b(0x80, 0)
+	insertPlain := len(p)
+	branch(beqInsertPlain, insertPlain)
+	b(0x9e, 0x00, 0x0b, 0x9e, 0x00, 0x0d) // STZ $0b00,X; STZ $0d00,X
+	insertStyled := len(p)
+	branch(braInsertStyled, insertStyled)
 	b(0xa6, 0x00, 0xa5, 0x5b, 0x9d, 0x00, 0x05, 0xc2, 0x20, 0xe6, 0x00, 0xe6, 0x08, 0xe2, 0x20)
 	// dispatchExit is defined later in this function; its Go value is still 0 at
 	// this point, so patch these forward JMP targets once it is known (below).
@@ -3331,6 +3441,8 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	beqShifted := len(p)
 	b(0xf0, 0)
 	b(0xbd, 0x00, 0x05, 0xca, 0x9d, 0x00, 0x05, 0xe8) // LDA $0500,X; DEX; STA $0500,X; INX (was STA $0200,X)
+	b(0xbd, 0x00, 0x0b, 0xca, 0x9d, 0x00, 0x0b, 0xe8) // style/proofing bits follow the text
+	b(0xbd, 0x00, 0x0d, 0xca, 0x9d, 0x00, 0x0d, 0xe8) // paragraph alignment follows the text
 	braShiftLeftBk := len(p)
 	b(0x80, 0)
 	branch(braShiftLeftBk, shiftLeftBk)
@@ -3341,6 +3453,7 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	for _, at := range dispatchExitJumps {
 		jump(at, dispatchExit)
 	}
+	emitCollapseSelection()
 	emitDocumentRenderCall()
 	b(0xe2, 0x10)
 	b(0x60)
@@ -3358,13 +3471,22 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	b(0xe4, 0x08)
 	bcsDeleteLast := len(p)
 	b(0xb0, 0)
-	b(0xbd, 0x01, 0x02, 0x9d, 0x00, 0x02, 0xe8)
+	// $0201/$0200, which this shifted until now, is not the guest text buffer and
+	// nothing reads it -- the same typo the backspace path above records having
+	// fixed. Delete therefore decremented the length without compacting the text,
+	// so its optimistic frame dropped the *last* character instead of the one at
+	// the cursor, and the host corrected it two frames later. The style and
+	// alignment maps shift with it for the same reason as the other edit paths.
+	b(0xbd, 0x01, 0x05, 0x9d, 0x00, 0x05, 0xe8) // LDA $0501,X; STA $0500,X; INX
+	b(0xca, 0xbd, 0x01, 0x0b, 0x9d, 0x00, 0x0b, 0xe8) // DEX; LDA $0b01,X; STA $0b00,X; INX
+	b(0xca, 0xbd, 0x01, 0x0d, 0x9d, 0x00, 0x0d, 0xe8) // DEX; LDA $0d01,X; STA $0d00,X; INX
 	braDeleteShift := len(p)
 	b(0x80, 0)
 	branch(braDeleteShift, deleteShift)
 	deleteLast := len(p)
 	branch(bcsDeleteLast, deleteLast)
 	b(0xc2, 0x20, 0xc6, 0x08, 0xe2, 0x20)
+	emitCollapseSelection()
 	emitDocumentRenderCall()
 	deleteDone := len(p)
 	branch(bcsDeleteDone, deleteDone)
@@ -3387,6 +3509,7 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	b(0xa5, 0x00)
 	beqLeftDone := len(p)
 	b(0xf0, 0)
+	emitSelectionExtend(false)
 	b(0xc6, 0x00)
 	emitDocumentRenderCall()
 	leftDone := len(p)
@@ -3398,6 +3521,7 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	b(0xa5, 0x00, 0xc5, 0x08)
 	bcsRightDone := len(p)
 	b(0xb0, 0)
+	emitSelectionExtend(true)
 	b(0xe6, 0x00)
 	emitDocumentRenderCall()
 	rightDone := len(p)
@@ -7131,8 +7255,23 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	// If DB is left at $7e, absolute STA/LDA in the upload block will silently
 	// hit WRAM mirrors instead of PPU/DMA registers, leaving stage updates
 	// visible in WRAM but never committed to VRAM/framebuffer.
+	// Wait for VBlank's rising edge, not merely for its level. The upload below is
+	// 48 DMA setups -- title card, toolbar, status row and the 30x17 document plane
+	// -- and costs roughly half a VBlank in CPU time. Arriving when VBlank has
+	// already been running for a while therefore starts an upload that cannot
+	// finish inside it, and the tail writes VRAM while the PPU is drawing from it.
+	// Nothing guarded against that: whether the upload got a whole VBlank or a
+	// sliver of one depended on how long the render before it happened to take, and
+	// `soundStreamRenderCall` in the main loop reaches here from *inside* the loop's
+	// own in-VBlank branch, so it took the late path every time. Draining the
+	// current VBlank first costs at most one frame and makes the window fixed.
+	vblankDrain := len(p)
+	jump(menuUploadJump, vblankDrain)
+	b(0xaf, 0x12, 0x42, 0x00) // LDA.l $004212
+	bmiVblankDrain := len(p)
+	b(0x30, 0)
+	branch(bmiVblankDrain, vblankDrain)
 	vblank := len(p)
-	jump(menuUploadJump, vblank)
 	b(0xaf, 0x12, 0x42, 0x00) // LDA.l $004212
 	bplVblank := len(p)
 	b(0x10, 0)

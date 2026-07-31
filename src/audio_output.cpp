@@ -15,6 +15,13 @@
 #define MA_NO_NODE_GRAPH
 #define MA_NO_ENGINE
 #define MA_NO_CUSTOM
+#ifdef _WIN32
+// windows.h, which miniaudio includes for WASAPI, defines min and max as
+// macros. Without this they capture every std::min call below and the
+// expansion becomes std::(...), which MSVC reports as an illegal token after
+// '::'. Nothing outside Windows sees this, so it only surfaced in CI.
+#define NOMINMAX
+#endif
 #include "miniaudio.h"
 
 #include <algorithm>
@@ -63,7 +70,7 @@ std::size_t AudioRing::write(const std::int16_t* frames, std::size_t count)
 	const std::size_t write = m_write.load(std::memory_order_relaxed);
 	const std::size_t read = m_read.load(std::memory_order_acquire);
 	const std::size_t space = m_capacity - (write - read);
-	const std::size_t writable = std::min(count, space);
+	const std::size_t writable = (std::min)(count, space);
 	for (std::size_t i = 0; i < writable; ++i) {
 		const std::size_t slot = ((write + i) & (m_capacity - 1)) * Channels;
 		m_samples[slot] = frames[i * Channels];
@@ -78,7 +85,7 @@ std::size_t AudioRing::read(std::int16_t* frames, std::size_t count)
 	if (!frames || count == 0) return 0;
 	const std::size_t read = m_read.load(std::memory_order_relaxed);
 	const std::size_t write = m_write.load(std::memory_order_acquire);
-	const std::size_t readable = std::min(count, write - read);
+	const std::size_t readable = (std::min)(count, write - read);
 	for (std::size_t i = 0; i < readable; ++i) {
 		const std::size_t slot = ((read + i) & (m_capacity - 1)) * Channels;
 		frames[i * Channels] = m_samples[slot];

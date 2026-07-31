@@ -12,15 +12,19 @@
 
 ## Engineering contracts
 
-- [Forward plan](../plan.md)
+- [Design document for the current pass](../plan.md) — rewritten per pass, not a
+  standing roadmap
 - [Current implementation status](../DEVELOPMENT_STATUS.md)
 - [SNES frontend contract](SNES_FRONTEND.md)
 - [Durable working state](../SCRATCH.MD)
 
 ## Historical context
 
+- [July 23 engineering handoff](HANDOFF_2026-07-23.md)
 - [July 26 engineering handoff](HANDOFF_2026-07-26.md)
 - [FocusWriter upstream changelog](UPSTREAM_CHANGELOG.md)
 
-The dated handoff is history, not the public project entry point. Current
-decisions belong in `SCRATCH.MD`, `plan.md`, and `DEVELOPMENT_STATUS.md`.
+The dated handoffs are history, not the public project entry point, and their
+figures are snapshots — the July 26 handoff's `ctest` counts were correct for
+July 26 and are not the current expectation. Current decisions belong in
+`SCRATCH.MD` and `DEVELOPMENT_STATUS.md`.

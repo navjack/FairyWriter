@@ -10,9 +10,6 @@
 /release*/
 /AppDir/
 /Data/
-/FairyWriter/
-/fairywriter-demo.webm
-/mariastory.odt
 /third_party/snesrecomp/
 *.app/
 FairyWriter.app.*
@@ -23,9 +20,6 @@ FairyWriter.app.*
 *.sfc
 *.smc
 *.srm
-
-# Personal-use visual references that are not cleared for publication.
-/ideas/
 
 # IDE and compiler byproducts
 .cache/

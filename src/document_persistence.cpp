@@ -493,6 +493,77 @@ PersistenceSettings PersistenceSettings::load(QSettings& settings)
 	return result;
 }
 
+SoundSettings SoundSettings::load(QSettings& settings)
+{
+	SoundSettings result;
+	result.typing_blips = settings.value(QStringLiteral("Sound/TypingBlips"), true).toBool();
+	const QString wave = settings.value(QStringLiteral("Sound/Waveform"),
+		QStringLiteral("square")).toString();
+	if (wave == QLatin1String("triangle")) result.waveform = Waveform::Triangle;
+	else if (wave == QLatin1String("noise")) result.waveform = Waveform::Noise;
+	else result.waveform = Waveform::Square;
+	// Each bound is the width of the register field the value lands in. A value
+	// wider than its field would not be "loud" or "fast" -- it would overflow
+	// into the neighbouring field and change a different parameter.
+	const auto clamped = [&settings](const char* key, int fallback, int high) {
+		return static_cast<std::uint8_t>(qBound(0,
+			settings.value(QString::fromLatin1(key), fallback).toInt(), high));
+	};
+	result.attack = clamped("Sound/Attack", 15, 15);
+	result.decay = clamped("Sound/Decay", 5, 7);
+	result.sustain_level = clamped("Sound/SustainLevel", 3, 7);
+	result.sustain_rate = clamped("Sound/SustainRate", 30, 31);
+	result.release = clamped("Sound/Release", 20, 31);
+	result.pitch = clamped("Sound/Pitch", 16, 63);
+	result.volume = clamped("Sound/Volume", 0x60, 0x7f);
+	result.echo_volume = clamped("Sound/EchoVolume", 0, 0x7f);
+	// Four bits, and not merely for tidiness: the delay is how much ARAM the
+	// echo unit writes to, so a wider value would run the buffer past the
+	// region the cartridge reserved for it and into the running driver.
+	result.echo_delay = clamped("Sound/EchoDelay", 2, 15);
+	result.echo_feedback = clamped("Sound/EchoFeedback", 0, 0x7f);
+	return result;
+}
+
+void SoundSettings::save(QSettings& settings) const
+{
+	settings.setValue(QStringLiteral("Sound/TypingBlips"), typing_blips);
+	QString wave = QStringLiteral("square");
+	if (waveform == Waveform::Triangle) wave = QStringLiteral("triangle");
+	else if (waveform == Waveform::Noise) wave = QStringLiteral("noise");
+	settings.setValue(QStringLiteral("Sound/Waveform"), wave);
+	settings.setValue(QStringLiteral("Sound/Attack"), static_cast<int>(attack));
+	settings.setValue(QStringLiteral("Sound/Decay"), static_cast<int>(decay));
+	settings.setValue(QStringLiteral("Sound/SustainLevel"), static_cast<int>(sustain_level));
+	settings.setValue(QStringLiteral("Sound/SustainRate"), static_cast<int>(sustain_rate));
+	settings.setValue(QStringLiteral("Sound/Release"), static_cast<int>(release));
+	settings.setValue(QStringLiteral("Sound/Pitch"), static_cast<int>(pitch));
+	settings.setValue(QStringLiteral("Sound/Volume"), static_cast<int>(volume));
+	settings.setValue(QStringLiteral("Sound/EchoVolume"), static_cast<int>(echo_volume));
+	settings.setValue(QStringLiteral("Sound/EchoDelay"), static_cast<int>(echo_delay));
+	settings.setValue(QStringLiteral("Sound/EchoFeedback"), static_cast<int>(echo_feedback));
+	settings.sync();
+}
+
+std::uint8_t SoundSettings::adsr1() const noexcept
+{
+	// Bit 7 selects the ADSR envelope over the GAIN program.
+	return static_cast<std::uint8_t>(0x80 | ((decay & 0x07) << 4) | (attack & 0x0f));
+}
+
+std::uint8_t SoundSettings::adsr2() const noexcept
+{
+	return static_cast<std::uint8_t>(((sustain_level & 0x07) << 5) | (sustain_rate & 0x1f));
+}
+
+std::uint8_t SoundSettings::gain() const noexcept
+{
+	// $a0 is custom mode, exponential decrease -- the release shape a
+	// percussive blip wants. Only read once ADSR1 bit 7 is cleared, which is
+	// how the cartridge ends a note early.
+	return static_cast<std::uint8_t>(0xa0 | (release & 0x1f));
+}
+
 void PersistenceSettings::save(QSettings& settings) const
 {
 	settings.setValue(QStringLiteral("Persistence/AutosaveMode"),
@@ -723,6 +794,10 @@ DocumentPersistence::DocumentPersistence(DocumentEngine& engine,
 		QSettings settings = persistenceSettings();
 		return PersistenceSettings::load(settings);
 	});
+	m_sound = m_worker->run([] {
+		QSettings settings = persistenceSettings();
+		return SoundSettings::load(settings);
+	});
 }
 
 DocumentPersistence::~DocumentPersistence() = default;
@@ -732,6 +807,16 @@ void DocumentPersistence::setSettings(const PersistenceSettings& settings)
 	m_settings = settings;
 	if (m_settings.interval_minutes == 0) m_settings.interval_minutes = 1;
 	const PersistenceSettings committed = m_settings;
+	m_worker->run([committed] {
+		QSettings persistent = persistenceSettings();
+		committed.save(persistent);
+	});
+}
+
+void DocumentPersistence::setSoundSettings(const SoundSettings& settings)
+{
+	m_sound = settings;
+	const SoundSettings committed = m_sound;
 	m_worker->run([committed] {
 		QSettings persistent = persistenceSettings();
 		committed.save(persistent);

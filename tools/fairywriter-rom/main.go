@@ -27,6 +27,13 @@ const (
 	// it to bank 1 would silently read program bytes instead. Everything else is
 	// either DMA'd (bank supplied via $4304) or read with `LDA.l` (bank in the
 	// operand), so both follow their offsets across the boundary.
+	// The APU-side image: sample directory, BRR waveforms, DSP init table and
+	// SPC700 driver, uploaded to ARAM at boot. It lives in bank 0's slack rather
+	// than bank 1 because bank 1 has under 1.5 KiB left before the reserved
+	// header window while bank 0 has roughly 16 KiB, and the image is read one
+	// byte at a time with an absolute-indexed load, so its bank is irrelevant.
+	spcImageOffset = 0x7000
+
 	scanMapOffset = 0x7eb0 // 256 bytes, ending exactly at the v3 extended header
 
 	// Bank 1 is data. It opens at 0x8200 rather than 0x8000 to clear the first
@@ -45,13 +52,14 @@ const (
 	saveRootTitleOffset   = 0x9020 // 30
 	saveFolderTitleOffset = 0x903e // 30
 	filenameOffset        = 0x9080 // 240
+	soundOffset           = 0x9180 // 240
 	// Tiles are last because they are the only variable-size blob, so the fixed
 	// pages above keep stable offsets. Capacity here is 0xffb0-tilesOffset =
 	// 28208 bytes = 881 tiles, up from the 554 that exactly filled the old
 	// layout. The hard ceiling beyond that is VRAM, not ROM: BG1 plus OBJ cannot
 	// address more than 1024 4bpp tiles however large the cartridge gets. New
 	// static planes come out of this budget by shifting tilesOffset up.
-	tilesOffset = 0x9180
+	tilesOffset = 0x9270
 	// bank1Limit is where bank 1's data has to stop: the start of the reserved
 	// header-scoring window at $ffb0. See the reserved-window check in build().
 	bank1Limit = 0xffb0
@@ -75,7 +83,460 @@ const (
 	// to a no-op (attribute/tile-id bits it would set are simply never
 	// touched), independent of proofingVisualsEnabled above.
 	richStyleVisualsEnabled = true
+
+	// Audio. The DSP's sample directory is addressed by page number, so the
+	// uploaded image has to begin on a 256-byte ARAM boundary and its directory
+	// has to be the first thing in it.
+	aramImageBase = 0x0200
+
+	// Starting voice parameters. Every one of these is a real S-DSP register
+	// field, so the settings menu that follows is editing hardware directly
+	// rather than a host-side model of it.
+	//
+	//	ADSR1 = EDDD AAAA -- enable, 3-bit decay rate, 4-bit attack rate
+	//	ADSR2 = LLLR RRRR -- 3-bit sustain level, 5-bit sustain rate
+	//
+	// $df is enable + decay 5 + attack 15 (instant); $7e is sustain level 3 with
+	// sustain rate 30. Measured on the real DSP, that is a 62 ms blip: long
+	// enough to read as a pitch rather than a click, and finished before the
+	// next keystroke even at twenty characters a second. Rate index 31 is the
+	// fastest and 0 freezes the envelope entirely, so higher is shorter.
+	defaultVoiceVolume = 0x60
+	// 2.12 fixed point: $1000 plays the sample at its native 32 kHz, and the
+	// waveforms below are one 16-sample cycle, so this is a 2 kHz tone.
+	defaultVoicePitch = 0x1000
+	defaultVoiceAdsr1 = 0xdf
+	defaultVoiceAdsr2 = 0x7e
+	// GAIN's 5-bit rate, used for the release stage after the driver's note-off.
+	defaultVoiceRelease = 20
+	// Voice 0 source numbers, indexing the directory written by spcImage.
+	voiceSourceSquare   = 0
+	voiceSourceTriangle = 1
+
+	// SPC-side capture. Two contiguous 32-byte ARAM buffers, waveform then
+	// envelope. $0400 rather than $0300: the driver outgrew 189 bytes when the
+	// capture engine landed and its own code ran into the buffer, so the
+	// envelope trace came back full of SPC700 instructions. The Go test below
+	// now asserts the gap instead of trusting it.
+	spcCaptureBase    = 0x0400
+	spcCaptureSamples = 32
+	// Timer 0 divides the 1.024 MHz APU clock by 128, giving 8 kHz; a target of
+	// 8 makes each tick one millisecond.
+	spcTimerTarget = 8
+	// How long the note is held before the driver performs its note-off. The
+	// envelope's release stage only exists because of that switch.
+	spcNoteHoldMs = 24
+	// One envelope sample every 3 ms, so 32 samples span ~96 ms -- the whole
+	// envelope including its release.
+	spcEnvelopeTickMs = 3
+
+	// The echo unit is the S-DSP's one real effect: a delay line whose taps run
+	// through an 8-tap FIR, which is what makes it a reverb rather than a plain
+	// repeat. (There is no chorus unit on this chip; the nearest thing is pitch
+	// modulation, which is a different feature entirely.)
+	//
+	// It writes to ARAM on its own, EDL * 2048 bytes starting at ESA's page, so
+	// the buffer is real memory that has to be reserved. Page $10 puts it at
+	// $1000, which at the maximum delay of 15 runs to $87ff -- clear of the
+	// driver image at $0200 and of the boot ROM at $ffc0. Getting this wrong
+	// does not sound bad, it overwrites the program the SPC700 is executing.
+	echoBufferPage    = 0x10
+	echoBufferMaxEnd  = echoBufferPage*0x100 + 15*2048
+	defaultEchoVolume = 0
+	defaultEchoDelay  = 2
+	defaultEchoFeed   = 0
 )
+
+// BRR block header flags. `end` without `loop` releases the voice when the
+// block finishes; both together loop to the directory's loop pointer forever.
+const (
+	brrEnd  = 0x01
+	brrLoop = 0x02
+)
+
+// brrBlock packs sixteen 4-bit samples into one 9-byte BRR block.
+//
+// Filter 0 is deliberate. Filters 1-3 are linear predictors whose accumulator
+// carries from one block into the next, so a block that loops to itself decodes
+// differently on its second pass than its first and the "oscillator" drifts.
+// With filter 0 the decode is just (nibble << shift) >> 1, each block is
+// self-contained, and one block can loop forever as a stable waveform.
+func brrBlock(nibbles []int8, shift byte, flags byte) []byte {
+	if len(nibbles) != 16 {
+		panic(fmt.Sprintf("a BRR block holds exactly 16 samples, got %d", len(nibbles)))
+	}
+	if shift > 12 {
+		panic(fmt.Sprintf("BRR shift %d selects the decoder's saturating path, not an amplitude", shift))
+	}
+	block := make([]byte, 9)
+	block[0] = shift<<4 | (flags & 0x03)
+	for i, n := range nibbles {
+		if n < -8 || n > 7 {
+			panic(fmt.Sprintf("BRR sample %d (%d) is outside the signed 4-bit range", i, n))
+		}
+		nibble := byte(n) & 0x0f
+		if i%2 == 0 {
+			block[1+i/2] |= nibble << 4
+		} else {
+			block[1+i/2] |= nibble
+		}
+	}
+	return block
+}
+
+// brrDecodeFilter0 is the decoder's own arithmetic for filter 0, kept here so
+// the waveform tests assert against the real thing rather than a restatement.
+func brrDecodeFilter0(block []byte) []int16 {
+	shift := int(block[0] >> 4)
+	out := make([]int16, 16)
+	for i := 0; i < 16; i++ {
+		s := int(block[1+i/2])
+		if i%2 == 0 {
+			s >>= 4
+		} else {
+			s &= 0x0f
+		}
+		if s > 7 {
+			s -= 16
+		}
+		out[i] = int16((s << shift) >> 1)
+	}
+	return out
+}
+
+// squareWave is one full cycle in sixteen samples. The envelope, not the
+// waveform, is what makes this a blip: the oscillator loops until the release
+// stage silences it.
+func squareWave() []int8 {
+	wave := make([]int8, 16)
+	for i := range wave {
+		if i < 8 {
+			wave[i] = 7
+		} else {
+			wave[i] = -7
+		}
+	}
+	return wave
+}
+
+// triangleWave rises and falls across the same sixteen samples, giving the
+// softer, rounder alternative to the square's hard edges.
+func triangleWave() []int8 {
+	return []int8{1, 3, 5, 7, 7, 5, 3, 1, -1, -3, -5, -7, -7, -5, -3, -1}
+}
+
+// dspInitTable is the register state the driver installs before it will accept
+// a command: (register, value) pairs, terminated by $ff. Writing it as data
+// rather than code keeps the driver itself down to a poll loop.
+func dspInitTable() []byte {
+	pairs := []struct{ reg, val byte }{
+		// Order matters. ESA and EDL name the ARAM the echo unit writes to, so
+		// they are set before FLG's echo-write-disable bit is cleared. Enabling
+		// writes first would let the DSP scribble at whatever page ESA happened
+		// to hold out of reset -- which is the driver's own memory.
+		{0x6d, echoBufferPage},   // ESA: echo buffer page
+		{0x7d, defaultEchoDelay}, // EDL: delay, in 2048-byte steps
+		// The 8-tap FIR the echo runs through, and the reason this unit is a
+		// reverb rather than a plain repeat. C0 alone at unity is a flat
+		// passthrough: a clean echo. Colouring it into a room is what the other
+		// seven taps are for, and that is a tuning job, not a guess.
+		{0x0f, 0x7f}, {0x1f, 0x00}, {0x2f, 0x00}, {0x3f, 0x00},
+		{0x4f, 0x00}, {0x5f, 0x00}, {0x6f, 0x00}, {0x7f, 0x00},
+		{0x2c, defaultEchoVolume},              // EVOLL
+		{0x3c, defaultEchoVolume},              // EVOLR
+		{0x0d, defaultEchoFeed},                // EFB
+		{0x4d, 0x01},                           // EON: voice 0 feeds the echo
+		{0x6c, 0x00},                           // FLG: echo writes on, not muted, not reset
+		{0x5d, byte(aramImageBase >> 8)},       // DIR: sample directory page
+		{0x0c, 0x7f},                           // MVOLL
+		{0x1c, 0x7f},                           // MVOLR
+		{0x2d, 0x00},                           // PMON
+		{0x3d, 0x00},                           // NON: voice 0 plays its sample rather than the noise source
+		{0x5c, 0x00},                           // KOF: a held key-off outranks key-on, so clear it once here
+		{0x4c, 0x00},                           // KON
+		{0x00, defaultVoiceVolume},             // V0VOLL
+		{0x01, defaultVoiceVolume},             // V0VOLR
+		{0x02, byte(defaultVoicePitch & 0xff)}, // V0PITCHL
+		{0x03, byte(defaultVoicePitch >> 8)},   // V0PITCHH
+		{0x04, voiceSourceSquare},              // V0SRCN
+		{0x05, defaultVoiceAdsr1},
+		{0x06, defaultVoiceAdsr2},
+		// V0GAIN is what the envelope falls back to when the driver performs its
+		// note-off, so it is the release stage. $00 is NOT "unused" -- it is
+		// direct mode at level zero, i.e. an instant mute, which made the note
+		// vanish the moment it was released instead of decaying. $a0 selects
+		// custom mode, exponential decrease, at the default release rate.
+		{0x07, 0xa0 | defaultVoiceRelease},
+	}
+	table := make([]byte, 0, len(pairs)*2+1)
+	for _, pair := range pairs {
+		table = append(table, pair.reg, pair.val)
+	}
+	return append(table, 0xff)
+}
+
+// spcDriver assembles the SPC700 program. It installs the DSP state from
+// `tableAddr`, then does nothing but watch port 0 for a change and act on it.
+//
+// The protocol is two commands and no state machine:
+//
+//	port 1 = 0    key on voice 0 (the blip)
+//	port 1 != 0   write port 3 to the DSP register named by port 2
+//
+// with port 0 carrying a counter whose only meaning is "this is a new command".
+// Nine settings are nine register writes, so nothing about the driver has to
+// change when the sound menu lands.
+// `base` is the ARAM address the driver is loaded at. The main loop is now long
+// enough that its closing jump exceeds the SPC700's +/-128 relative branch
+// range, so it uses an absolute JMP -- which has to know where it lives.
+func spcDriver(tableAddr, base uint16) []byte {
+	var p []byte
+	b := func(v ...byte) { p = append(p, v...) }
+	branch := func(at, target int) {
+		delta := target - (at + 2)
+		if delta < -128 || delta > 127 {
+			panic(fmt.Sprintf("SPC700 branch at %#x to %#x is out of range (delta %d); "+
+				"use jmpTo for a long jump", at, target, delta))
+		}
+		p[at+1] = byte(int8(delta))
+	}
+	// JMP !abs, for the jumps the relative range cannot reach.
+	jmpTo := func(target int) {
+		addr := base + uint16(target)
+		b(0x5f, byte(addr), byte(addr>>8))
+	}
+	// Direct-page addressing takes its page from the P flag, and everything
+	// this driver touches -- its scratch at $00-$06 and the APU registers at
+	// $f1-$f7 -- is on page zero.
+	b(0x20) // CLRP
+
+	b(0xcd, 0x00) // MOV X, #$00
+	initLoop := len(p)
+	b(0xf5, byte(tableAddr), byte(tableAddr>>8)) // MOV A, !table+X
+	b(0x68, 0xff)                                // CMP A, #$ff
+	beqInitDone := len(p)
+	b(0xf0, 0)
+	b(0xc4, 0xf2)                                // MOV $f2, A  (DSP address)
+	b(0x3d)                                      // INC X
+	b(0xf5, byte(tableAddr), byte(tableAddr>>8)) // MOV A, !table+X
+	b(0xc4, 0xf3)                                // MOV $f3, A  (DSP data)
+	b(0x3d)                                      // INC X
+	braInitLoop := len(p)
+	b(0x2f, 0)
+	branch(braInitLoop, initLoop)
+	initDone := len(p)
+	branch(beqInitDone, initDone)
+
+	// Timer 0 gives the envelope a real millisecond clock. Its base is
+	// 1.024 MHz/128 = 8 kHz, so a target of 8 ticks at 1 kHz. Enabling it writes
+	// $f1 with bits 4 and 5 CLEAR on purpose: either one set would clear the
+	// input ports and swallow whatever command is in flight.
+	b(0x8f, spcTimerTarget, 0xfa) // MOV $fa, #target -- timer 0, envelope sampler
+	b(0x8f, spcTimerTarget, 0xfb) // MOV $fb, #target -- timer 1, note age
+	b(0x8f, 0x03, 0xf1)           // MOV $f1, #$03 -- both timers, ports untouched
+	// $00 last sequence, $01 capture phase, $02 sample index, $03 tick
+	// accumulator, $04 note age in ticks, $05 note-sounding flag.
+	b(0xe4, 0xf4) // seed the sequence from the port, not from zero: the upload
+	b(0xc4, 0x00) // leaves its own terminator index sitting in port 0.
+	b(0x8f, 0x00, 0x01)
+	b(0x8f, 0x00, 0x02)
+	b(0x8f, 0x00, 0x03)
+	b(0x8f, 0x00, 0x04)
+	b(0x8f, 0x00, 0x05)
+
+	loop := len(p)
+
+	// --- envelope clock: age the sounding note and release it ---------------
+	// A blip is one-shot, so nothing ever sends a key-off. Without this the
+	// voice runs attack -> decay -> sustain-rate fade and the GAIN release rate
+	// is never read at all, which made the RELEASE control inert. Clearing
+	// ADSR1 bit 7 mid-note is the hardware's own note-off: the envelope source
+	// switches to the GAIN program, which is preloaded with an exponential
+	// decrease. That is what gives the envelope a real release stage.
+	b(0xe4, 0xfd) // MOV A, $fd -- timer 0 ticks since last read (clears on read)
+	b(0x60)       // CLRC
+	b(0x84, 0x03) // ADC A, $03
+	b(0xc4, 0x03) // MOV $03, A
+	b(0xe4, 0x05) // MOV A, $05 -- is a note sounding?
+	beqNoNote := len(p)
+	b(0xf0, 0)
+	// $06, not $03. $03 is the envelope sampler's own accumulator and is reset
+	// every time it takes a sample; sharing it made the note age jump in
+	// step with the sampler instead of with the clock.
+	b(0xe4, 0xfe) // MOV A, $fe -- timer 1, an independent millisecond source
+	b(0x60)       // CLRC
+	b(0x84, 0x04) // ADC A, $04
+	b(0xc4, 0x04) // MOV $04, A -- note age
+	b(0x68, spcNoteHoldMs)
+	bccNoNote := len(p)
+	b(0x90, 0)
+	// Note-off: read ADSR1 back, clear bit 7, write it.
+	b(0x8f, 0x05, 0xf2) // MOV $f2, #$05  (V0ADSR1)
+	b(0xe4, 0xf3)       // MOV A, $f3
+	b(0x28, 0x7f)       // AND A, #$7f
+	b(0xc4, 0xf3)       // MOV $f3, A
+	b(0x8f, 0x00, 0x05) // note no longer sounding
+	noNote := len(p)
+	branch(beqNoNote, noNote)
+	branch(bccNoNote, noNote)
+
+	// --- capture engine ----------------------------------------------------
+	// Sampling a DSP register once per video frame is useless: the envelope is
+	// ~60 ms (under four frames) and the waveform is a couple of kHz. So the
+	// capture runs here, at the SPC's own clock, into ARAM. Phase 1 reads OUTX
+	// every loop pass -- roughly 20 us apart, about one cycle of the waveform
+	// across 32 samples. Phase 2 reads ENVX on a millisecond tick so 32 samples
+	// span the whole envelope. Both are real reads of live DSP registers.
+	b(0xe4, 0x01) // MOV A, $01 -- capture phase
+	beqNoCapture := len(p)
+	b(0xf0, 0)
+	b(0x68, 0x01)
+	bneCaptureSlow := len(p)
+	b(0xd0, 0)
+	// Phase 1: OUTX, as fast as the loop runs.
+	b(0x8f, 0x09, 0xf2) // MOV $f2, #$09  (V0OUTX)
+	b(0xe4, 0xf3)       // MOV A, $f3
+	b(0xeb, 0x02)       // MOV Y, $02
+	b(0xd6, byte(spcCaptureBase&0xff), byte(spcCaptureBase>>8))
+	b(0xab, 0x02) // INC $02
+	b(0xe4, 0x02)
+	b(0x68, spcCaptureSamples)
+	bccNoCapture1 := len(p)
+	b(0x90, 0)
+	// Fast half done: switch to the envelope half, whose buffer follows it.
+	// The index has to be rewound too -- leaving it at 32 makes the envelope
+	// phase read "already finished" on its first pass and it takes no samples
+	// at all, which is exactly how the trace came back empty.
+	b(0x8f, 0x02, 0x01) // phase = 2
+	b(0x8f, 0x00, 0x02) // sample index = 0
+	b(0x8f, 0x00, 0x03) // reset the tick accumulator
+	braNoCapture := len(p)
+	b(0x2f, 0)
+	captureSlow := len(p)
+	branch(bneCaptureSlow, captureSlow)
+	// Phase 2: ENVX, one sample per spcEnvelopeTickMs milliseconds.
+	b(0xe4, 0x03)
+	b(0x68, spcEnvelopeTickMs)
+	bccNoCapture2 := len(p)
+	b(0x90, 0)
+	b(0x8f, 0x00, 0x03) // consume the accumulated ticks
+	b(0x8f, 0x08, 0xf2) // MOV $f2, #$08  (V0ENVX)
+	b(0xe4, 0xf3)       // MOV A, $f3
+	b(0xeb, 0x02)       // MOV Y, $02
+	b(0xd6, byte((spcCaptureBase+spcCaptureSamples)&0xff), byte((spcCaptureBase+spcCaptureSamples)>>8))
+	b(0xab, 0x02)
+	b(0xe4, 0x02)
+	b(0x68, spcCaptureSamples)
+	bccNoCapture3 := len(p)
+	b(0x90, 0)
+	b(0x8f, 0x00, 0x01) // capture complete
+	noCapture := len(p)
+	branch(beqNoCapture, noCapture)
+	branch(bccNoCapture1, noCapture)
+	branch(bccNoCapture2, noCapture)
+	branch(bccNoCapture3, noCapture)
+	branch(braNoCapture, noCapture)
+
+	// --- command channel ---------------------------------------------------
+	b(0xe4, 0xf4) // MOV A, $f4  (port 0: sequence)
+	b(0x64, 0x00) // CMP A, $00
+	// No new command: straight back to the top. Inverted-condition trampoline
+	// because `loop` is far past the relative branch range now.
+	bneCommand := len(p)
+	b(0xd0, 0)
+	jmpTo(loop)
+	command := len(p)
+	branch(bneCommand, command)
+	b(0xc4, 0x00) // MOV $00, A
+	b(0xe4, 0xf5) // MOV A, $f5  (port 1: command)
+	bneCmdNotBlip := len(p)
+	b(0xd0, 0)
+	keyOn := len(p)
+	// Restore the ADSR envelope source before keying on. The previous note's
+	// release cleared bit 7 to hand the envelope to GAIN; leaving it clear
+	// would make every note after the first start in release.
+	b(0x8f, 0x05, 0xf2) // MOV $f2, #$05
+	b(0xe4, 0xf3)
+	b(0x08, 0x80) // OR A, #$80
+	b(0xc4, 0xf3)
+	// KON is a latch the DSP clears itself once it polls it, so one write is
+	// exactly one key-on.
+	b(0x8f, 0x4c, 0xf2) // MOV $f2, #$4c
+	b(0x8f, 0x01, 0xf3) // MOV $f3, #$01
+	b(0x8f, 0x00, 0x04) // note age = 0
+	b(0x8f, 0x01, 0x05) // note sounding
+	braAck := len(p)
+	b(0x2f, 0)
+	cmdNotBlip := len(p)
+	branch(bneCmdNotBlip, cmdNotBlip)
+	b(0x68, 0x02)
+	beqCmdCapture := len(p)
+	b(0xf0, 0)
+	b(0x68, 0x03)
+	beqCmdRead := len(p)
+	b(0xf0, 0)
+	// Command 1 (or anything else): write port 3 to the DSP register in port 2.
+	b(0xe4, 0xf6)
+	b(0xc4, 0xf2)
+	b(0xe4, 0xf7)
+	b(0xc4, 0xf3)
+	braAck2 := len(p)
+	b(0x2f, 0)
+	// Command 2: audition and capture. One note produces both traces -- the
+	// fast half catches the waveform at note start, the slow half follows the
+	// envelope right through its release.
+	cmdCapture := len(p)
+	branch(beqCmdCapture, cmdCapture)
+	b(0x8f, 0x00, 0x02) // sample index = 0
+	b(0x8f, 0x00, 0x03) // tick accumulator = 0
+	b(0x8f, 0x01, 0x01) // start at the fast phase
+	braKeyOn := len(p)
+	b(0x2f, 0)
+	branch(braKeyOn, keyOn)
+	// Command 3: hand back capture byte `port 2` on out-port 1. Indices 0-31
+	// are the waveform, 32-63 the envelope; the two buffers are contiguous so
+	// one indexed read covers both.
+	cmdRead := len(p)
+	branch(beqCmdRead, cmdRead)
+	b(0xeb, 0xf6) // MOV Y, $f6
+	b(0xf6, byte(spcCaptureBase&0xff), byte(spcCaptureBase>>8))
+	b(0xc4, 0xf5) // MOV $f5, A -- out-port 1
+	// Report whether a capture is still running, so the cartridge can tell a
+	// stale buffer from a finished one without guessing at timing.
+	b(0xe4, 0x01)
+	b(0xc4, 0xf6) // MOV $f6, A -- out-port 2
+	ack := len(p)
+	branch(braAck, ack)
+	branch(braAck2, ack)
+	b(0xe4, 0x00) // MOV A, $00
+	b(0xc4, 0xf4) // MOV $f4, A -- echo the sequence
+	jmpTo(loop)
+	return p
+}
+
+// spcImage assembles the whole APU-side image as one contiguous block starting
+// at aramImageBase, and returns it with the ARAM address of the driver's entry
+// point. One block means one upload transaction through the boot ROM.
+func spcImage() ([]byte, uint16) {
+	// The directory comes first because DIR names a page, not an address.
+	image := make([]byte, 8)
+	squareAddr := uint16(aramImageBase + len(image))
+	image = append(image, brrBlock(squareWave(), 12, brrLoop|brrEnd)...)
+	triangleAddr := uint16(aramImageBase + len(image))
+	image = append(image, brrBlock(triangleWave(), 12, brrLoop|brrEnd)...)
+	// Each entry is a start pointer then a loop pointer; a single-block
+	// waveform loops back to its own start.
+	binary.LittleEndian.PutUint16(image[0:], squareAddr)
+	binary.LittleEndian.PutUint16(image[2:], squareAddr)
+	binary.LittleEndian.PutUint16(image[4:], triangleAddr)
+	binary.LittleEndian.PutUint16(image[6:], triangleAddr)
+
+	tableAddr := uint16(aramImageBase + len(image))
+	image = append(image, dspInitTable()...)
+	entry := uint16(aramImageBase + len(image))
+	image = append(image, spcDriver(tableAddr, entry)...)
+	return image, entry
+}
 
 type canvas [screenH][screenW]byte
 
@@ -275,7 +736,7 @@ func helpPlane() []byte {
 		"  CTRL Z UNDO    CTRL Y REDO",
 		"  CTRL B I U   BOLD ITAL UNDL",
 		"  CTRL C X V   COPY CUT PASTE",
-		"  F3 SAVE SET    F4 FIND",
+		"  F3 SAVE  F4 FIND  F5 SOUND",
 		"  DRAG THE BAR ABOVE TO SCROLL",
 		"  F1 OR BACK RETURNS",
 	)
@@ -292,6 +753,94 @@ func settingsPlane() []byte {
 		"  LEFT RIGHT CHANGE",
 		"  F3 OR BACK RETURNS",
 	)
+}
+
+// The typing-blip voice editor, reached with F5.
+//
+// Nine parameters do not fit one per row: textPlane is capped at eight rows by
+// the 8-bit copy loop every static plane shares, and widening that loop is the
+// exact register-width change behind three separate defects in this file. So the
+// fields sit in two 15-column halves and the selection walks them in reading
+// order. Every label below is positioned to leave its value cell clear; the
+// geometry is derived in soundFields rather than restated, so the text and the
+// addresses cannot drift apart.
+func soundPlane() []byte {
+	// Only the title and the scope captions are static. Every field row is
+	// composed at render time from soundFields, so the labels cannot drift out
+	// of step with the values beside them.
+	return textPlane(
+		"       SPC700 SOUND SHAPER",
+	)
+}
+
+// soundField describes one editable parameter: where its value is drawn, which
+// cartridge state byte holds it, and what it is allowed to hold. The order is
+// the order the selection walks and matches the host's SoundSettings payload.
+type soundField struct {
+	name    string
+	state   uint16 // cartridge state byte in $03xx
+	high    byte   // inclusive maximum; the width of the register field it lands in
+	numeric bool   // false for the two fields drawn as words
+}
+
+// soundFields is the single authority on the editor's layout and limits.
+//
+// Twelve fields fill rows 1-6 exactly, which is why echo has no separate on/off
+// switch: an echo volume of zero is off, and spending a thirteenth slot to say
+// so would cost the footer hint row.
+var soundFields = []soundField{
+	{"BLIPS", 0x0372, 1, false},
+	{"WAVE", 0x0373, 2, false},
+	{"ATTACK", 0x0374, 15, true},
+	{"DECAY", 0x0375, 7, true},
+	{"SUSTAIN", 0x0376, 7, true},
+	{"SUS RATE", 0x0377, 31, true},
+	{"RELEASE", 0x0378, 31, true},
+	{"PITCH", 0x0379, 63, true},
+	{"VOLUME", 0x037a, 127, true},
+	{"ECHO VOL", 0x037b, 127, true},
+	{"ECHO DLY", 0x037c, 15, true},
+	{"ECHO FB", 0x037d, 127, true},
+}
+
+// Plane geometry. One field per row across rows 1-12, each row using the full
+// 30 columns: label, then a 12-cell slider, then the value. Two columns were
+// tried first and could not work -- a 15-column half leaves about three cells
+// for a bar once the label and value are placed, which is too coarse to drag.
+// Rows 13-16 are the two scopes.
+const (
+	soundPlaneBase   = 0x1000 // where the plane is composed in WRAM
+	soundLabelColumn = 2
+	soundLabelWidth  = 8
+	soundSliderCol   = 12
+	soundSliderCells = 12 // 96 pixels of drag resolution
+	soundValueCol    = 25
+	soundWaveRow     = 13 // waveform scope, two rows
+	soundEnvRow      = 15 // envelope scope, two rows
+	soundScopeRows   = 2
+	soundFilledCell  = '#'
+	soundEmptyCell   = '-'
+	// Where the cartridge parks the capture it streamed off the SPC700. $1d00
+	// is the one page in the 8 KiB the cartridge can reach that nothing else
+	// touches; the plane itself owns $1000-$13ff.
+	soundWaveBuffer = 0x1d00
+	soundEnvBuffer  = 0x1d20
+)
+
+func soundFieldRow(index int) int { return index + 1 }
+
+func soundCell(row, column int) uint16 {
+	return uint16(soundPlaneBase + row*documentPlaneColumns + column)
+}
+
+// soundValueCell is where a field's three-digit value is drawn.
+func soundValueCell(index int) uint16 {
+	return soundCell(soundFieldRow(index), soundValueCol)
+}
+
+// soundSelectionCell is where the '>' cursor sits and the row highlight begins.
+func soundSelectionCell(index int) uint16 {
+	return soundCell(soundFieldRow(index), 0)
 }
 
 func saveFormatPlane() []byte {
@@ -423,6 +972,19 @@ func glyphShapePixels(ch byte, style int) []byte {
 		// under the insertion point and is restored by the next redraw.
 		for row := 0; row < 8; row++ {
 			pixels[row*8], pixels[row*8+1] = 14, 14
+		}
+		return pixels
+	}
+	// Codes 1-8 are the scope's bar column, filled from the bottom to that many
+	// pixels. Tile ids 0-127 are ASCII, so these ride along in the base glyph
+	// upload and the draw code reaches them by writing the byte itself -- no
+	// new tile ids, no extra DMA. Control codes are free: nothing renders them
+	// as text, and the plane is composed by the cartridge, not by host bytes.
+	if ch >= 1 && ch <= 8 && style == 0 {
+		for row := 8 - int(ch); row < 8; row++ {
+			for column := 1; column < 7; column++ {
+				pixels[row*8+column] = 15
+			}
 		}
 		return pixels
 	}
@@ -653,8 +1215,12 @@ func xbandScanMap() [256]byte {
 		0x05: 0x18, // F1 opens the cartridge-owned menu.
 		0x04: 0x19, // F3 opens Save and Recovery settings.
 		0x0c: 0x1d, // F4 opens the cartridge-owned find screen.
+		0x03: 0x1f, // F5 opens the cartridge-owned typing-sound plane.
 		// Key codes 0x11-0x1b are taken by the extended cursor commands, F1 and
-		// F3; 0x1c and 0x1d are used by F2 and F4.
+		// F3; 0x1c and 0x1d are used by F2 and F4. 0x1e is NOT free either: the
+		// filename dialog's mouse handler returns it as a "refocus the name
+		// field" sentinel, so a key mapped to it fires that instead. F5 uses
+		// 0x1f, the last code below the 0x20 printable threshold.
 		0x06: 0x1c, // F2 opens the cartridge-owned help card.
 		0x1c: 'a', 0x32: 'b', 0x21: 'c', 0x23: 'd', 0x24: 'e', 0x2b: 'f',
 		0x34: 'g', 0x33: 'h', 0x43: 'i', 0x3b: 'j', 0x42: 'k', 0x4b: 'l',
@@ -840,6 +1406,32 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	b(0xa9, 128, 0x8d, 0x34, 0x03, 0xa9, 112, 0x8d, 0x35, 0x03, 0x9c, 0x36, 0x03)               // SNES mouse pointer and previous left button
 	b(0xa9, scrollThumbTrackStart, 0x8d, 0x52, 0x03, 0xa9, 0x01, 0x8d, 0x53, 0x03)              // document-position thumb starts dirty at track origin
 	b(0xa9, 0xff, 0x8d, 0x3c, 0x03, 0x8d, 0x3d, 0x03)                                           // no sticky vertical column yet ($033c/$033d)
+	// Typing-sound state. $0370 is the command sequence the SPC watches, $0371
+	// records whether the audio side ever answered, and $0372 is the user's
+	// on/off switch. The upload below sets $0371; it stays clear if the APU
+	// never responds, and the blip path checks both.
+	b(0x9c, 0x70, 0x03, 0x9c, 0x71, 0x03)
+	b(0xa9, 0x01, 0x8d, 0x72, 0x03)
+	// The voice, mirroring the host's SoundSettings field for field: waveform,
+	// attack, decay, sustain level, sustain rate, release, pitch, volume. These
+	// are the driver's own defaults so the two sides agree before the host's
+	// first settings event lands; $037b is the sound plane's selected row.
+	b(0xa9, voiceSourceSquare, 0x8d, 0x73, 0x03)
+	// Unpacked from the same register bytes the DSP init table installs, so the
+	// cartridge's mirror cannot disagree with what is actually programmed. It
+	// did: the table said decay 5 / level 3 / rate 30 while these said 4 / 0 /
+	// 24, so the first slider touch would have re-pushed the stale set.
+	b(0xa9, defaultVoiceAdsr1&0x0f, 0x8d, 0x74, 0x03)        // attack
+	b(0xa9, (defaultVoiceAdsr1>>4)&0x07, 0x8d, 0x75, 0x03)   // decay
+	b(0xa9, (defaultVoiceAdsr2>>5)&0x07, 0x8d, 0x76, 0x03)   // sustain level
+	b(0xa9, defaultVoiceAdsr2&0x1f, 0x8d, 0x77, 0x03)        // sustain rate
+	b(0xa9, 20, 0x8d, 0x78, 0x03)                         // release 20
+	b(0xa9, byte(defaultVoicePitch>>8), 0x8d, 0x79, 0x03) // pitch high byte
+	b(0xa9, defaultVoiceVolume, 0x8d, 0x7a, 0x03)         // volume
+	b(0xa9, defaultEchoVolume, 0x8d, 0x7b, 0x03)          // echo volume (0 is off)
+	b(0xa9, defaultEchoDelay, 0x8d, 0x7c, 0x03)           // echo delay
+	b(0xa9, defaultEchoFeed, 0x8d, 0x7d, 0x03)            // echo feedback
+	b(0x9c, 0x7e, 0x03)                                   // sound plane selection
 	// Versioned 32 KiB SRAM mailbox header. The host and cartridge share only
 	// committed indices here; payload regions begin at the fixed offsets in
 	// src/mailbox.h and are never treated as an authoritative document copy.
@@ -850,6 +1442,114 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	b(0x8f, 0x06, 0x00, 0x70)                   // event producer index
 	b(0x8f, 0x08, 0x00, 0x70)                   // event consumer index
 	b(0xe2, 0x20)                               // SEP #$20: 8-bit accumulator
+
+	// --- APU bring-up ------------------------------------------------------
+	// Hand the SPC700 its driver through the boot ROM's upload protocol, which
+	// is the only way anything reaches the audio side: the 65816 cannot touch a
+	// DSP register, only these four mailbox ports.
+	//
+	// Disassembling the boot ROM (the real 64 bytes, in snesrecomp's apu.c)
+	// gives the exact contract:
+	//
+	//	it writes $aa/$bb to ports 0//1 and waits for $cc on port 0;
+	//	we first put the destination in ports 2/3 and a non-zero kick in port 1;
+	//	then each byte is port 1 = data, port 0 = index, and it echoes the index;
+	//	an index two past the last one ends the block, and port 1 = 0 with an
+	//	address in ports 2/3 makes it jump there instead of taking another block.
+	//
+	// Every wait below is bounded. The APU is a separate processor, and a spin
+	// waiting for one that never answers would hang the cartridge before it drew
+	// a frame -- taking every headless test with it. On timeout $0371 stays
+	// clear and the editor simply runs silent.
+	spcBytes, spcEntry := spcImage()
+	b(0xc2, 0x10)       // REP #$10: 16-bit X/Y for the timeouts and the image index
+	b(0xa2, 0x00, 0x80) // LDX #$8000
+	audioWaitReady := len(p)
+	b(0xad, 0x40, 0x21, 0xc9, 0xaa) // LDA $2140 ; CMP #$aa
+	bneAudioWaitNext := len(p)
+	b(0xd0, 0)
+	b(0xad, 0x41, 0x21, 0xc9, 0xbb) // LDA $2141 ; CMP #$bb
+	beqAudioReady := len(p)
+	b(0xf0, 0)
+	audioWaitNext := len(p)
+	branch(bneAudioWaitNext, audioWaitNext)
+	b(0xca) // DEX
+	bneAudioWaitReady := len(p)
+	b(0xd0, 0)
+	branch(bneAudioWaitReady, audioWaitReady)
+	audioFailJumps := []int{len(p)}
+	b(0x4c, 0, 0)
+	audioReady := len(p)
+	branch(beqAudioReady, audioReady)
+
+	// Open the block, then wait for the boot ROM to echo $cc.
+	ldaSta(byte(aramImageBase&0xff), 0x2142)
+	ldaSta(byte(aramImageBase>>8), 0x2143)
+	ldaSta(0x01, 0x2141)
+	ldaSta(0xcc, 0x2140)
+	b(0xa2, 0x00, 0x80) // LDX #$8000
+	audioWaitCC := len(p)
+	b(0xad, 0x40, 0x21, 0xc9, 0xcc) // LDA $2140 ; CMP #$cc
+	beqAudioSend := len(p)
+	b(0xf0, 0)
+	b(0xca) // DEX
+	bneAudioWaitCC := len(p)
+	b(0xd0, 0)
+	branch(bneAudioWaitCC, audioWaitCC)
+	audioFailJumps = append(audioFailJumps, len(p))
+	b(0x4c, 0, 0)
+	audioSend := len(p)
+	branch(beqAudioSend, audioSend)
+
+	// One byte per iteration. The boot ROM waits for port 0 to reach zero before
+	// the first byte, so index 0 is an ordinary pass through this loop.
+	b(0xa0, 0x00, 0x00) // LDY #$0000
+	audioByteLoop := len(p)
+	b(0xb9, byte(loromAddr(spcImageOffset)), byte(loromAddr(spcImageOffset)>>8)) // LDA image,Y
+	b(0x8d, 0x41, 0x21)                                                          // STA $2141
+	// TYA takes Y's low byte because the accumulator is 8-bit here, which is
+	// exactly the modulo-256 index the boot ROM compares against.
+	b(0x98)             // TYA
+	b(0x8d, 0x40, 0x21) // STA $2140
+	b(0xa2, 0x00, 0x10) // LDX #$1000
+	audioWaitAck := len(p)
+	b(0xcd, 0x40, 0x21) // CMP $2140
+	beqAudioAcked := len(p)
+	b(0xf0, 0)
+	b(0xca) // DEX
+	bneAudioWaitAck := len(p)
+	b(0xd0, 0)
+	branch(bneAudioWaitAck, audioWaitAck)
+	audioFailJumps = append(audioFailJumps, len(p))
+	b(0x4c, 0, 0)
+	audioAcked := len(p)
+	branch(beqAudioAcked, audioAcked)
+	b(0xc8)                                              // INY
+	b(0xc0, byte(len(spcBytes)), byte(len(spcBytes)>>8)) // CPY #len
+	bneAudioByteLoop := len(p)
+	b(0xd0, 0)
+	branch(bneAudioByteLoop, audioByteLoop)
+
+	// Close the transfer: entry address in ports 2/3, zero in port 1 to mean
+	// "jump" rather than "another block", and an index two past the last byte's
+	// so the boot ROM falls out of its own loop.
+	ldaSta(byte(spcEntry), 0x2142)
+	ldaSta(byte(spcEntry>>8), 0x2143)
+	ldaSta(0x00, 0x2141)
+	b(0x98, 0x1a, 0x8d, 0x40, 0x21) // TYA ; INC A ; STA $2140
+	b(0xe2, 0x10)                   // SEP #$10: back to 8-bit index
+	ldaSta(0x01, 0x0371)            // the audio side answered
+	braAudioDone := len(p)
+	b(0x80, 0)
+	audioFail := len(p)
+	for _, at := range audioFailJumps {
+		jump(at, audioFail)
+	}
+	b(0xe2, 0x10)       // SEP #$10
+	b(0x9c, 0x71, 0x03) // STZ $0371
+	audioDone := len(p)
+	branch(braAudioDone, audioDone)
+
 	initialRenderCall := len(p)
 	b(0x20, 0, 0)
 	loop := len(p)
@@ -876,6 +1576,27 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	b(0x9c, 0x53, 0x03)             // dirty = 0
 	afterThumb := len(p)
 	branch(beqAfterThumb, afterThumb)
+	// Scope refresh. An audition starts a capture on the SPC that takes about
+	// six frames to fill, so the bytes cannot be read back in the same breath
+	// as the keypress that asked for them. $0382 counts those frames down and
+	// the streamed redraw happens once, here, when it reaches zero.
+	b(0xad, 0x1d, 0x03, 0xc9, 0x13) // LDA mode; CMP #$13
+	bneScopeSkip := len(p)
+	b(0xd0, 0)
+	b(0xad, 0x82, 0x03)
+	beqScopeSkip := len(p)
+	b(0xf0, 0)
+	b(0xce, 0x82, 0x03)
+	bneScopeSkip2 := len(p)
+	b(0xd0, 0)
+	soundStreamCall := len(p)
+	b(0x20, 0, 0)
+	soundStreamRenderCall := len(p)
+	b(0x20, 0, 0)
+	scopeSkip := len(p)
+	branch(bneScopeSkip, scopeSkip)
+	branch(beqScopeSkip, scopeSkip)
+	branch(bneScopeSkip2, scopeSkip)
 	afterPointer := len(p)
 	branch(bplPointerSkip, afterPointer)
 	viewportCall := len(p)
@@ -1172,6 +1893,23 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	jmpPointerHeldAt := len(p)
 	b(0x4c, 0, 0)
 	b(0xa9, 0x01, 0x8d, 0x36, 0x03, 0xad, 0x1d, 0x03)
+	// The sound shaper's sliders are draggable. A press anywhere along a bar
+	// sets that field directly, so the pointer behaves like a real fader rather
+	// than a click target. Held drags work for free: the pointer path re-enters
+	// here every frame the button is down.
+	b(0xc9, 0x13)
+	bneMouseNotSound := len(p)
+	b(0xd0, 0)
+	mouseSoundCall := len(p)
+	b(0x20, 0, 0)
+	beqMouseSoundNoKey := len(p)
+	b(0xf0, 0)
+	b(0x60) // a slider moved: hand back Enter so soundInput applies it
+	mouseSoundNoKey := len(p)
+	branch(beqMouseSoundNoKey, mouseSoundNoKey)
+	b(0xad, 0x1d, 0x03) // restore the mode the checks below expect
+	mouseNotSound := len(p)
+	branch(bneMouseNotSound, mouseNotSound)
 	// Filename mode owns two large contextual buttons in the former formatting
 	// card and a field in the document panel. A click changes the same focus
 	// byte keyboard navigation uses, then returns Enter for either action or a
@@ -1533,10 +2271,10 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	// is not the cell the layout will report. Both callers -- the pointer and
 	// wrap-aware Up/Down -- work in visible cells, so this is the one place that
 	// has to know.
-	b(0xc2, 0x20)                   // REP #$20 (16-bit A)
-	b(0xad, 0x39, 0x03)             // LDA $0339 (target cell)
-	b(0x8d, 0x22, 0x0f)             // STA $0f22 -- the visible target, restored below
-	b(0xa2, 0x00)                   // LDX #0 (row; index registers are 8-bit here)
+	b(0xc2, 0x20)       // REP #$20 (16-bit A)
+	b(0xad, 0x39, 0x03) // LDA $0339 (target cell)
+	b(0x8d, 0x22, 0x0f) // STA $0f22 -- the visible target, restored below
+	b(0xa2, 0x00)       // LDX #0 (row; index registers are 8-bit here)
 	unshiftRow := len(p)
 	b(0xc9, 0x1e, 0x00) // CMP #30
 	bccUnshiftHaveRow := len(p)
@@ -2153,6 +2891,28 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	b(0x20, 0, 0, 0x64, 0x5b, 0x60)
 	settingsNotToggle := len(p)
 	branch(bneSettingsToggle, settingsNotToggle)
+	// F5 toggles the typing-sound plane, the same way F3 toggles save settings.
+	// $0381 retains the exact origin mode so closing returns to the screen the
+	// user was on rather than always dropping to the document.
+	b(0xa5, 0x5b, 0xc9, 0x1f)
+	bneSoundToggle := len(p)
+	b(0xd0, 0)
+	b(0xad, 0x1d, 0x03, 0xc9, 0x13)
+	beqSoundClose := len(p)
+	b(0xf0, 0)
+	b(0x8d, 0x81, 0x03)
+	b(0xa9, 0x13, 0x8d, 0x1d, 0x03, 0x9c, 0x7e, 0x03)
+	braSoundToggled := len(p)
+	b(0x80, 0)
+	soundClose := len(p)
+	branch(beqSoundClose, soundClose)
+	b(0xad, 0x81, 0x03, 0x8d, 0x1d, 0x03)
+	soundToggled := len(p)
+	branch(braSoundToggled, soundToggled)
+	soundToggleRenderCall := len(p)
+	b(0x20, 0, 0, 0x64, 0x5b, 0x60)
+	soundNotToggle := len(p)
+	branch(bneSoundToggle, soundNotToggle)
 	// F2 opens the help card from any mode. $0313 retains the exact origin so F2,
 	// F1, or Backspace returns to the screen the user was on, including a live
 	// browser or menu selection. Help handling comes before the generic F1 menu
@@ -2309,11 +3069,207 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	b(0xc9, 0x20)
 	bccEditDone := len(p)
 	b(0x90, 0)
+	// A printable character is about to be committed, which is exactly the
+	// event the typing blip marks. audioBlip preserves A, so the insert path
+	// below still sees the key code it was branching on.
+	audioBlipCall := len(p)
+	b(0x20, 0, 0)
 	insertPrintableCall := len(p)
 	b(0x20, 0, 0)
 	editDone := len(p)
 	branch(bccEditDone, editDone)
 	b(0x60)
+
+	// One key-on request. Both gates matter: $0371 is clear when the APU never
+	// took its driver, and touching the ports in that state would be writing
+	// into a boot ROM still waiting on its handshake.
+	audioBlip := len(p)
+	patch16(audioBlipCall, audioBlip)
+	b(0x48)             // PHA
+	b(0xad, 0x71, 0x03) // LDA $0371 (audio available)
+	beqAudioBlipDone := len(p)
+	b(0xf0, 0)
+	b(0xad, 0x72, 0x03) // LDA $0372 (typing sound enabled)
+	beqAudioBlipMuted := len(p)
+	b(0xf0, 0)
+	b(0x9c, 0x41, 0x21) // STZ $2141 -- command 0 is the blip
+	b(0xee, 0x70, 0x03) // INC $0370 -- any change at all is the trigger
+	b(0xad, 0x70, 0x03) // LDA $0370
+	b(0x8d, 0x40, 0x21) // STA $2140
+	audioBlipDone := len(p)
+	branch(beqAudioBlipDone, audioBlipDone)
+	branch(beqAudioBlipMuted, audioBlipDone)
+	b(0x68) // PLA
+	b(0x60) // RTS
+
+	// Pull the capture the SPC700 took off the DSP into WRAM, where the scope
+	// draw code can reach it. Sixty handshaked reads sounds expensive but each
+	// is only a few dozen cycles and this runs once per audition, not per
+	// frame -- well under a millisecond of a 16 ms frame.
+	//
+	// The SPC buffer is 32 waveform samples then 32 envelope samples; only the
+	// first 30 of each are drawn, one per plane column.
+	soundStream := len(p)
+	b(0xad, 0x71, 0x03) // LDA $0371 -- nothing to read if the APU never answered
+	beqStreamDone := len(p)
+	b(0xf0, 0)
+	streamHalf := func(spcBase byte, dest uint16) {
+		b(0xa2, 0x00) // LDX #0 -- column
+		cell := len(p)
+		b(0xa9, 0x03, 0x8d, 0x41, 0x21) // command 3: read capture byte
+		b(0x8a)                         // TXA
+		if spcBase != 0 {
+			b(0x18, 0x69, spcBase) // CLC; ADC #base -- second half of the buffer
+		}
+		b(0x8d, 0x42, 0x21)                   // STA $2142 -- index
+		b(0xee, 0x70, 0x03)                   // advance the sequence
+		b(0xad, 0x70, 0x03, 0x8d, 0x40, 0x21) // publish it
+		b(0xa0, 0x00)                         // LDY #0 -- bounded wait
+		wait := len(p)
+		b(0xcd, 0x40, 0x21) // CMP $2140 -- the driver echoes the sequence
+		beqGot := len(p)
+		b(0xf0, 0)
+		b(0x88) // DEY
+		bneWait := len(p)
+		b(0xd0, 0)
+		branch(bneWait, wait)
+		got := len(p)
+		branch(beqGot, got)
+		b(0xad, 0x41, 0x21)                          // LDA $2141 -- the byte
+		b(0x9d, byte(dest), byte(dest>>8))           // STA dest,X
+		b(0xe8, 0xe0, documentPlaneColumns)          // INX; CPX #30
+		bneCell := len(p)
+		b(0xd0, 0)
+		branch(bneCell, cell)
+	}
+	streamHalf(0, soundWaveBuffer)
+	streamHalf(spcCaptureSamples, soundEnvBuffer)
+	streamDone := len(p)
+	branch(beqStreamDone, streamDone)
+	b(0x60) // RTS
+
+	// Audition: preview the voice from inside the shaper. Deliberately skips
+	// the typing-blips switch -- you are listening to the sound being edited,
+	// which is a different question from whether typing should click. It sends
+	// command 2 rather than a plain key-on, so the same note that plays also
+	// refills the capture buffers the scopes are drawn from.
+	audioAudition := len(p)
+	b(0x48)             // PHA
+	b(0xad, 0x71, 0x03) // LDA $0371 (audio available)
+	beqAuditionDone := len(p)
+	b(0xf0, 0)
+	b(0xa9, 0x02, 0x8d, 0x41, 0x21) // command 2 -> port 1
+	b(0x9c, 0x42, 0x21)             // port 2 unused
+	b(0x9c, 0x43, 0x21)             // port 3 unused
+	b(0xee, 0x70, 0x03)             // advance the sequence
+	b(0xad, 0x70, 0x03, 0x8d, 0x40, 0x21)
+	// Arm the scope refresh: the capture needs ~6 frames to fill, so give it 8.
+	b(0xa9, 0x08, 0x8d, 0x82, 0x03)
+	auditionDone := len(p)
+	branch(beqAuditionDone, auditionDone)
+	b(0x68) // PLA
+	b(0x60) // RTS
+
+	// Push one DSP register to the driver: register in $037c, value in $037d.
+	//
+	// This waits for the driver to echo the sequence back, and that wait is the
+	// whole point. The SPC700 runs at about a third of this CPU's clock and its
+	// poll loop is ~25 of its own cycles, so firing nine register writes
+	// back-to-back would leave the driver having seen two of them -- the voice
+	// would end up configured from a fragment of the settings. Bounded, because
+	// a driver that never answers must not wedge the editor.
+	audioSendReg := len(p)
+	b(0xad, 0x71, 0x03) // LDA $0371 (audio available)
+	beqAudioSendRegSkip := len(p)
+	b(0xf0, 0)
+	b(0xad, 0x7f, 0x03, 0x8d, 0x42, 0x21) // register -> port 2
+	b(0xad, 0x80, 0x03, 0x8d, 0x43, 0x21) // value    -> port 3
+	b(0xa9, 0x01, 0x8d, 0x41, 0x21)       // non-zero -> port 1: set register
+	b(0xee, 0x70, 0x03)                   // advance the sequence
+	b(0xad, 0x70, 0x03, 0x8d, 0x40, 0x21) // and publish it
+	b(0xa2, 0x00)                         // LDX #$00: 256 tries
+	audioSendRegWait := len(p)
+	b(0xcd, 0x40, 0x21) // CMP $2140 -- the driver echoes the sequence
+	beqAudioSendRegDone := len(p)
+	b(0xf0, 0)
+	b(0xca) // DEX
+	bneAudioSendRegWait := len(p)
+	b(0xd0, 0)
+	branch(bneAudioSendRegWait, audioSendRegWait)
+	audioSendRegSkip := len(p)
+	branch(beqAudioSendRegSkip, audioSendRegSkip)
+	branch(beqAudioSendRegDone, audioSendRegSkip)
+	b(0x60) // RTS
+
+	// Project the cartridge's copy of the settings onto the voice. Called after
+	// a host settings event and after any local edit in the sound plane, so the
+	// two never disagree about what is playing.
+	audioApply := len(p)
+	audioSendRegCalls := []int{}
+	sendReg := func(register byte) {
+		ldaSta(register, 0x037f)
+		audioSendRegCalls = append(audioSendRegCalls, len(p))
+		b(0x20, 0, 0)
+	}
+	// Volume, both sides.
+	b(0xad, 0x7a, 0x03, 0x8d, 0x80, 0x03)
+	sendReg(0x00)
+	b(0xad, 0x7a, 0x03, 0x8d, 0x80, 0x03)
+	sendReg(0x01)
+	// Pitch. The low byte stays zero: the menu tunes the 2.12 value's high six
+	// bits, which is a whole-semitone-ish step and all this needs.
+	b(0x9c, 0x80, 0x03)
+	sendReg(0x02)
+	b(0xad, 0x79, 0x03, 0x29, 0x3f, 0x8d, 0x80, 0x03)
+	sendReg(0x03)
+	// Source number. Noise ignores it, so waveform 2 just leaves source 0.
+	b(0xad, 0x73, 0x03, 0xc9, 0x02)
+	bccAudioSourceOk := len(p)
+	b(0x90, 0)
+	b(0xa9, 0x00)
+	audioSourceOk := len(p)
+	branch(bccAudioSourceOk, audioSourceOk)
+	b(0x8d, 0x80, 0x03)
+	sendReg(0x04)
+	// ADSR1 = EDDD AAAA. Bit 7 selects the ADSR envelope over the GAIN program.
+	b(0xad, 0x75, 0x03, 0x29, 0x07) // decay & 7
+	b(0x0a, 0x0a, 0x0a, 0x0a)       // << 4
+	b(0x0d, 0x74, 0x03)             // ORA attack
+	b(0x09, 0x80, 0x8d, 0x80, 0x03) // ORA #$80
+	sendReg(0x05)
+	// ADSR2 = LLLR RRRR.
+	b(0xad, 0x76, 0x03, 0x29, 0x07)       // sustain level & 7
+	b(0x0a, 0x0a, 0x0a, 0x0a, 0x0a)       // << 5
+	b(0x0d, 0x77, 0x03, 0x8d, 0x80, 0x03) // ORA sustain rate
+	sendReg(0x06)
+	// GAIN: custom mode, exponential decrease. Unread while ADSR1 bit 7 is set,
+	// but it has to be correct before anything clears that bit.
+	b(0xad, 0x78, 0x03, 0x29, 0x1f, 0x09, 0xa0, 0x8d, 0x80, 0x03)
+	sendReg(0x07)
+	// NON: waveform 2 switches voice 0 from its BRR sample to the noise source.
+	b(0x9c, 0x80, 0x03)
+	b(0xad, 0x73, 0x03, 0xc9, 0x02)
+	bneAudioNotNoise := len(p)
+	b(0xd0, 0)
+	b(0xa9, 0x01, 0x8d, 0x80, 0x03)
+	audioNotNoise := len(p)
+	branch(bneAudioNotNoise, audioNotNoise)
+	sendReg(0x3d)
+	// Echo. EDL names how much ARAM the unit writes to, so it is masked to its
+	// four real bits here as well as at every edit site -- a stray high bit
+	// would move the buffer's end past the region reserved for it.
+	b(0xad, 0x7b, 0x03, 0x29, 0x7f, 0x8d, 0x80, 0x03)
+	sendReg(0x2c) // EVOLL
+	b(0xad, 0x7b, 0x03, 0x29, 0x7f, 0x8d, 0x80, 0x03)
+	sendReg(0x3c) // EVOLR
+	b(0xad, 0x7c, 0x03, 0x29, 0x0f, 0x8d, 0x80, 0x03)
+	sendReg(0x7d) // EDL
+	b(0xad, 0x7d, 0x03, 0x29, 0x7f, 0x8d, 0x80, 0x03)
+	sendReg(0x0d) // EFB
+	b(0x60)       // RTS
+	for _, at := range audioSendRegCalls {
+		patch16(at, audioSendReg)
+	}
 
 	insert := len(p)
 	for _, at := range []int{insertCall, insertPrintableCall} {
@@ -2793,6 +3749,9 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	patch16(menuInputCall, menuInput)
 	b(0xad, 0x1d, 0x03, 0xc9, 0x10, 0xd0, 0x03)
 	settingsInputJump := len(p)
+	b(0x4c, 0, 0)
+	b(0xc9, 0x13, 0xd0, 0x03)
+	soundInputJump := len(p)
 	b(0x4c, 0, 0)
 	b(0xc9, 0x11, 0xd0, 0x03)
 	saveFormatInputJump := len(p)
@@ -3771,6 +4730,207 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	emitBrowserRenderCall()
 	b(0x60)
 
+	// Typing-sound plane (mode $13). The twelve editable bytes are contiguous at
+	// $0372, in the same order as the field table and the host's payload, so the
+	// selection index addresses the value directly and staging the command is a
+	// straight copy rather than twelve named stores.
+	soundInput := len(p)
+	jump(soundInputJump, soundInput)
+	b(0xe2, 0x30, 0xa5, 0x5b)
+	b(0xc9, 0x08, 0xd0, 0x03)
+	soundBackJump := len(p)
+	b(0x4c, 0, 0)
+	b(0xc9, 0x13, 0xd0, 0x03)
+	soundUpJump := len(p)
+	b(0x4c, 0, 0)
+	b(0xc9, 0x14, 0xd0, 0x03)
+	soundDownJump := len(p)
+	b(0x4c, 0, 0)
+	b(0xc9, 0x11, 0xd0, 0x03)
+	soundLeftJump := len(p)
+	b(0x4c, 0, 0)
+	b(0xc9, 0x12, 0xd0, 0x03)
+	soundRightJump := len(p)
+	b(0x4c, 0, 0)
+	b(0xc9, 0x0d, 0xd0, 0x03) // Enter
+	soundAuditionJump1 := len(p)
+	b(0x4c, 0, 0)
+	b(0xc9, 0x20, 0xd0, 0x03) // Space
+	soundAuditionJump2 := len(p)
+	b(0x4c, 0, 0)
+	b(0x60)
+
+	// Enter, Space and a slider drag all land here. Routing them through
+	// soundApply rather than a bare audition means a mouse-set value is pushed
+	// to the DSP and persisted exactly like a keyboard edit.
+	soundAudition := len(p)
+	jump(soundAuditionJump1, soundAudition)
+	jump(soundAuditionJump2, soundAudition)
+	soundAuditionApplyJump := len(p)
+	b(0x4c, 0, 0)
+
+	// Pointer hit-test for the shaper. Returns Enter in A when a slider moved,
+	// zero when the click missed every bar. Plane row 0 begins at screen y=79
+	// -- the BG renders one line above scene coordinates -- so field rows 1-12
+	// span y=87..182, and the twelve slider cells span x=96..191.
+	mouseSound := len(p)
+	patch16(mouseSoundCall, mouseSound)
+	b(0xad, 0x35, 0x03) // LDA mouse Y
+	b(0xc9, 87)
+	bccMouseSoundMiss := len(p)
+	b(0x90, 0)
+	b(0xc9, 183)
+	bcsMouseSoundMiss := len(p)
+	b(0xb0, 0)
+	b(0x38, 0xe9, 87, 0x4a, 0x4a, 0x4a) // SEC; SBC #87; >>3 -> field
+	b(0x85, 0x5c)
+	// BLIPS and WAVE spell their values out and have no bar to drag.
+	b(0xc9, 0x02)
+	bccMouseSoundMiss2 := len(p)
+	b(0x90, 0)
+	b(0xad, 0x34, 0x03) // LDA mouse X
+	b(0xc9, 96)
+	bccMouseSoundMiss3 := len(p)
+	b(0x90, 0)
+	b(0xc9, 192)
+	bcsMouseSoundMiss4 := len(p)
+	b(0xb0, 0)
+	b(0x38, 0xe9, 96, 0x4a, 0x4a, 0x4a) // SEC; SBC #96; >>3 -> cell
+	b(0x85, 0x5d)
+	// value = table[field*12 + cell], both computed at build time so the
+	// cartridge never divides.
+	b(0xa6, 0x5c) // LDX field
+	soundRowBaseRead := len(p)
+	b(0xbd, 0, 0) // LDA rowBase,X
+	b(0x18, 0x65, 0x5d, 0xaa)
+	soundSliderValueRead := len(p)
+	b(0xbd, 0, 0) // LDA sliderValues,X
+	b(0xa6, 0x5c)
+	b(0x9d, 0x72, 0x03) // STA $0372,X -- the field's own state byte
+	b(0xa5, 0x5c, 0x8d, 0x7e, 0x03)
+	b(0xa9, 0x0d, 0x60) // Enter
+	mouseSoundMiss := len(p)
+	branch(bccMouseSoundMiss, mouseSoundMiss)
+	branch(bcsMouseSoundMiss, mouseSoundMiss)
+	branch(bccMouseSoundMiss2, mouseSoundMiss)
+	branch(bccMouseSoundMiss3, mouseSoundMiss)
+	branch(bcsMouseSoundMiss4, mouseSoundMiss)
+	b(0xa9, 0x00, 0x60)
+
+	// Data, reached only by the two indexed reads above.
+	soundRowBase := len(p)
+	patch16(soundRowBaseRead, soundRowBase)
+	for index := range soundFields {
+		b(byte(index * soundSliderCells))
+	}
+	soundSliderValues := len(p)
+	patch16(soundSliderValueRead, soundSliderValues)
+	for _, field := range soundFields {
+		for cell := 0; cell < soundSliderCells; cell++ {
+			// The value that lights exactly cell+1 bars, i.e. the inverse of
+			// the threshold the renderer uses. The two must agree or a bar
+			// would jump somewhere other than where it was clicked.
+			value := (int(field.high)*(cell+1) + soundSliderCells - 1) / soundSliderCells
+			if value > int(field.high) {
+				value = int(field.high)
+			}
+			b(byte(value))
+		}
+	}
+
+	soundBack := len(p)
+	jump(soundBackJump, soundBack)
+	b(0xad, 0x81, 0x03, 0x8d, 0x1d, 0x03)
+	emitBrowserRenderCall()
+	b(0x60)
+
+	soundUp := len(p)
+	jump(soundUpJump, soundUp)
+	b(0xad, 0x7e, 0x03)
+	beqSoundUpRender := len(p)
+	b(0xf0, 0)
+	b(0xce, 0x7e, 0x03)
+	soundUpRender := len(p)
+	branch(beqSoundUpRender, soundUpRender)
+	emitBrowserRenderCall()
+	b(0x60)
+
+	soundDown := len(p)
+	jump(soundDownJump, soundDown)
+	b(0xad, 0x7e, 0x03, 0xc9, byte(len(soundFields)-1))
+	bcsSoundDownRender := len(p)
+	b(0xb0, 0)
+	b(0xee, 0x7e, 0x03)
+	soundDownRender := len(p)
+	branch(bcsSoundDownRender, soundDownRender)
+	emitBrowserRenderCall()
+	b(0x60)
+
+	// Left and right step the selected field within its own limit. The limit is
+	// the width of the S-DSP field the value lands in, so clamping here is not
+	// politeness -- one count too far would overflow into the neighbouring
+	// field and silently change a different parameter.
+	soundLeft := len(p)
+	jump(soundLeftJump, soundLeft)
+	b(0xae, 0x7e, 0x03) // LDX selection
+	b(0xbd, 0x72, 0x03) // LDA $0372,X
+	beqSoundChangeDone := len(p)
+	b(0xf0, 0)
+	b(0x3a)             // DEC A
+	b(0x9d, 0x72, 0x03) // STA $0372,X
+	soundApplyJump1 := len(p)
+	b(0x4c, 0, 0)
+
+	soundRight := len(p)
+	jump(soundRightJump, soundRight)
+	b(0xae, 0x7e, 0x03) // LDX selection
+	b(0xbd, 0x72, 0x03) // LDA $0372,X
+	soundMaxCompare := len(p)
+	b(0xdd, 0, 0) // CMP soundMaxTable,X
+	bcsSoundChangeDone := len(p)
+	b(0xb0, 0)
+	b(0x1a)             // INC A
+	b(0x9d, 0x72, 0x03) // STA $0372,X
+	soundApplyJump2 := len(p)
+	b(0x4c, 0, 0)
+
+	soundChangeDone := len(p)
+	branch(beqSoundChangeDone, soundChangeDone)
+	branch(bcsSoundChangeDone, soundChangeDone)
+	b(0x60) // already at the limit; nothing changed, so nothing to publish
+
+	soundApply := len(p)
+	jump(soundApplyJump1, soundApply)
+	jump(soundApplyJump2, soundApply)
+	soundApplyAudioCall := len(p)
+	b(0x20, 0, 0) // push the edited voice to the DSP straight away
+	soundApplyAuditionCall := len(p)
+	b(0x20, 0, 0) // and play it, so an edit is heard without leaving the plane
+	// Stage the same twelve bytes as the host command payload so the setting
+	// survives a restart.
+	b(0xa2, 0x00)
+	soundStageLoop := len(p)
+	b(0xbd, 0x72, 0x03, 0x9d, 0x00, 0x18, 0xe8, 0xe0, byte(len(soundFields)))
+	bneSoundStageLoop := len(p)
+	b(0xd0, 0)
+	branch(bneSoundStageLoop, soundStageLoop)
+	b(0xa9, 0x16, 0x8d, 0x16, 0x03, 0xa9, 0x01, 0x8d, 0x17, 0x03) // kind $0116
+	b(0xa9, byte(len(soundFields)), 0x8d, 0x15, 0x03, 0x9c, 0x18, 0x03, 0x9c, 0x19, 0x03)
+	jsrTo(commandWrite)
+	emitBrowserRenderCall()
+	b(0x60)
+	jump(soundAuditionApplyJump, soundApply)
+	patch16(soundApplyAudioCall, audioApply)
+	patch16(soundApplyAuditionCall, audioAudition)
+	patch16(soundStreamCall, soundStream)
+
+	// Per-field maxima, read with CMP abs,X. Data, reached only by that read.
+	soundMaxTable := len(p)
+	patch16(soundMaxCompare, soundMaxTable)
+	for _, field := range soundFields {
+		b(field.high)
+	}
+
 	settingsEmitMarkdown := len(p)
 	jump(settingsEmitMarkdownJump, settingsEmitMarkdown)
 	b(0xad, 0x2e, 0x03, 0x8d, 0x00, 0x18)
@@ -4011,6 +5171,9 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	b(0x4c, 0, 0)
 	b(0xc9, 0x13, 0xd0, 0x03)
 	transitionEventJump := len(p)
+	b(0x4c, 0, 0)
+	b(0xc9, 0x14, 0xd0, 0x03)
+	soundEventJump := len(p)
 	b(0x4c, 0, 0)
 	outcomeKindJump := len(p)
 	b(0x4c, 0, 0)
@@ -4254,6 +5417,55 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	settingsEventInvalidCommitJump := len(p)
 	b(0x4c, 0, 0)
 
+	// The voice arrives as one nine-byte value so it cannot tear: a half-applied
+	// update would not be stale settings, it would be a voice built from two
+	// different presets.
+	soundEvent := len(p)
+	jump(soundEventJump, soundEvent)
+	b(0xad, 0x24, 0x03)
+	bneSoundEventInvalid := len(p)
+	b(0xd0, 0)
+	b(0xad, 0x23, 0x03, 0xc9, 0x0c)
+	bneSoundEventInvalid2 := len(p)
+	b(0xd0, 0)
+	eventRead()
+	sta(0x0372) // typing blips on/off
+	eventRead()
+	sta(0x0373) // waveform
+	eventRead()
+	sta(0x0374) // attack
+	eventRead()
+	sta(0x0375) // decay
+	eventRead()
+	sta(0x0376) // sustain level
+	eventRead()
+	sta(0x0377) // sustain rate
+	eventRead()
+	sta(0x0378) // release
+	eventRead()
+	sta(0x0379) // pitch
+	eventRead()
+	sta(0x037a) // volume
+	eventRead()
+	sta(0x037b) // echo volume
+	eventRead()
+	sta(0x037c) // echo delay
+	eventRead()
+	sta(0x037d) // echo feedback
+	// audioApply spins on the driver's echo, so it needs the 8-bit index the
+	// rest of this routine does not run in.
+	b(0xe2, 0x10)
+	soundEventApplyCall := len(p)
+	b(0x20, 0, 0)
+	b(0xc2, 0x10)
+	soundEventCommitJump := len(p)
+	b(0x4c, 0, 0)
+	soundEventInvalid := len(p)
+	branch(bneSoundEventInvalid, soundEventInvalid)
+	branch(bneSoundEventInvalid2, soundEventInvalid)
+	soundEventInvalidCommitJump := len(p)
+	b(0x4c, 0, 0)
+
 	transitionEvent := len(p)
 	jump(transitionEventJump, transitionEvent)
 	b(0x9c, 0x1a, 0x03)
@@ -4270,9 +5482,11 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 		overwriteEventInvalidCommitJump, outcomeEventCommitJump,
 		saveAsRequiredCommitJump, settingsEventCommitJump,
 		settingsEventInvalidCommitJump, transitionEventCommitJump,
+		soundEventCommitJump, soundEventInvalidCommitJump,
 	} {
 		jump(at, eventCommit)
 	}
+	patch16(soundEventApplyCall, audioApply)
 	b(0xc2, 0x30, 0xad, 0x6b, 0x03, 0x18, 0x69, 0x14, 0x00)
 	b(0x6d, 0x23, 0x03, 0x29, 0xff, 0x1f, 0xaa, 0x8f, 0x08, 0x00, 0x70)
 	b(0xe2, 0x30, 0x60)
@@ -4298,7 +5512,9 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 		patch16(at, render)
 	}
 	for _, at := range []int{
-		menuToggleRenderCall, settingsToggleRenderCall, helpToggleRenderCall,
+		menuToggleRenderCall, settingsToggleRenderCall, soundToggleRenderCall,
+		soundStreamRenderCall,
+		helpToggleRenderCall,
 		menuRenderCall1, menuRenderCall2, menuRenderCall3,
 		menuRenderCallSaveFormat, menuRenderCallStats, menuRenderCall5,
 		eventRenderCall, overwriteRenderCall, outcomeRenderCall,
@@ -4501,6 +5717,10 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	b(0xc9, 0x11)
 	b(0xd0, 0x03)
 	renderSaveFormatJump := len(p)
+	b(0x4c, 0, 0)
+	b(0xc9, 0x13)
+	b(0xd0, 0x03)
+	renderSoundJump := len(p)
 	b(0x4c, 0, 0)
 	b(0xc9, 0x12)
 	b(0xd0, 0x03)
@@ -4940,6 +6160,213 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	settingsPlaneReadyJump := len(p)
 	b(0x4c, 0, 0)
 
+	// The typing-sound plane. Twelve fields in two columns; the selection walks
+	// them in reading order and the highlight covers one 15-column half rather
+	// than a whole row, so the two columns stay visually independent.
+	renderSound := len(p)
+	jump(renderSoundJump, renderSound)
+	// 16-bit index for the whole routine: the plane runs to cell 509, well past
+	// what an 8-bit X can address, and every scope column lives up there.
+	b(0xc2, 0x10) // REP #$10
+	b(0xa2, 0x00, 0x00)
+	copySoundPlane := len(p)
+	b(0xbf, byte(loromAddr(soundOffset)), byte(loromAddr(soundOffset)>>8), loromBank(soundOffset),
+		0x9d, 0x00, 0x10, 0xe8, 0xe0, 0xf0, 0x00)
+	bneCopySoundPlane := len(p)
+	b(0xd0, 0)
+	branch(bneCopySoundPlane, copySoundPlane)
+
+	// --- field rows --------------------------------------------------------
+	for index, field := range soundFields {
+		row := soundFieldRow(index)
+		label := field.name
+		for len(label) < soundLabelWidth {
+			label += " "
+		}
+		for i := 0; i < soundLabelWidth; i++ {
+			ldaSta(label[i], soundCell(row, soundLabelColumn+i))
+		}
+		if !field.numeric {
+			continue // BLIPS and WAVE spell their value out; drawn below
+		}
+		// Slider fill. The thresholds are computed here, at build time, so the
+		// cartridge does no arithmetic at all: cell k lights when the value
+		// reaches the smallest number that should light it. That sidesteps the
+		// hardware multiply/divide entirely -- those units need settling cycles
+		// after their last operand, and reading them too early returns nothing,
+		// which is exactly why every bar first came out empty.
+		for cell := 0; cell < soundSliderCells; cell++ {
+			threshold := (int(field.high)*(cell+1) + soundSliderCells - 1) / soundSliderCells
+			if threshold < 1 {
+				threshold = 1
+			}
+			b(0xad, byte(field.state), byte(field.state>>8)) // LDA value
+			b(0xc9, byte(threshold))                         // CMP #threshold
+			bccEmpty := len(p)
+			b(0x90, 0)
+			b(0xa9, soundFilledCell)
+			braStore := len(p)
+			b(0x80, 0)
+			cellEmpty := len(p)
+			branch(bccEmpty, cellEmpty)
+			b(0xa9, soundEmptyCell)
+			cellStore := len(p)
+			branch(braStore, cellStore)
+			sta(soundCell(row, soundSliderCol+cell))
+		}
+		// emitByteDigits is written for an 8-bit index -- its LDX #$00 is two
+		// bytes, which under REP #$10 would swallow the following opcode and
+		// desync everything after it. Narrow the index around the call.
+		b(0xe2, 0x10) // SEP #$10
+		emitByteDigits(field.state, soundValueCell(index))
+		b(0xc2, 0x10) // REP #$10
+	}
+
+	// BLIPS reads as a word rather than a number.
+	blipsCell := soundValueCell(0)
+	b(0xad, 0x72, 0x03)
+	beqSoundBlipsOff := len(p)
+	b(0xf0, 0)
+	for i, ch := range []byte("ON ") {
+		ldaSta(ch, blipsCell+uint16(i))
+	}
+	soundBlipsDoneJump := len(p)
+	b(0x4c, 0, 0)
+	soundBlipsOff := len(p)
+	branch(beqSoundBlipsOff, soundBlipsOff)
+	for i, ch := range []byte("OFF") {
+		ldaSta(ch, blipsCell+uint16(i))
+	}
+	soundBlipsDone := len(p)
+	jump(soundBlipsDoneJump, soundBlipsDone)
+
+	// WAVE likewise. Each name is padded to the same width so a shorter one
+	// cannot leave the tail of a longer one on screen.
+	waveCell := soundCell(soundFieldRow(1), soundSliderCol)
+	emitWaveName := func(name string) {
+		for i, ch := range []byte(name) {
+			ldaSta(ch, waveCell+uint16(i))
+		}
+	}
+	b(0xad, 0x73, 0x03, 0xc9, 0x01)
+	beqSoundWaveTriangle := len(p)
+	b(0xf0, 0)
+	b(0xc9, 0x02)
+	beqSoundWaveNoise := len(p)
+	b(0xf0, 0)
+	emitWaveName("SQUARE  ")
+	soundWaveDoneJump1 := len(p)
+	b(0x4c, 0, 0)
+	soundWaveTriangle := len(p)
+	branch(beqSoundWaveTriangle, soundWaveTriangle)
+	emitWaveName("TRIANGLE")
+	soundWaveDoneJump2 := len(p)
+	b(0x4c, 0, 0)
+	soundWaveNoise := len(p)
+	branch(beqSoundWaveNoise, soundWaveNoise)
+	emitWaveName("NOISE   ")
+	soundWaveDone := len(p)
+	jump(soundWaveDoneJump1, soundWaveDone)
+	jump(soundWaveDoneJump2, soundWaveDone)
+
+	// --- scopes ------------------------------------------------------------
+	// Both are drawn from bytes the SPC700 captured off live DSP registers, not
+	// from anything recomputed here. Each column is a bar built out of the
+	// control-code tiles: 8 pixels in the lower row, 8 more in the upper.
+	emitScope := func(source uint16, topRow int, signedSample bool) {
+		b(0xa0, 0x00, 0x00) // LDY #0 -- column
+		column := len(p)
+		b(0xb9, byte(source), byte(source>>8)) // LDA capture,Y
+		if signedSample {
+			// OUTX is signed; bias it so silence sits mid-scale.
+			b(0x18, 0x69, 0x80)
+		}
+		b(0x4a, 0x4a, 0x4a, 0x4a) // >>4 -> 0..15
+		b(0x85, 0x5c)             // STA $5c -- level
+		// Lower row: min(level, 8) pixels.
+		b(0xc9, 0x09)
+		bccLowerPartial := len(p)
+		b(0x90, 0)
+		b(0xa9, 0x08)
+		braLowerStore := len(p)
+		b(0x80, 0)
+		lowerPartial := len(p)
+		branch(bccLowerPartial, lowerPartial)
+		b(0xa5, 0x5c)
+		lowerStore := len(p)
+		branch(braLowerStore, lowerStore)
+		b(0x99, byte(soundCell(topRow+1, 0)), byte(soundCell(topRow+1, 0)>>8))
+		// Upper row: whatever is left above 8.
+		b(0xa5, 0x5c, 0xc9, 0x09)
+		bccUpperBlank := len(p)
+		b(0x90, 0)
+		b(0x38, 0xe9, 0x08)
+		braUpperStore := len(p)
+		b(0x80, 0)
+		upperBlank := len(p)
+		branch(bccUpperBlank, upperBlank)
+		b(0xa9, ' ')
+		upperStore := len(p)
+		branch(braUpperStore, upperStore)
+		b(0x99, byte(soundCell(topRow, 0)), byte(soundCell(topRow, 0)>>8))
+		b(0xc8, 0xc0, documentPlaneColumns, 0x00)
+		bneColumn := len(p)
+		b(0xd0, 0)
+		branch(bneColumn, column)
+	}
+	emitScope(soundWaveBuffer, soundWaveRow, true)
+	emitScope(soundEnvBuffer, soundEnvRow, false)
+
+	// --- cursor and row highlight -----------------------------------------
+	// Row offset comes from a build-time table rather than a repeated add. The
+	// add was done with an 8-bit accumulator while the index was 16-bit, so it
+	// wrapped at 255: row 9 is offset 270, which became 14 and painted the
+	// highlight across the title instead. Rows 1-8 fit in a byte, which is why
+	// only the fields below PITCH looked wrong.
+	//
+	// Clearing A's high byte with a 16-bit load first is what makes the TAX
+	// below safe -- transferring an 8-bit accumulator into a 16-bit index
+	// otherwise carries whatever the hidden high byte happened to hold.
+	b(0xc2, 0x20)             // REP #$20
+	b(0xa9, 0x00, 0x00)       // LDA #$0000
+	b(0xe2, 0x20)             // SEP #$20
+	b(0xad, 0x7e, 0x03, 0x0a) // LDA selection; ASL (two bytes per entry)
+	b(0xc2, 0x20)             // REP #$20
+	b(0xaa)                   // TAX
+	// Long read, not absolute. The render path runs with DB set to $7e so its
+	// plane stores land in WRAM, which means an absolute read of ROM data here
+	// fetches WRAM instead and comes back zero -- the highlight then pinned
+	// itself to row 0. The static plane copy above uses a long read for the
+	// same reason.
+	soundRowTableRead := len(p)
+	b(0xbf, 0, 0, 0) // LDA.l rowOffsets,X
+	b(0xaa)       // TAX -- plane offset of the selected row
+	b(0xe2, 0x20) // SEP #$20
+	b(0xa9, '>', 0x9d, 0x00, 0x10)
+	b(0xa9, 0x04, 0xa0, documentPlaneColumns, 0x00)
+	highlightSoundRow := len(p)
+	b(0x9d, 0x00, 0x12, 0xe8, 0x88)
+	bneHighlightSoundRow := len(p)
+	b(0xd0, 0)
+	branch(bneHighlightSoundRow, highlightSoundRow)
+	b(0xe2, 0x10) // SEP #$10 -- back to the 8-bit index everything else uses
+	soundPlaneReadyJump := len(p)
+	b(0x4c, 0, 0)
+
+	// Plane offset of each selectable row, as 16-bit entries. Data, sitting
+	// after an unconditional jump and reached only by the indexed load above.
+	soundRowOffsets := len(p)
+	{
+		addr := loromAddr(soundRowOffsets)
+		p[soundRowTableRead+1] = byte(addr)
+		p[soundRowTableRead+2] = byte(addr >> 8)
+		p[soundRowTableRead+3] = loromBank(soundRowOffsets)
+	}
+	for index := range soundFields {
+		offset := soundFieldRow(index) * documentPlaneColumns
+		b(byte(offset), byte(offset>>8))
+	}
+
 	renderSaveFormat := len(p)
 	jump(renderSaveFormatJump, renderSaveFormat)
 	b(0xa2, 0x00)
@@ -5109,7 +6536,7 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	menuPlaneReady := len(p)
 	for _, at := range []int{
 		browserLoadingReadyJump, browserReadyJump, helpPlaneReadyJump,
-		settingsPlaneReadyJump, saveFormatPlaneReadyJump,
+		settingsPlaneReadyJump, soundPlaneReadyJump, saveFormatPlaneReadyJump,
 		filenamePlaneReadyJump, transitionPlaneReadyJump,
 	} {
 		jump(at, menuPlaneReady)
@@ -5211,7 +6638,7 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	b(0xe8, 0x8e, 0x12, 0x0f)                         // INX; STX $0f12
 	b(0xae, 0x20, 0x0f)                               // LDX $0f20 (the last visible cell again)
 	b(0xad, 0x16, 0x0f)                               // LDA $0f16
-	b(0xd0, 0x03)                         // BNE over the trampoline
+	b(0xd0, 0x03)                                     // BNE over the trampoline
 	finishRowDoneJump := len(p)
 	b(0x4c, 0, 0) // JMP finishRowDone (already flush left)
 	// Move the row's visible cells right, last cell first so the copy can never
@@ -5229,8 +6656,8 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	branch(bneFinishRowMove, finishRowMove)
 	// Blank the cells the row vacated, so the text it used to hold there cannot
 	// stay behind the moved line.
-	b(0xae, 0x1a, 0x0f)                         // LDX $0f1a (rowStart)
-	b(0xad, 0x16, 0x0f, 0x8d, 0x18, 0x0f)       // LDA $0f16; STA $0f18 (count = shift)
+	b(0xae, 0x1a, 0x0f)                   // LDX $0f1a (rowStart)
+	b(0xad, 0x16, 0x0f, 0x8d, 0x18, 0x0f) // LDA $0f16; STA $0f18 (count = shift)
 	finishRowBlank := len(p)
 	b(0xa9, ' ', 0x9d, 0x00, 0x10)              // LDA #' '; STA $1000,X
 	b(0xa9, documentBaseAttr, 0x9d, 0x00, 0x12) // LDA #base; STA $1200,X
@@ -5245,9 +6672,9 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	b(0xa5, 0x0b)       // LDA $0b (caret cell)
 	b(0xcd, 0x1a, 0x0f) // CMP $0f1a (rowStart)
 	bccFinishRowCaretDone := len(p)
-	b(0x90, 0)                      // BCC: the caret is in an earlier row
-	b(0x38, 0xed, 0x1a, 0x0f)       // SEC; SBC $0f1a (its column in this row)
-	b(0xcd, 0x1c, 0x0f)             // CMP $0f1c (width + 1)
+	b(0x90, 0)                // BCC: the caret is in an earlier row
+	b(0x38, 0xed, 0x1a, 0x0f) // SEC; SBC $0f1a (its column in this row)
+	b(0xcd, 0x1c, 0x0f)       // CMP $0f1c (width + 1)
 	bcsFinishRowCaretDone := len(p)
 	b(0xb0, 0)                                        // BCS: the caret is in a later row
 	b(0xa5, 0x0b, 0x18, 0x6d, 0x16, 0x0f, 0x85, 0x0b) // LDA $0b; CLC; ADC $0f16; STA $0b
@@ -5570,7 +6997,7 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	paletteReady := len(p)
 	branch(braPaletteReady, paletteReady)
 	branch(braPaletteReady2, paletteReady)
-	b(0x48)                         // PHA (stash palette attribute)
+	b(0x48) // PHA (stash palette attribute)
 	// The three style bits are the glyph page index, so there is no priority to
 	// resolve and nothing to look up: bold, italic and underline each own one
 	// bit, and every combination is its own page (see glyphShapePixels). LSR
@@ -5905,10 +7332,14 @@ func build() ([]byte, int) {
 	browserReady := browserReadyPlane()
 	help := helpPlane()
 	settings := settingsPlane()
+	sound := soundPlane()
 	saveFormat := saveFormatPlane()
 	filename := filenamePlane()
 	saveRootTitle := []byte(" CHOOSE A FOLDER FOR NEW FILE ")
 	saveFolderTitle := []byte("  PRESS N: NEW FILE IN FOLDER ")
+	// spcImage is deterministic; emitProgram assembled the same bytes to size
+	// its upload loop, and this is the copy that actually lands in the ROM.
+	spcBytes, _ := spcImage()
 	// Region layout, checked per bank. Each entry must fit before the next one
 	// starts; the final bound in each bank is the reserved window that closes it.
 	for _, region := range []struct {
@@ -5917,8 +7348,10 @@ func build() ([]byte, int) {
 		size  int
 		limit int
 	}{
-		// Bank 0: program, then the scan map, then the v3 extended header.
-		{"program", 0, len(program), scanMapOffset},
+		// Bank 0: program, then the APU image, then the scan map, then the v3
+		// extended header.
+		{"program", 0, len(program), spcImageOffset},
+		{"SPC image", spcImageOffset, len(spcBytes), scanMapOffset},
 		{"scan map", scanMapOffset, 256, 0x7fb0},
 		// Bank 1: fixed pages, then the variable tile blob.
 		{"palette", paletteOffset, 128, tilemapOffset},
@@ -5931,7 +7364,8 @@ func build() ([]byte, int) {
 		{"save-format plane", saveFormatOffset, len(saveFormat), saveRootTitleOffset},
 		{"save root title", saveRootTitleOffset, len(saveRootTitle), saveFolderTitleOffset},
 		{"save folder title", saveFolderTitleOffset, len(saveFolderTitle), filenameOffset},
-		{"filename plane", filenameOffset, len(filename), tilesOffset},
+		{"filename plane", filenameOffset, len(filename), soundOffset},
+		{"sound plane", soundOffset, len(sound), tilesOffset},
 		{"PPU tiles", tilesOffset, len(tiles), bank1Limit},
 	} {
 		if region.start+region.size > region.limit {
@@ -5946,11 +7380,13 @@ func build() ([]byte, int) {
 	}
 	rom := make([]byte, romSize)
 	copy(rom, program)
+	copy(rom[spcImageOffset:], spcBytes)
 	copy(rom[menuOffset:], menu)
 	copy(rom[browserOffset:], transition)
 	copy(rom[browserReadyOffset:], browserReady)
 	copy(rom[helpOffset:], help)
 	copy(rom[settingsOffset:], settings)
+	copy(rom[soundOffset:], sound)
 	copy(rom[saveFormatOffset:], saveFormat)
 	copy(rom[saveRootTitleOffset:], saveRootTitle)
 	copy(rom[saveFolderTitleOffset:], saveFolderTitle)

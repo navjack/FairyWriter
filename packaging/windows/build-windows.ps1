@@ -100,6 +100,18 @@ Copy-Item -LiteralPath (Join-Path $SourceRoot "third_party\\cmark-gfm\\COPYING")
     -Destination (Join-Path $StageRoot "CMARK-GFM-LICENSE")
 Copy-Item -LiteralPath (Join-Path $SourceRoot "TESTING.md") -Destination $StageRoot
 
+# zlib comes from vcpkg as an application-local DLL rather than from Qt, so it
+# reaches the stage only through the wildcard copy above. The clean-path launch
+# below would catch its absence indirectly, but name it explicitly: an indirect
+# signal is easy to misread as "the ZIP is fine" when it is really "the loader
+# found a copy somewhere else".
+$RequiredRuntime = @("z.dll")
+foreach ($Dll in $RequiredRuntime) {
+    if (-not (Test-Path -LiteralPath (Join-Path $StageRoot $Dll))) {
+        throw "Required runtime library is missing from the Windows package: $Dll"
+    }
+}
+
 # Prove the staged directory is self-contained. The build and test environment
 # has Qt and vcpkg runtime directories on PATH, which can hide a missing DLL in
 # the ZIP. A first process launch with only Windows system locations available

@@ -314,6 +314,28 @@ bool DocumentBridge::publishPersistenceFailure(const PersistenceResult& result) 
 	return m_events.push(event);
 }
 
+bool DocumentBridge::publishSoundSettings() {
+	const SoundSettings& sound = m_persistence.soundSettings();
+	MailboxRecord event;
+	event.kind = EventSoundSettings;
+	event.revision = m_engine.revision();
+	event.payload = {
+		static_cast<std::uint8_t>(sound.typing_blips ? 1 : 0),
+		static_cast<std::uint8_t>(sound.waveform),
+		sound.attack,
+		sound.decay,
+		sound.sustain_level,
+		sound.sustain_rate,
+		sound.release,
+		sound.pitch,
+		sound.volume,
+		sound.echo_volume,
+		sound.echo_delay,
+		sound.echo_feedback
+	};
+	return m_events.push(event);
+}
+
 bool DocumentBridge::publishPersistenceSettings() {
 	const PersistenceSettings& settings = m_persistence.settings();
 	DocumentFormat format = DocumentFormat::Odt;
@@ -395,6 +417,33 @@ bool DocumentBridge::pump() {
 		settings.recovery_copies = command.payload[2];
 		m_persistence.setSettings(settings);
 		return publishPersistenceSettings();
+	}
+	if (current && command.kind == CommandGetSoundSettings) {
+		return publishSoundSettings();
+	}
+	if (current && command.kind == CommandSetSoundSettings) {
+		// One atomic nine-byte value, for the same reason the persistence
+		// settings cross as one three-byte value: a torn update here would not
+		// be a stale reading, it would be a voice configured from half of two
+		// different presets.
+		if (command.payload.size() != 12) return false;
+		if (command.payload[0] > 1 || command.payload[1] > 2) return false;
+		SoundSettings settings;
+		settings.typing_blips = command.payload[0] != 0;
+		settings.waveform = static_cast<SoundSettings::Waveform>(command.payload[1]);
+		// Each mask is the width of the register field the value lands in.
+		settings.attack = command.payload[2] & 0x0f;
+		settings.decay = command.payload[3] & 0x07;
+		settings.sustain_level = command.payload[4] & 0x07;
+		settings.sustain_rate = command.payload[5] & 0x1f;
+		settings.release = command.payload[6] & 0x1f;
+		settings.pitch = command.payload[7] & 0x3f;
+		settings.volume = command.payload[8] & 0x7f;
+		settings.echo_volume = command.payload[9] & 0x7f;
+		settings.echo_delay = command.payload[10] & 0x0f;
+		settings.echo_feedback = command.payload[11] & 0x7f;
+		m_persistence.setSoundSettings(settings);
+		return publishSoundSettings();
 	}
 	if (current && command.kind == CommandSetMarkdownView) {
 		if (command.payload.size() != 1 || command.payload[0] > 1) return false;

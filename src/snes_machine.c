@@ -20,12 +20,29 @@ struct FairySnesMachine {
   uint32_t pixels[256 * 239];
 };
 
+// SPC cycles per SNES master cycle. snes.c keeps this as a file-static
+// (`apuCyclesPerMaster`, snes.c:23) and only snes_runCycle -- which this machine
+// does not use -- accumulates it. clock_position below is the equivalent here,
+// so the ratio is restated rather than the vendored checkout patched to export
+// it. 32040 * 32 is the SPC clock; 1364 * 262 * 60 is the NTSC master clock.
+static const double kApuCyclesPerMaster = (32040.0 * 32.0) / (1364.0 * 262.0 * 60.0);
+
+// One native DSP output block. dsp_getSamples consumes exactly this many
+// samples per call and resamples them to whatever the caller asks for.
+#define FAIRY_APU_BLOCK_SAMPLES 534
+
 uint8 g_ram[0x20000];
 Snes *g_snes;
 Ppu *g_ppu;
 bool g_new_ppu = true;
 bool g_fail = false;
 
+// snesrecomp's runner advances the SPC from a second thread (RtlRenderAudio) and
+// needs these to serialise it against the CPU thread. This machine has exactly
+// one APU owner: fairy_snes_run_frame drives it, and fairy_snes_audio_read
+// drains it from the same thread. The host's own ring buffer is what crosses the
+// thread boundary, so these stay no-ops deliberately -- adding a mutex here would
+// guard nothing. Reinstate them if the APU is ever advanced off the frame thread.
 void RtlApuLock(void) {}
 void RtlApuUnlock(void) {}
 void RtlApuWrite(uint16 adr, uint8 val) { g_snes->apu->inPorts[adr & 3] = val; }
@@ -108,8 +125,15 @@ static void clock_position(FairySnesMachine *machine) {
   }
 
   snes->hPos += 2;
+  snes->apuCatchupCycles += kApuCyclesPerMaster * 2.0;
   if (snes->hPos == 1364) {
     snes->hPos = 0;
+    // Catch the APU up once per scanline. snes_catchupApu clamps its own
+    // accumulator to 10000 cycles and silently discards the rest, and a frame is
+    // worth 1025280/60 = 17088 SPC cycles -- so catching up only once per frame
+    // would throw away 42% of the APU's time and permanently starve the DSP's
+    // sample ring. Per scanline is ~65 cycles, far inside the clamp.
+    snes_catchupApu(snes);
     if (++snes->vPos == 262) {
       snes->vPos = 0;
       machine->completed_frames++;
@@ -200,4 +224,39 @@ void fairy_snes_debug_bus_write(FairySnesMachine *machine, uint32_t address, uin
 uint16_t fairy_snes_debug_vram_word(const FairySnesMachine *machine, uint16_t address) {
   if (!machine || !machine->snes || !machine->snes->ppu) return 0;
   return machine->snes->ppu->vram[address & 0x7fff];
+}
+
+static Dsp *machine_dsp(const FairySnesMachine *machine) {
+  if (!machine || !machine->snes || !machine->snes->apu) return NULL;
+  return machine->snes->apu->dsp;
+}
+
+int fairy_snes_audio_blocks(const FairySnesMachine *machine) {
+  const Dsp *dsp = machine_dsp(machine);
+  if (!dsp) return 0;
+  return (int)((dsp->sampleWrite - dsp->sampleRead) / FAIRY_APU_BLOCK_SAMPLES);
+}
+
+bool fairy_snes_audio_read(FairySnesMachine *machine, int16_t *out, int frames) {
+  Dsp *dsp = machine_dsp(machine);
+  if (!dsp || !out || frames <= 0) return false;
+  if (dsp->sampleWrite - dsp->sampleRead < FAIRY_APU_BLOCK_SAMPLES) return false;
+  dsp_getSamples(dsp, out, frames);
+  return true;
+}
+
+void fairy_snes_audio_discard(FairySnesMachine *machine) {
+  Dsp *dsp = machine_dsp(machine);
+  if (dsp) dsp->sampleRead = dsp->sampleWrite;
+}
+
+uint8_t fairy_snes_debug_aram(const FairySnesMachine *machine, uint16_t address) {
+  if (!machine || !machine->snes || !machine->snes->apu) return 0;
+  return machine->snes->apu->ram[address];
+}
+
+uint8_t fairy_snes_debug_dsp_reg(const FairySnesMachine *machine, uint8_t reg) {
+  const Dsp *dsp = machine_dsp(machine);
+  if (!dsp) return 0;
+  return dsp->ram[reg & 0x7f];
 }

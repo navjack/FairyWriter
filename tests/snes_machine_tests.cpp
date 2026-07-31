@@ -3093,5 +3093,343 @@ int main(int argc, char** argv)
 		}
 		fairy_snes_destroy(machine);
 	}
+
+	// --- Typing blip: SPC700 driver upload, key-on, and the settings path ---
+	{
+		FairySnesMachine* audio = fairy_snes_create(rom.data(), rom.size());
+		if (!audio) return 239;
+
+		// Peak absolute sample over `frames`, draining as it goes. Returns -1 if
+		// the machine stalls, which is itself a failure worth distinguishing.
+		const auto peakOver = [](FairySnesMachine* m, int frames) {
+			std::vector<std::int16_t> block(800 * 2);
+			int peak = 0;
+			for (int i = 0; i < frames; ++i) {
+				if (!fairy_snes_run_frame(m)) return -1;
+				while (fairy_snes_audio_blocks(m) > 0) {
+					if (!fairy_snes_audio_read(m, block.data(), 800)) break;
+					for (const std::int16_t s : block) {
+						const int a = s < 0 ? -s : s;
+						if (a > peak) peak = a;
+					}
+				}
+			}
+			return peak;
+		};
+
+		if (!runFrames(audio, 20)) return 240;
+		// The upload is bounded, so a failure here is a clear flag rather than a
+		// hang -- which is exactly why this can be asserted at all.
+		if (fairy_snes_debug_wram(audio, 0x0371) != 1) {
+			std::fputs("SPC700 driver upload did not complete; audio flag $0371 is clear\n", stderr);
+			return 241;
+		}
+		// The driver installs its DSP init table before accepting any command,
+		// so these registers reading back as configured is proof it is running
+		// on the other processor, not merely that bytes were copied.
+		// FLG must leave bit 5 clear (echo writes permitted), and bits 6-7 clear
+		// (not muted, not in reset).
+		if (fairy_snes_debug_dsp_reg(audio, 0x5d) != 0x02
+			|| fairy_snes_debug_dsp_reg(audio, 0x05) != 0xdf
+			|| fairy_snes_debug_dsp_reg(audio, 0x06) != 0x7e
+			|| fairy_snes_debug_dsp_reg(audio, 0x6c) != 0x00) {
+			std::fprintf(stderr, "DSP init table not installed: DIR=%02x ADSR1=%02x ADSR2=%02x FLG=%02x\n",
+				fairy_snes_debug_dsp_reg(audio, 0x5d), fairy_snes_debug_dsp_reg(audio, 0x05),
+				fairy_snes_debug_dsp_reg(audio, 0x06), fairy_snes_debug_dsp_reg(audio, 0x6c));
+			return 242;
+		}
+		// The echo unit is live, so its buffer address and FIR must be real. ESA
+		// pointing at the driver image would have the DSP overwrite the program
+		// it is running, which is silent until it is catastrophic.
+		if (fairy_snes_debug_dsp_reg(audio, 0x6d) != 0x10
+			|| fairy_snes_debug_dsp_reg(audio, 0x0f) == 0
+			|| (fairy_snes_debug_dsp_reg(audio, 0x4d) & 0x01) == 0) {
+			std::fprintf(stderr, "echo unit not configured: ESA=%02x FIR C0=%02x EON=%02x\n",
+				fairy_snes_debug_dsp_reg(audio, 0x6d), fairy_snes_debug_dsp_reg(audio, 0x0f),
+				fairy_snes_debug_dsp_reg(audio, 0x4d));
+			return 259;
+		}
+		// Directory entry 0 must point at a block whose header loops, or the
+		// oscillator would stop after sixteen samples.
+		const std::uint16_t source0 = static_cast<std::uint16_t>(
+			fairy_snes_debug_aram(audio, 0x0200) | (fairy_snes_debug_aram(audio, 0x0201) << 8));
+		if ((fairy_snes_debug_aram(audio, source0) & 0x03) != 0x03) {
+			std::fputs("BRR source 0 does not carry both loop and end flags\n", stderr);
+			return 243;
+		}
+
+		// Nothing has been typed, so nothing may be audible. This is the
+		// regression guard for the boot-time key-on the port residue once caused.
+		if (const int idle = peakOver(audio, 20); idle != 0) {
+			std::fprintf(stderr, "cartridge is not silent before any keystroke: peak %d\n", idle);
+			return 244;
+		}
+
+		if (!fairy_snes_key_event(audio, scanForAscii('a'), true, false) || !runFrames(audio, 2)) return 245;
+		fairy_snes_key_event(audio, scanForAscii('a'), false, false);
+		if (const int blip = peakOver(audio, 30); blip <= 0) {
+			std::fprintf(stderr, "typing produced no audio: peak %d\n", blip);
+			return 246;
+		}
+
+		// Turning the blip off has to actually silence it, not just stop a
+		// visual. Let the previous note finish releasing first.
+		fairy_snes_debug_bus_write(audio, 0x7e0372, 0);
+		if (peakOver(audio, 60) < 0) return 247;
+		if (!fairy_snes_key_event(audio, scanForAscii('b'), true, false) || !runFrames(audio, 2)) return 248;
+		fairy_snes_key_event(audio, scanForAscii('b'), false, false);
+		if (const int muted = peakOver(audio, 30); muted != 0) {
+			std::fprintf(stderr, "typing still audible with blips disabled: peak %d\n", muted);
+			return 249;
+		}
+
+		// The driver's other command is "write this DSP register", which is the
+		// whole mechanism the sound settings will ride on. Drive it the way the
+		// cartridge does: payload first, then a changed sequence in port 0.
+		fairy_snes_debug_bus_write(audio, 0x002141, 1);    // non-zero = set register
+		fairy_snes_debug_bus_write(audio, 0x002142, 0x06); // V0ADSR2
+		fairy_snes_debug_bus_write(audio, 0x002143, 0x7f);
+		fairy_snes_debug_bus_write(audio, 0x002140,
+			static_cast<std::uint8_t>(fairy_snes_debug_wram(audio, 0x0370) + 0x40));
+		if (!runFrames(audio, 4)) return 250;
+		if (fairy_snes_debug_dsp_reg(audio, 0x06) != 0x7f) {
+			std::fprintf(stderr, "driver ignored a set-register command: ADSR2=%02x\n",
+				fairy_snes_debug_dsp_reg(audio, 0x06));
+			return 251;
+		}
+
+		// A host sound-settings event has to travel the whole way: mailbox to
+		// cartridge state to nine handshaked DSP register writes. Pick values
+		// distinct from the defaults in every field so nothing passes by
+		// coincidence.
+		std::vector<std::uint8_t> sound_events;
+		appendRecord(sound_events, 0x8214, {
+			1,    // typing blips on
+			1,    // waveform: triangle
+			0x0a, // attack
+			0x05, // decay
+			0x03, // sustain level
+			0x11, // sustain rate
+			0x07, // release
+			0x2a, // pitch
+			0x55, // volume
+			0x33, // echo volume
+			0x09, // echo delay
+			0x22  // echo feedback
+		});
+		for (std::size_t i = 0; i < sound_events.size(); ++i) {
+			fairy_snes_debug_bus_write(audio, 0x702100 + static_cast<std::uint32_t>(i), sound_events[i]);
+		}
+		fairy_snes_debug_bus_write(audio, 0x700006, static_cast<std::uint8_t>(sound_events.size()));
+		fairy_snes_debug_bus_write(audio, 0x700007, static_cast<std::uint8_t>(sound_events.size() >> 8));
+		if (!runFrames(audio, 6)) return 252;
+		if (fairy_snes_debug_bus_read(audio, 0x700008) != sound_events.size()) {
+			std::fputs("cartridge did not consume the sound-settings event\n", stderr);
+			return 253;
+		}
+		// ADSR1 = 1 DDD AAAA = $80 | 5<<4 | 10; ADSR2 = LLL RRRRR = 3<<5 | 17.
+		const std::uint8_t want_adsr1 = 0x80 | (5 << 4) | 0x0a;
+		const std::uint8_t want_adsr2 = static_cast<std::uint8_t>((3 << 5) | 0x11);
+		const std::uint8_t want_gain = 0xa0 | 0x07;
+		if (fairy_snes_debug_dsp_reg(audio, 0x05) != want_adsr1
+			|| fairy_snes_debug_dsp_reg(audio, 0x06) != want_adsr2
+			|| fairy_snes_debug_dsp_reg(audio, 0x07) != want_gain
+			|| fairy_snes_debug_dsp_reg(audio, 0x03) != 0x2a
+			|| fairy_snes_debug_dsp_reg(audio, 0x00) != 0x55
+			|| fairy_snes_debug_dsp_reg(audio, 0x01) != 0x55
+			|| fairy_snes_debug_dsp_reg(audio, 0x04) != 1
+			|| fairy_snes_debug_dsp_reg(audio, 0x2c) != 0x33
+			|| fairy_snes_debug_dsp_reg(audio, 0x3c) != 0x33
+			|| fairy_snes_debug_dsp_reg(audio, 0x7d) != 0x09
+			|| fairy_snes_debug_dsp_reg(audio, 0x0d) != 0x22) {
+			std::fprintf(stderr,
+				"sound settings did not reach the DSP: ADSR1=%02x/%02x ADSR2=%02x/%02x "
+				"GAIN=%02x/%02x PITCHH=%02x VOLL=%02x SRCN=%02x\n",
+				fairy_snes_debug_dsp_reg(audio, 0x05), want_adsr1,
+				fairy_snes_debug_dsp_reg(audio, 0x06), want_adsr2,
+				fairy_snes_debug_dsp_reg(audio, 0x07), want_gain,
+				fairy_snes_debug_dsp_reg(audio, 0x03),
+				fairy_snes_debug_dsp_reg(audio, 0x00),
+				fairy_snes_debug_dsp_reg(audio, 0x04));
+			std::fprintf(stderr, "  echo: EVOLL=%02x EVOLR=%02x EDL=%02x EFB=%02x\n",
+				fairy_snes_debug_dsp_reg(audio, 0x2c), fairy_snes_debug_dsp_reg(audio, 0x3c),
+				fairy_snes_debug_dsp_reg(audio, 0x7d), fairy_snes_debug_dsp_reg(audio, 0x0d));
+			return 254;
+		}
+		// The event re-enabled blips, so typing must be audible again -- this is
+		// what proves byte 0 is wired to the switch and not merely stored.
+		if (!fairy_snes_key_event(audio, scanForAscii('c'), true, false) || !runFrames(audio, 2)) return 255;
+		fairy_snes_key_event(audio, scanForAscii('c'), false, false);
+		if (const int again = peakOver(audio, 30); again <= 0) {
+			std::fprintf(stderr, "settings event did not re-enable the blip: peak %d\n", again);
+			return 256;
+		}
+
+		// Waveform 2 is the hardware noise source, which is a different signal
+		// path inside the DSP rather than another sample.
+		std::vector<std::uint8_t> noise_event;
+		appendRecord(noise_event, 0x8214, {1, 2, 0x0f, 0x04, 0, 24, 20, 0x10, 0x60, 0, 2, 0});
+		const std::uint32_t noise_base = 0x702100 + static_cast<std::uint32_t>(sound_events.size());
+		for (std::size_t i = 0; i < noise_event.size(); ++i) {
+			fairy_snes_debug_bus_write(audio, noise_base + static_cast<std::uint32_t>(i), noise_event[i]);
+		}
+		const std::size_t total = sound_events.size() + noise_event.size();
+		fairy_snes_debug_bus_write(audio, 0x700006, static_cast<std::uint8_t>(total));
+		fairy_snes_debug_bus_write(audio, 0x700007, static_cast<std::uint8_t>(total >> 8));
+		if (!runFrames(audio, 6)) return 257;
+		if ((fairy_snes_debug_dsp_reg(audio, 0x3d) & 0x01) == 0) {
+			std::fprintf(stderr, "noise waveform did not set NON bit 0: NON=%02x\n",
+				fairy_snes_debug_dsp_reg(audio, 0x3d));
+			return 258;
+		}
+		fairy_snes_destroy(audio);
+	}
+
+	// --- SPC700 shaper: audition, capture, and the two live scopes ----------
+	{
+		FairySnesMachine* shaper = fairy_snes_create(rom.data(), rom.size());
+		if (!shaper) return 260;
+		if (!runFrames(shaper, 20)) return 261;
+		// F5 is PS/2 set-2 scancode 0x03.
+		if (!fairy_snes_key_event(shaper, 0x03, true, false) || !runFrames(shaper, 4)) return 262;
+		fairy_snes_key_event(shaper, 0x03, false, false);
+		if (!runFrames(shaper, 3)) return 263;
+		if (fairy_snes_debug_wram(shaper, 0x031d) != 0x13) {
+			std::fputs("F5 did not open the sound shaper\n", stderr);
+			return 264;
+		}
+		// Space auditions. That one note both plays and refills the capture the
+		// scopes are drawn from.
+		if (!fairy_snes_key_event(shaper, 0x29, true, false) || !runFrames(shaper, 3)) return 265;
+		fairy_snes_key_event(shaper, 0x29, false, false);
+		if (!runFrames(shaper, 24)) return 266;
+
+		// The capture must have reached WRAM. Reading straight from the SPC's
+		// own ARAM would prove the driver works but not that the cartridge ever
+		// streamed it, which is the half that can silently do nothing.
+		int wave_nonzero = 0, env_nonzero = 0;
+		for (int i = 0; i < 30; ++i) {
+			if (fairy_snes_debug_wram(shaper, 0x1d00 + i)) ++wave_nonzero;
+			if (fairy_snes_debug_wram(shaper, 0x1d20 + i)) ++env_nonzero;
+		}
+		if (wave_nonzero < 8 || env_nonzero < 4) {
+			std::fprintf(stderr, "capture did not reach WRAM: %d waveform, %d envelope samples\n",
+				wave_nonzero, env_nonzero);
+			return 267;
+		}
+		// The envelope must actually decay -- a flat or rising trace would mean
+		// we are plotting something other than the live ENVX register.
+		const int first = fairy_snes_debug_wram(shaper, 0x1d20);
+		const int later = fairy_snes_debug_wram(shaper, 0x1d20 + 6);
+		if (first == 0 || later >= first) {
+			std::fprintf(stderr, "envelope trace does not decay: [0]=%d [6]=%d\n", first, later);
+			return 268;
+		}
+		// And both scopes must be drawn: their rows carry the bar tiles, which
+		// are control codes 1-8 and appear nowhere else on the plane.
+		const auto barCells = [&](int row) {
+			int count = 0;
+			for (int col = 0; col < 30; ++col) {
+				const std::uint8_t cell =
+					fairy_snes_debug_wram(shaper, 0x1000 + row * 30 + col);
+				if (cell >= 1 && cell <= 8) ++count;
+			}
+			return count;
+		};
+		if (barCells(13) + barCells(14) < 8) {
+			std::fputs("waveform scope drew no bars\n", stderr);
+			return 269;
+		}
+		if (barCells(15) + barCells(16) < 4) {
+			std::fputs("envelope scope drew no bars\n", stderr);
+			return 270;
+		}
+		// A slider must reflect its value: ATTACK is at its maximum, so every
+		// cell of its bar is lit.
+		for (int col = 12; col < 24; ++col) {
+			if (fairy_snes_debug_wram(shaper, 0x1000 + 3 * 30 + col) != '#') {
+				std::fprintf(stderr, "ATTACK slider cell %d is not filled at maximum\n", col);
+				return 271;
+			}
+		}
+		// A slider is draggable. The renderer's fill thresholds and the
+		// pointer's value table are computed from the same formula in two
+		// different places, so a click must land the bar exactly where it was
+		// pressed -- and the value must reach the DSP, not just the screen.
+		{
+			// Pointer starts at (128,112); VOLUME is field 8, row 9, y=151.
+			// Slider cell 2 sits at x=116.
+			int dx = 116 - 128, dy = 151 - 112;
+			while (dx || dy) {
+				const int sx = dx > 0 ? (dx > 100 ? 100 : dx) : (dx < -100 ? -100 : dx);
+				const int sy = dy > 0 ? (dy > 100 ? 100 : dy) : (dy < -100 ? -100 : dy);
+				fairy_snes_mouse_event(shaper, static_cast<std::int8_t>(sx),
+					static_cast<std::int8_t>(sy), false, false);
+				dx -= sx; dy -= sy;
+				if (!runFrames(shaper, 1)) return 272;
+			}
+			fairy_snes_mouse_event(shaper, 0, 0, true, false);
+			if (!runFrames(shaper, 6)) return 273;
+			fairy_snes_mouse_event(shaper, 0, 0, false, false);
+			if (!runFrames(shaper, 3)) return 274;
+			// 12 slider cells over a maximum of 127: cell index 2 is 32.
+			if (fairy_snes_debug_wram(shaper, 0x037a) != 32
+				|| fairy_snes_debug_wram(shaper, 0x037e) != 8) {
+				std::fprintf(stderr, "slider click set volume %u selection %u, want 32 and 8\n",
+					fairy_snes_debug_wram(shaper, 0x037a),
+					fairy_snes_debug_wram(shaper, 0x037e));
+				return 275;
+			}
+			if (fairy_snes_debug_dsp_reg(shaper, 0x00) != 32) {
+				std::fprintf(stderr, "slider click did not reach the DSP: VOLL=%02x\n",
+					fairy_snes_debug_dsp_reg(shaper, 0x00));
+				return 276;
+			}
+			// Three bars lit, nine not -- the bar landed where it was clicked.
+			for (int col = 12; col < 24; ++col) {
+				const std::uint8_t want = col < 15 ? '#' : '-';
+				if (fairy_snes_debug_wram(shaper, 0x1000 + 9 * 30 + col) != want) {
+					std::fprintf(stderr, "volume bar cell %d is not '%c' after the click\n",
+						col, want);
+					return 277;
+				}
+			}
+		}
+		// Walk every field and check the selection highlight covers exactly its
+		// own row. The first eight rows have offsets that fit in a byte, so a
+		// row-offset computation that wrapped at 255 looked perfectly correct until the
+		// ninth field -- which is how it shipped. Only a full walk catches it.
+		{
+			// Back to the top of the list first.
+			for (int i = 0; i < 12; ++i) {
+				if (!fairy_snes_key_event(shaper, 0x75, true, true)) return 278; // Up
+                if (!runFrames(shaper, 2)) return 278;
+				fairy_snes_key_event(shaper, 0x75, false, true);
+				if (!runFrames(shaper, 1)) return 278;
+			}
+			for (int selection = 0; selection < 12; ++selection) {
+				int lit = 0, first = -1;
+				for (int row = 0; row < 17; ++row) {
+					for (int col = 0; col < 30; ++col) {
+						if (fairy_snes_debug_wram(shaper, 0x1200 + row * 30 + col) == 4) {
+							if (first < 0) first = row;
+							++lit;
+						}
+					}
+				}
+				if (first != selection + 1 || lit != 30) {
+					std::fprintf(stderr,
+						"selection %d highlights row %d with %d cells, want row %d with 30\n",
+						selection, first, lit, selection + 1);
+					return 279;
+				}
+				if (!fairy_snes_key_event(shaper, 0x72, true, true)) return 280; // Down
+				if (!runFrames(shaper, 2)) return 280;
+				fairy_snes_key_event(shaper, 0x72, false, true);
+				if (!runFrames(shaper, 1)) return 280;
+			}
+		}
+		fairy_snes_destroy(shaper);
+	}
 	return 0;
 }

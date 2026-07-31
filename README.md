@@ -20,11 +20,26 @@ application.
 
 ## Showcase
 
+<!-- The bare URL below is the inline player, and it must be a GitHub
+     user-attachments asset: a link to the file in this repository renders as a
+     link, not a player. Refreshing it is a manual upload with no API. See
+     docs/SHOWCASE.md, "Publishing it", before changing this line. -->
+
 https://github.com/user-attachments/assets/a06ba6ba-a1b1-4a51-b539-9e3d4f51a4fd
 
-This one-minute, no-audio H.264 MP4 shows the editor in use and its cartridge
-menu. If the inline player is unavailable, [download the showcase
+**Turn the sound on.** This one-minute H.264 MP4 covers typing, the cartridge's
+formatting toolbar with bold, italic and underline combining, paragraph
+alignment on a wrapped paragraph, the F5 SPC700 sound shaper — waveforms,
+dragged faders, the live output and envelope scopes, and the echo unit — and
+then the same document being typed in the voice the shaper was just used to
+build, followed by the cartridge-owned help, save settings, and menu. If the
+inline player is unavailable, [download the showcase
 video](docs/media/fairywriter-showcase.mp4).
+
+Everything in it, picture and sound alike, came out of the emulated console. The
+application records the video itself rather than being screen-captured, so the
+same commit reproduces the same file; see
+[docs/SHOWCASE.md](docs/SHOWCASE.md).
 
 ## What works today
 

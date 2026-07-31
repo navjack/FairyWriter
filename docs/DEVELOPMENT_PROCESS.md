@@ -183,10 +183,13 @@ The resulting public baseline:
 - passed fresh-clone macOS and GitHub/Linux production gates;
 - passed a complete public-history secret and artifact audit.
 
-The H.264 MP4 showcase embedded in the README was subsequently included with
-Jack's explicit authorization. It contains no audio or private
-desktop/document content. The same MP4 is retained in `docs/media/` as a
-repository-owned fallback for the GitHub-hosted inline player.
+An H.264 MP4 showcase was subsequently embedded in the README with Jack's
+explicit authorization, and later replaced by one the application recorded of
+itself. Neither contained private desktop or document content. Both were retired
+on 2026-07-31, along with the recorder that produced the second: GitHub renders a
+video player only for assets it hosts itself, creating one has no API, and the
+embedded player had drifted to a superseded recording that no commit could
+refresh. The README carries no video.
 
 ## Attribution and responsibility
 

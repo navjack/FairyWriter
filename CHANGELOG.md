@@ -30,16 +30,13 @@
 - Smoother motion: the emulated machine is driven at its true 60.0988 Hz rather
   than a rounded 58.8, which removes a dropped or repeated frame roughly once a
   second.
-- The application can record a showcase video of itself. A scripted child mode
-  drives the same player a real session runs and writes the cartridge's own
-  framebuffer and the S-DSP's own output to raw streams, one emulated frame at a
-  time — so one video frame is one DSP block, the two cannot drift, and the same
-  commit reproduces the same file. See `docs/SHOWCASE.md`.
-- The README no longer embeds a showcase video. GitHub renders a player only for
-  assets it hosts itself, and creating one has no API — so the embedded video
-  could not be refreshed by any automated step, and the one in the README had
-  drifted to a superseded silent recording of an older build. The recorder stays;
-  the standing commitment to keep a video in the README does not.
+- The showcase video is gone, and so is the machinery that recorded it. GitHub
+  renders a video player only for assets it hosts itself, and creating one has no
+  API, so the README's embedded player could not be refreshed by any automated
+  step — and it had already drifted to a superseded silent recording of an older
+  build. Keeping it current meant a manual upload before every release. The
+  README's video, the committed MP4, and the self-recording mode that produced it
+  have all been removed.
 
 ## 0.3.0 — 2026-07-30 — tester preview
 

@@ -8,9 +8,9 @@ which changes no shipped byte. Per `VERSIONING.md`, this is a PATCH scope —
 fixes and a source-tree removal, no new user-visible feature. The jump past
 `0.3.1`–`0.3.4` is deliberate; those numbers were never published.
 
-`v0.1.0`, `v0.2.0` and `v0.3.0` are published as prereleases. `v0.3.5` is
-published from the green post-merge `main` run that carries this bump, per the
-`VERSIONING.md` release checklist. The version stays at the latest public release
+`v0.1.0`, `v0.2.0`, `v0.3.0` and `v0.3.5` are all published as prereleases.
+`v0.3.5` is tagged on `e3d1857` and carries the three packages built by that
+commit's own green `main` run. The version stays at the latest public release
 during ordinary development.
 
 `CHANGELOG.md` has no **Unreleased** section: everything that was in it has been

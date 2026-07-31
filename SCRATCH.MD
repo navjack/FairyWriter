@@ -64,10 +64,9 @@
   documents; it must never be checked out for product work and never pushed.
   Merge server-side, without `--delete-branch` — that flag switches the parent
   checkout to its default branch on its own.
-- **No open manual actions.** The README showcase video was retired on
-  2026-07-31 rather than re-uploaded; see the pass note below for why, and
-  `docs/SHOWCASE.md` for the evidence table. The recorder and the MP4 stay in the
-  tree; only the standing commitment to embed a video in the README is gone.
+- **No open manual actions.** The showcase video was retired on 2026-07-31 rather
+  than re-uploaded, and the recorder that produced it was removed with it; see the
+  pass note below for the reasoning and the embed-form evidence.
 - The former private ODT fixture is not in the publishable source.
   `tools/public-test-fixture` generates a deterministic substantial ODT for the
   same production import/edit/round-trip test.
@@ -94,14 +93,14 @@
   fixes and the generated showcase video, both merged but not yet released. They
   become the next version's entry when one is cut.
 
-### 2026-07-31 — retire the README showcase video
+### 2026-07-31 — retire the showcase video and its recorder
 
 Decision, not a defect fix: **the README no longer embeds a video.** Jack's call,
 after the cost of keeping one current was measured rather than assumed.
 
 - **What was actually live.** The README's player was serving a 62.18-second file
-  with *no audio stream at all*, while `docs/media/fairywriter-showcase.mp4` in
-  the tree is 63.30 seconds with an AAC track. A showcase whose headline feature
+  with *no audio stream at all*, while the `docs/media/fairywriter-showcase.mp4`
+  then in the tree was 63.30 seconds with an AAC track. A showcase whose feature
   is sound was being represented by a silent recording of a two-version-old
   build. Confirmed by pulling the asset GitHub actually serves and probing it, not
   by reading the note that said it was stale.
@@ -111,15 +110,33 @@ after the cost of keeping one current was measured rather than assumed.
   or linked repository paths render as plain links. GitHub's own file view does
   not play it either. Only a `github.com/user-attachments/assets/…` URL produces a
   player, and creating one has no API — it needs a drag-and-drop into a comment
-  box in a signed-in browser. The evidence table lives in `docs/SHOWCASE.md`.
+  box in a signed-in browser. The forms tested, and what each rendered as:
+
+  | Form | Rendered as |
+  |---|---|
+  | `<video src="https://raw.githubusercontent.com/...">` | stripped entirely |
+  | `<video><source src="..."></video>` | stripped entirely |
+  | bare `raw.githubusercontent.com` URL | plain link |
+  | `![](raw URL)` or `![](relative path)` | broken `<img>` pointing at an MP4 |
+  | bare or linked repository path | plain link |
 - **Why retire rather than refresh.** Refreshing is a manual step with no API, so
   every future release would either repeat it or let the player drift again. It
   had already drifted. A stale player misrepresents the product worse than no
   player does.
-- **What stays.** `--showcase-record` and the MP4 remain. The recorder is
-  deterministic and works; it is still the right tool for a one-off capture on a
-  release page or an issue. What is retired is the standing obligation to keep a
-  video embedded in the README.
+- **Nothing stays.** The first cut of this decision kept `--showcase-record` and
+  the MP4, on the reasoning that the recorder was deterministic, worked, and
+  might suit a one-off capture. Jack's call was to drop it as well, and that is
+  the more honest position: with no video in the README, the recorder had no
+  consumer, and keeping 496 lines of working code against a hypothetical future
+  use is how the retired Qt UI came to be three quarters of `src/`. Removed:
+  `docs/SHOWCASE.md`, `docs/media/fairywriter-showcase.mp4`, the
+  `--showcase-record` child mode with its `ShowcaseRecorder`, storyboard and
+  scancode resolver, and the three `persistenceTest*` frame/audio accessors that
+  only it called. `git log` has all of it if it is ever wanted.
+- **What the removal did not touch.** The `--persistence-e2e-child`,
+  `--persistence-cartridge-e2e-child` and `--function-key-e2e-child` modes share
+  the same `FAIRYWRITER_PERSISTENCE_TESTING` block and are untouched; `ctest`
+  stayed 11/11 across the removal.
 - **The general lesson**, worth applying beyond this file: a documented "manual
   step required" is a recurring cost, and recording it in a handoff note does not
   pay it. This one sat unpaid long enough to go stale and misrepresent the

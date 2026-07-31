@@ -8,6 +8,7 @@
 - [Build instructions](../BUILDING.md)
 - [Contribution guide](../CONTRIBUTING.md)
 - [Tester guide](../TESTING.md)
+- [Recording the showcase video](SHOWCASE.md)
 
 ## Engineering contracts
 

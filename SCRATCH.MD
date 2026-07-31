@@ -48,11 +48,13 @@
 
 ### Active working tree
 
-- Branch: `agent/drop-legacy-ui`, branched from public `origin/main` at `7183d73`,
-  carrying the removal of the retired FocusWriter Qt UI.
-- `origin/main` is at `7183d73`. PR #9 (render consistency), #10 (self-recorded
-  showcase video) and #11 (documentation hygiene) all merged on 2026-07-31 with
-  all three platform jobs green.
+- Branch: `agent/release-0-3-5`, branched from public `origin/main` at `f4e289f`,
+  carrying only the 0.3.5 release cut: `VERSION`, `CHANGELOG.md`, the AppStream
+  release history, and this file plus `DEVELOPMENT_STATUS.md`. No product code.
+- `origin/main` is at `f4e289f`. PR #9 (render consistency), #10 (self-recorded
+  showcase video), #11 (documentation hygiene), #12 (Qt UI removal), #13 (showcase
+  retirement) and #14 (recorder removal) all merged on 2026-07-31 with all three
+  platform jobs green.
 - **This tree now has one build configuration.** There is no
   `FAIRYWRITER_DEVELOPMENT_UI`. `FAIRYWRITER_DEVELOPER_TOOLS` is a different gate
   and still exists — it builds the standalone `fairywriter_snes_player` and
@@ -80,18 +82,44 @@
 
 ### Version state
 
-- `VERSION` is `0.3.0`. `CHANGELOG.md` and the AppStream release history carry
-  the same number and date (2026-07-30). `VERSIONING.md` is the authority on how
+- `VERSION` is `0.3.5`. `CHANGELOG.md` and the AppStream release history carry
+  the same number and date (2026-07-31). `VERSIONING.md` is the authority on how
   the number moves: MINOR before 1.0 for new user-visible behavior or substantial
-  cartridge/runtime change.
-- Three releases are published, all flagged prerelease: `v0.1.0` (2026-07-29),
-  `v0.2.0` (2026-07-30), `v0.3.0` (2026-07-31). The version stays at the latest
-  public release during ordinary development — development builds are identified
-  by their commit and Actions run, not by bumping `VERSION` as a side effect of
-  repository state.
-- `CHANGELOG.md`'s **Unreleased** section currently holds the render-consistency
-  fixes and the generated showcase video, both merged but not yet released. They
-  become the next version's entry when one is cut.
+  cartridge/runtime change, PATCH for fixes and packaging corrections. 0.3.5 is a
+  PATCH scope — render and editing fixes plus a source-tree removal that changes
+  no shipped byte. **The jump past `0.3.1`–`0.3.4` is deliberate, not an error:
+  Jack chose the number, and those versions were never published.** Do not
+  "correct" it to 0.3.1 later.
+- Releases published, all flagged prerelease: `v0.1.0` (2026-07-29), `v0.2.0`
+  (2026-07-30), `v0.3.0` (2026-07-31), `v0.3.5` (2026-07-31). The version stays at
+  the latest public release during ordinary development — development builds are
+  identified by their commit and Actions run, not by bumping `VERSION` as a side
+  effect of repository state.
+- `CHANGELOG.md` has no **Unreleased** section. Everything that stood in it —
+  the render-consistency fixes, the Qt UI removal, the showcase retirement — went
+  out as 0.3.5. Re-add the heading when the next unreleased entry is written.
+
+### 2026-07-31 — cut the 0.3.5 release
+
+A release cut, not a code change. The diff is `VERSION`, `CHANGELOG.md`, the
+AppStream release history, `DEVELOPMENT_STATUS.md` and this file. No file under
+`src/`, `tools/` or `packaging/` is touched, so the product this release ships is
+byte-for-byte the product that `origin/main` was already building green.
+
+- **Why now.** Six PRs (#9–#14) merged on 2026-07-31 and none of them shipped.
+  `CHANGELOG.md`'s **Unreleased** section had accumulated the whole
+  render-consistency pass, the Qt UI removal and the showcase retirement while
+  `VERSION` still read `0.3.0`, so every artifact CI produced was named for a
+  release that did not contain any of it.
+- **Why 0.3.5.** Jack's number. Scope-wise `VERSIONING.md` puts this at PATCH —
+  fixes plus a source-tree removal that changes no shipped byte — and the jump
+  past `0.3.1`–`0.3.4` is intentional rather than a miscount. Recorded here
+  because the gap will otherwise read as an error to a later agent.
+- **What CI does and does not do.** `.github/workflows/ci.yml` runs on push to
+  `main` and builds the three platform packages, naming each from `VERSION`. It
+  **does not create a GitHub Release, and it does not react to a tag.** Tagging
+  `v0.3.5` and publishing the release against the retained artifacts is steps 7–8
+  of the `VERSIONING.md` checklist and stays manual.
 
 ### 2026-07-31 — retire the showcase video and its recorder
 
@@ -250,6 +278,12 @@ and `docs/SNES_FRONTEND.md` was corrected to match in this pass. Historical
 "10/10 passed" entries in the pass history below are left alone — they were true
 when written.
 
+- 0.3.5 release cut, native macOS arm64 Release from a clean `build/`: **11/11
+  passed**. The number reaches the binary, not just the file — `--version` prints
+  `FairyWriter 0.3.5` and the bundle's `CFBundleShortVersionString` is `0.3.5`.
+  `fairywriter_cli_version` and `fairywriter_cartridge_contract` both pass against
+  the regenerated cartridge (`touch tools/fairywriter-rom/main.go` first, as
+  always on this volume).
 - Native macOS arm64 Release `ctest`: **11/11 passed**, both before and after the
   Qt UI removal, from a **clean** build directory each time. The registered set is
   `fairywriter_cartridge_contract`, `fairywriter_cartridge_conformance`,
@@ -274,9 +308,14 @@ when written.
 
 ### Next actions
 
-Nothing is blocked on a manual step. In order:
+In order:
 
-1. The packaged-app manual smoke on macOS, Linux, and Windows: first Save, format
+1. **Publish `v0.3.5`.** CI names the artifacts from `VERSION` but does not tag
+   and does not create a GitHub Release. After the post-merge `main` run is green,
+   tag `v0.3.5` on that exact commit and publish the release against its retained
+   DMG, AppImage, ZIP and `.sha256` sidecars, flagged prerelease. Never move a tag
+   or replace a published asset; correct the source and cut a new patch instead.
+2. The packaged-app manual smoke on macOS, Linux, and Windows: first Save, format
    picker layout, close/relaunch/open, F3 settings/history, forced-exit recovery,
    Markdown Rendered/Source. Automated process evidence proves persistence
    semantics but not final cartridge pixels or packaged input. Windows x64 still

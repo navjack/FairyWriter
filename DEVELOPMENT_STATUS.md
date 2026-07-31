@@ -1,14 +1,20 @@
 # FairyWriter Development Status (Synced 2026-07-31)
 
-`VERSION` is `0.3.0` — the release that gave FairyWriter sound: an SPC700 audio
-path driven by the emulated S-DSP, and a twelve-setting shaper on F5. Per
-`VERSIONING.md`, new user-visible behavior and substantial cartridge changes take
-the MINOR position before 1.0. `v0.1.0`, `v0.2.0` and `v0.3.0` are all published
-as prereleases; the version stays at the latest public release during ordinary
-development.
+`VERSION` is `0.3.5` — the release that made typing look like what the document
+already is: styling, proofing marks and the selection now survive every keystroke,
+Delete removes the character under the cursor, and the machine runs at its true
+60.0988 Hz. It also removes the retired FocusWriter Qt UI from the source tree,
+which changes no shipped byte. Per `VERSIONING.md`, this is a PATCH scope —
+fixes and a source-tree removal, no new user-visible feature. The jump past
+`0.3.1`–`0.3.4` is deliberate; those numbers were never published.
 
-`CHANGELOG.md`'s **Unreleased** section holds the render-consistency fixes and the
-generated showcase video — both merged, neither released yet.
+`v0.1.0`, `v0.2.0` and `v0.3.0` are published as prereleases. `v0.3.5` is
+published from the green post-merge `main` run that carries this bump, per the
+`VERSIONING.md` release checklist. The version stays at the latest public release
+during ordinary development.
+
+`CHANGELOG.md` has no **Unreleased** section: everything that was in it has been
+released as 0.3.5.
 
 Sections below are newest-first and dated. `SCRATCH.MD` holds the live resume
 point, the discoveries that constrain future work, and the rejected approaches;
@@ -47,7 +53,7 @@ already been violated more than once.
 - Broad feature expansion beyond the constrained one-font proofing/rich-style
   target.
 
-## 2026-07-31 the retired FocusWriter Qt UI is gone
+## 2026-07-31 the retired FocusWriter Qt UI is gone (0.3.5)
 
 The tree builds one thing now. `FAIRYWRITER_DEVELOPMENT_UI` and everything only it
 reached have been deleted: 114 of the 183 files in `src/` (69 remain), 390 files
@@ -77,7 +83,7 @@ test suites. 556 files, about 122,000 lines.
   before and after, and a full `./mac_deploy.sh` gate ending in a
   checksum-verified DMG.
 
-## 2026-07-31 render consistency: the optimistic frame agrees
+## 2026-07-31 render consistency: the optimistic frame agrees (0.3.5)
 
 Invariant: the frame the cartridge draws on its own must be the frame the host is
 about to publish. Anything the two disagree about is on screen as a flash, so the

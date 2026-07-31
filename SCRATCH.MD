@@ -64,12 +64,10 @@
   documents; it must never be checked out for product work and never pushed.
   Merge server-side, without `--delete-branch` — that flag switches the parent
   checkout to its default branch on its own.
-- **One open manual action, carried over from the showcase pass.** GitHub user
-  attachment `a06ba6ba-a1b1-4a51-b539-9e3d4f51a4fd` supplies the inline README
-  player, because ordinary repository video links do not render as players. It
-  still points at the superseded silent 0.1.0 recording and must be re-uploaded
-  by hand. `docs/media/fairywriter-showcase.mp4` in the tree is correct and is
-  what the download link serves. See `docs/SHOWCASE.md`.
+- **No open manual actions.** The README showcase video was retired on
+  2026-07-31 rather than re-uploaded; see the pass note below for why, and
+  `docs/SHOWCASE.md` for the evidence table. The recorder and the MP4 stay in the
+  tree; only the standing commitment to embed a video in the README is gone.
 - The former private ODT fixture is not in the publishable source.
   `tools/public-test-fixture` generates a deterministic substantial ODT for the
   same production import/edit/round-trip test.
@@ -95,6 +93,37 @@
 - `CHANGELOG.md`'s **Unreleased** section currently holds the render-consistency
   fixes and the generated showcase video, both merged but not yet released. They
   become the next version's entry when one is cut.
+
+### 2026-07-31 — retire the README showcase video
+
+Decision, not a defect fix: **the README no longer embeds a video.** Jack's call,
+after the cost of keeping one current was measured rather than assumed.
+
+- **What was actually live.** The README's player was serving a 62.18-second file
+  with *no audio stream at all*, while `docs/media/fairywriter-showcase.mp4` in
+  the tree is 63.30 seconds with an AAC track. A showcase whose headline feature
+  is sound was being represented by a silent recording of a two-version-old
+  build. Confirmed by pulling the asset GitHub actually serves and probing it, not
+  by reading the note that said it was stale.
+- **Why it could not be automated.** Every candidate embed form was pushed to a
+  throwaway branch and the rendered DOM inspected: `<video>` and `<source>` are
+  stripped to zero elements, `![](…)` on an MP4 yields a broken `<img>`, and bare
+  or linked repository paths render as plain links. GitHub's own file view does
+  not play it either. Only a `github.com/user-attachments/assets/…` URL produces a
+  player, and creating one has no API — it needs a drag-and-drop into a comment
+  box in a signed-in browser. The evidence table lives in `docs/SHOWCASE.md`.
+- **Why retire rather than refresh.** Refreshing is a manual step with no API, so
+  every future release would either repeat it or let the player drift again. It
+  had already drifted. A stale player misrepresents the product worse than no
+  player does.
+- **What stays.** `--showcase-record` and the MP4 remain. The recorder is
+  deterministic and works; it is still the right tool for a one-off capture on a
+  release page or an issue. What is retired is the standing obligation to keep a
+  video embedded in the README.
+- **The general lesson**, worth applying beyond this file: a documented "manual
+  step required" is a recurring cost, and recording it in a handoff note does not
+  pay it. This one sat unpaid long enough to go stale and misrepresent the
+  product. Prefer removing the obligation to documenting it.
 
 ### 2026-07-31 — remove the retired FocusWriter Qt UI
 
@@ -228,19 +257,14 @@ when written.
 
 ### Next actions
 
-1. **Re-upload the README showcase attachment by hand.** The inline player still
-   serves the superseded silent 0.1.0 recording; see the open action under
-   *Active working tree*. This is the only outstanding item on merged work, and
-   it cannot be done from a commit.
+Nothing is blocked on a manual step. In order:
 
-Queued after that, in order:
-
-2. The packaged-app manual smoke on macOS, Linux, and Windows: first Save, format
+1. The packaged-app manual smoke on macOS, Linux, and Windows: first Save, format
    picker layout, close/relaunch/open, F3 settings/history, forced-exit recovery,
    Markdown Rendered/Source. Automated process evidence proves persistence
    semantics but not final cartridge pixels or packaged input. Windows x64 still
    awaits its first physical-host acceptance.
-3. Keep the long-document caret, scrollbar, wrap, and stale-cell checks in the
+2. Keep the long-document caret, scrollbar, wrap, and stale-cell checks in the
    same human pass; their automated evidence is green but does not replace visual
    inspection. The 0.3.0 audio path adds its own live checks — typing latency
    with blips on, each envelope field audible, persistence across restart.

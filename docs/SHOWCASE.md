@@ -83,12 +83,34 @@ The recorder also runs under its own application name and a scratch catalog
 root. That keeps it off the developer's real saved settings, and keeps real
 filenames from the home directory out of a public video.
 
-## Publishing it
+## The README no longer embeds it
 
-GitHub only renders a video player for assets it hosts itself, so the README's
-inline player is a `user-attachments` URL rather than the file in this
-repository. That upload has no API: to refresh the player, drag
-`docs/media/fairywriter-showcase.mp4` into any GitHub comment box, let it
-upload, copy the `https://github.com/user-attachments/assets/...` URL it
-produces, and replace the bare URL line in the README's Showcase section.
-Discard the draft comment afterwards — the asset stays.
+**This was retired on 2026-07-31.** The recording itself is automatic and
+deterministic — that part works and is kept. Publishing it was not, and the gap
+between the two is what made the feature unmaintainable: the README's player had
+been serving a superseded silent recording of an older build, and nothing in a
+commit could refresh it.
+
+GitHub renders a video player only for assets it hosts itself. Verified against
+the live renderer rather than the documentation, by pushing every candidate form
+to a branch and reading the rendered DOM:
+
+| Form | Rendered as |
+|---|---|
+| `<video src="https://raw.githubusercontent.com/...">` | stripped entirely |
+| `<video><source src="..."></video>` | stripped entirely |
+| bare `raw.githubusercontent.com` URL | plain link |
+| `![](raw URL)` or `![](relative path)` | broken `<img>` pointing at an MP4 |
+| bare or linked repository path | plain link |
+
+So the only thing that produces a player is a `https://github.com/user-attachments/assets/...`
+URL, and creating one has no API — it requires dragging the file into a comment
+box in a signed-in browser. A README video therefore could not be kept current by
+any automated step, and a stale player misrepresents the product worse than no
+player does.
+
+`docs/media/fairywriter-showcase.mp4` and `--showcase-record` remain in the tree.
+The recorder is still a useful way to produce a deterministic capture — for a
+release page, an issue, or anywhere the upload is a one-off rather than a
+recurring obligation. What is retired is the standing commitment to keep a video
+embedded in the README.

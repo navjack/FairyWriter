@@ -53,6 +53,41 @@ already been violated more than once.
 - Broad feature expansion beyond the constrained one-font proofing/rich-style
   target.
 
+## 2026-08-01 the paste ceiling, full screen, and a coloured canvas
+
+Three tester reports against 0.3.5, one bug and two requests.
+
+**Pasting a long passage did nothing.** `DocumentBridge::m_commands` was sized at
+`MailboxLayout::CommandBytes`, the 8 KiB SRAM command region — but that ring is
+host-internal and is never exported to SRAM; only `RecompPlayer::m_commands` is.
+`MailboxRing::push` refuses a record that does not fit with the ring's reserved
+byte, so any clipboard payload of 8172 UTF-8 bytes or more was rejected, and the
+Ctrl+V branch discarded `submit()`'s return value, so nothing said so. The ring
+is now `MailboxRing::OneRecordCapacity`, and the paste path splits on grapheme
+boundaries for anything past the 16-bit payload field, checks its returns, and
+reports a refused submit. Verified live at 12,699 bytes: 2500 words in, one
+Ctrl+Z out.
+
+**F11 toggles borderless full screen** via `showFullScreen()`/`showNormal()` —
+one path for all three platforms, and it does not recreate the top-level window
+and GL context the way changing `Qt::FramelessWindowHint` would. Escape belongs
+to the cartridge (F1, the menu), so the same key has to work both ways.
+
+**The canvas around the screen is a picked colour**, default pastel green, held
+as an index by the cartridge and turned into a colour by the host through
+`SnesColor` — the surround is quantised to the same five bits per channel as the
+screen. It is the sixth row of the F3 plane and rides the existing settings
+command/event pair, one byte wider each way, rather than a new pair. The desktop
+pointer is blanked over the screen and restored over the canvas.
+
+Finding the CANVAS row's Left/Right worked but the selection jumped to the top
+row uncovered a defect older than this pass: `commandWrite` cleared the
+flags-high byte at `$0319` while the accumulator was still 16-bit, which also
+zeroed `$031a`, the settings plane's selected row. Both single-byte clears now
+wait for the `SEP`. It is the third register-width collision on record in that
+file, and the second involving a 16-bit `STZ` taking its neighbour — the page
+byte at `$034c` already carried a comment warning about exactly this.
+
 ## 2026-07-31 the retired FocusWriter Qt UI is gone (0.3.5)
 
 The tree builds one thing now. `FAIRYWRITER_DEVELOPMENT_UI` and everything only it

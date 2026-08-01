@@ -26,6 +26,19 @@ int main() {
 	expect(ring.push(c), "wrapped record fits");
 	expect(ring.pop(out) && out.kind==2, "second record remains ordered after wrap");
 	expect(ring.pop(out) && out.kind==3 && out.payload[0]==3, "wrapped payload is intact");
+	// A ring sized OneRecordCapacity must hold one record of the widest payload
+	// the 16-bit count field can describe, and nothing wider. The bridge's
+	// host-side command ring is sized from this: at MailboxLayout::CommandBytes
+	// it silently refused every paste of 8172 bytes or more.
+	MailboxRing widest(MailboxRing::OneRecordCapacity);
+	MailboxRecord maximum; maximum.kind = 31;
+	maximum.payload.resize(MailboxRing::MaxRecordPayload, 0x5a);
+	expect(widest.push(maximum), "a ring sized for one record accepts the widest payload the wire can describe");
+	expect(widest.pop(out) && out.kind == 31 && out.payload.size() == MailboxRing::MaxRecordPayload
+		&& out.payload.front() == 0x5a && out.payload.back() == 0x5a,
+		"the widest record round trips intact");
+	MailboxRecord past_the_wire; past_the_wire.payload.resize(MailboxRing::MaxRecordPayload + 1, 0x5a);
+	expect(!widest.push(past_the_wire), "a payload past the 16-bit count field is rejected, however large the ring");
 	MailboxRing exported_events(96);
 	MailboxRecord event_a; event_a.kind = 20; event_a.payload.resize(3, 1);
 	MailboxRecord event_b; event_b.kind = 21; event_b.payload.resize(5, 2);

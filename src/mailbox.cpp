@@ -177,7 +177,7 @@ bool MailboxRing::push(const MailboxRecord& r) {
 	// Keep one byte unused so equal indices always mean empty. Without this
 	// invariant, a completely full exported ring is indistinguishable from an
 	// empty ring to the process on the other side of the mailbox.
-	if (m_storage.empty() || r.protocol != MailboxProtocol || r.payload.size() > 0xffff || HeaderSize + r.payload.size() >= freeSpace()) return false;
+	if (m_storage.empty() || r.protocol != MailboxProtocol || r.payload.size() > MaxRecordPayload || HeaderSize + r.payload.size() >= freeSpace()) return false;
 	const auto n = HeaderSize + r.payload.size();
 	write16(m_write, r.protocol); write16(m_write+2, r.kind); write16(m_write+4, static_cast<std::uint16_t>(r.payload.size()));
 	write16(m_write+6, r.flags); write32(m_write+8, r.sequence); write64(m_write+12, r.revision);

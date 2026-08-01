@@ -199,6 +199,8 @@ add_version_compile_definition(src/snesrecomp_player_main.cpp VERSIONSTR)
 		src/snesrecomp_player_main.cpp
 		src/audio_output.h
 		src/audio_output.cpp
+		src/canvas_palette.h
+		src/snes_color.h
 		src/cartridge_image.h
 		src/document_engine.h
 		src/document_engine.cpp

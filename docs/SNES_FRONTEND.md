@@ -31,8 +31,27 @@ FairyWriter is a native app that presents a source-generated SNES cartridge runt
 - F2 enters cartridge mode `$0f`, a static 30x8 controls plane. `$0313` stores
   the exact origin mode. F1 or Backspace restores it, including the menu/browser
   state and menu selection; help is not a host-drawn dialog.
-- F3 enters the cartridge-owned persistence settings plane. F4 enters the
-  cartridge-owned Find plane.
+- F3 enters the cartridge-owned settings plane. F4 enters the cartridge-owned
+  Find plane.
+- F11 is the one host shortcut that is not a Ctrl chord: it toggles borderless
+  full screen through `showFullScreen()`/`showNormal()`, the same call on all
+  three platforms. It has to toggle both ways from the same key, because Escape
+  is a cartridge scancode (F1, the menu) and cannot double as the exit. The
+  full-screen state is deliberately not persisted; the canvas colour is.
+- The canvas — the part of the window the 256x224 screen does not cover — is
+  host-painted, because no PPU register describes it. The cartridge owns only an
+  index into a shared name table (`canvasNames` in the ROM,
+  `CanvasPalette::names` in `src/canvas_palette.h`); the host owns the colour and
+  builds it through `SnesColor`, so the surround lives in the same
+  five-bit-per-channel space as the screen it frames. The index rides the
+  existing settings pair rather than a command of its own: a fourth
+  `CommandSetPersistenceSettings` payload byte out, a sixth
+  `EventPersistenceSettings` byte back.
+- The screen is presented at whole-number scale with square pixels (8:7 at
+  256x224), centred, and is not stretched to 4:3. The desktop pointer is blanked
+  over the screen, where the cartridge's OBJ sprite 0 is the pointer, and
+  restored over the canvas, where the guest pointer clamps at the edge and there
+  would otherwise be nothing to see.
 
 ## Production configuration and platform gate
 

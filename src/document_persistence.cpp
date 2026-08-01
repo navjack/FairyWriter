@@ -1,5 +1,6 @@
 #include "document_persistence.h"
 
+#include "canvas_palette.h"
 #include "document_engine.h"
 #include "document_writer.h"
 
@@ -490,6 +491,13 @@ PersistenceSettings PersistenceSettings::load(QSettings& settings)
 		settings.value(QStringLiteral("Persistence/IntervalMinutes"), 1).toInt(), 255));
 	result.recovery_copies = static_cast<std::uint8_t>(qBound(0,
 		settings.value(QStringLiteral("Persistence/RecoveryCopies"), 5).toInt(), 255));
+	// Bounded on load for the same reason the sound fields are: a stored index
+	// past the palette is not a strange colour, it is a read off the end of the
+	// table. A file written by a later build with more entries reverts to the
+	// default rather than picking an arbitrary neighbour.
+	result.canvas_color = static_cast<std::uint8_t>(qBound(0,
+		settings.value(QStringLiteral("Display/CanvasColor"), 0).toInt(),
+		static_cast<int>(CanvasPalette::Count) - 1));
 	return result;
 }
 
@@ -573,6 +581,8 @@ void PersistenceSettings::save(QSettings& settings) const
 		static_cast<int>(interval_minutes));
 	settings.setValue(QStringLiteral("Persistence/RecoveryCopies"),
 		static_cast<int>(recovery_copies));
+	settings.setValue(QStringLiteral("Display/CanvasColor"),
+		static_cast<int>(canvas_color));
 	settings.sync();
 }
 

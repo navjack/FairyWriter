@@ -1,4 +1,5 @@
 #include "document_bridge.h"
+#include "canvas_palette.h"
 #include "session_store.h"
 
 #include <algorithm>
@@ -348,7 +349,8 @@ bool DocumentBridge::publishPersistenceSettings() {
 		settings.interval_minutes,
 		settings.recovery_copies,
 		static_cast<std::uint8_t>(m_engine.markdownSourceMode() ? 1 : 0),
-		static_cast<std::uint8_t>(format)
+		static_cast<std::uint8_t>(format),
+		settings.canvas_color
 	};
 	return m_events.push(event);
 }
@@ -409,12 +411,17 @@ bool DocumentBridge::pump() {
 		return publishPersistenceSettings();
 	}
 	if (current && command.kind == CommandSetPersistenceSettings) {
-		if (command.payload.size() != 3 || command.payload[0] > 1) return false;
+		if (command.payload.size() != 4 || command.payload[0] > 1
+			|| command.payload[3] >= CanvasPalette::Count) return false;
 		PersistenceSettings settings = m_persistence.settings();
 		settings.mode = static_cast<PersistenceSettings::AutosaveMode>(
 			command.payload[0]);
 		settings.interval_minutes = std::max<std::uint8_t>(1, command.payload[1]);
 		settings.recovery_copies = command.payload[2];
+		// The canvas index is rejected rather than clamped: the cartridge wraps
+		// it inside the palette itself, so an out-of-range value is a wire
+		// disagreement between the two tables, not a user choice to round off.
+		settings.canvas_color = command.payload[3];
 		m_persistence.setSettings(settings);
 		return publishPersistenceSettings();
 	}

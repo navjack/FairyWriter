@@ -3215,7 +3215,10 @@ int main(int argc, char** argv)
 		machine = fairy_snes_create(rom.data(), rom.size());
 		if (!machine || !runFrames(machine, 3)) return 232;
 		std::vector<std::uint8_t> settings_wire;
-		appendRecord(settings_wire, 0x8212, {1, 255, 0, 0, 4});
+		// Six bytes now: mode, interval, copies, Markdown view, format, and the
+		// canvas colour index the host draws the window surround from. Index 2
+		// is BUTTER in canvasNames / CanvasPalette::names.
+		appendRecord(settings_wire, 0x8212, {1, 255, 0, 0, 4, 2});
 		for (std::size_t i = 0; i < settings_wire.size(); ++i) {
 			fairy_snes_debug_bus_write(machine,
 				0x702100 + static_cast<std::uint32_t>(i), settings_wire[i]);
@@ -3228,23 +3231,38 @@ int main(int argc, char** argv)
 			|| fairy_snes_debug_wram(machine, 0x031b) != 1
 			|| fairy_snes_debug_wram(machine, 0x031c) != 255
 			|| fairy_snes_debug_wram(machine, 0x032b) != 0
-			|| fairy_snes_debug_wram(machine, 0x0369) != 4) return 233;
+			|| fairy_snes_debug_wram(machine, 0x0369) != 4
+			|| fairy_snes_debug_wram(machine, 0x0390) != 2) return 233;
 		if (!fairy_snes_key_event(machine, 0x04, true, false)
 			|| !runFrames(machine, 2)
 			|| fairy_snes_debug_wram(machine, 0x031d) != 0x10
-			|| !wramEquals(machine, 0x1007, "SAVE AND RECOVERY")
-			|| !wramEquals(machine, 0x10a0, "RENDERED")) {
+			|| !wramEquals(machine, 0x1005, "FAIRYWRITER SETTINGS")
+			|| !wramEquals(machine, 0x10a0, "RENDERED")
+			|| !wramEquals(machine, 0x10c0, "BUTTER")) {
 			std::fputs("F3 did not render the committed persistence settings\n", stderr);
 			return 234;
 		}
+		// Records accumulate in the SRAM command ring, each a 20-byte header
+		// plus its payload, so widening any payload moves every record after
+		// it. Name the widths and let the addresses follow, rather than
+		// carrying pre-summed offsets that go quietly wrong.
+		constexpr std::uint32_t command_ring = 0x700100;
+		constexpr std::uint32_t record_header = 20;
+		constexpr std::uint32_t settings_record = command_ring;
+		constexpr std::uint32_t settings_payload = 4;
+		constexpr std::uint32_t recovery_list_record =
+			settings_record + record_header + settings_payload;
+		constexpr std::uint32_t recovery_open_record =
+			recovery_list_record + record_header;
 		if (!fairy_snes_key_event(machine, 0x74, true, true)
 			|| !runFrames(machine, 2)
-			|| fairy_snes_debug_bus_read(machine, 0x700102) != 0x12
-			|| fairy_snes_debug_bus_read(machine, 0x700103) != 0x01
-			|| fairy_snes_debug_bus_read(machine, 0x700104) != 3
-			|| fairy_snes_debug_bus_read(machine, 0x700114) != 0
-			|| fairy_snes_debug_bus_read(machine, 0x700115) != 255
-			|| fairy_snes_debug_bus_read(machine, 0x700116) != 0) {
+			|| fairy_snes_debug_bus_read(machine, settings_record + 2) != 0x12
+			|| fairy_snes_debug_bus_read(machine, settings_record + 3) != 0x01
+			|| fairy_snes_debug_bus_read(machine, settings_record + 4) != settings_payload
+			|| fairy_snes_debug_bus_read(machine, settings_record + record_header) != 0
+			|| fairy_snes_debug_bus_read(machine, settings_record + record_header + 1) != 255
+			|| fairy_snes_debug_bus_read(machine, settings_record + record_header + 2) != 0
+			|| fairy_snes_debug_bus_read(machine, settings_record + record_header + 3) != 2) {
 			std::fputs("settings change did not emit one complete typed value\n", stderr);
 			return 235;
 		}
@@ -3255,8 +3273,8 @@ int main(int argc, char** argv)
 		if (!fairy_snes_key_event(machine, 0x5a, true, false)
 			|| !runFrames(machine, 2)
 			|| fairy_snes_debug_wram(machine, 0x031d) != 4
-			|| fairy_snes_debug_bus_read(machine, 0x700100 + 23 + 2) != 0x08
-			|| fairy_snes_debug_bus_read(machine, 0x700100 + 23 + 3) != 0x01) {
+			|| fairy_snes_debug_bus_read(machine, recovery_list_record + 2) != 0x08
+			|| fairy_snes_debug_bus_read(machine, recovery_list_record + 3) != 0x01) {
 			std::fputs("Recovery History did not issue its paged list command\n", stderr);
 			return 236;
 		}
@@ -3304,8 +3322,8 @@ int main(int argc, char** argv)
 		if (!fairy_snes_key_event(machine, 0x5a, true, false)
 			|| !runFrames(machine, 2)
 			|| fairy_snes_debug_wram(machine, 0x031d) != 0
-			|| fairy_snes_debug_bus_read(machine, 0x700100 + 43 + 2) != 0x09
-			|| fairy_snes_debug_bus_read(machine, 0x700100 + 43 + 3) != 0x01
+			|| fairy_snes_debug_bus_read(machine, recovery_open_record + 2) != 0x09
+			|| fairy_snes_debug_bus_read(machine, recovery_open_record + 3) != 0x01
 			|| !wramEquals(machine, 0x1800, recovery_id)) {
 			std::fputs("Recovery History selection did not emit its opaque restore token\n",
 				stderr);
@@ -3348,6 +3366,70 @@ int main(int argc, char** argv)
 			|| fairy_snes_debug_bus_read(machine, decision_record + 20) != 2) {
 			std::fputs("dirty transition did not emit the selected Discard decision\n", stderr);
 			return 238;
+		}
+		fairy_snes_destroy(machine);
+	}
+
+	// The canvas colour is the sixth settings row. The cartridge holds only an
+	// index into a name table it and the host both carry; the host turns that
+	// index into the colour it paints around the screen. A fresh machine keeps
+	// the command ring empty so each emitted record has a known address.
+	{
+		machine = fairy_snes_create(rom.data(), rom.size());
+		if (!machine || !runFrames(machine, 3)) return 260;
+		if (!fairy_snes_key_event(machine, 0x04, true, false)
+			|| !runFrames(machine, 2)
+			|| fairy_snes_debug_wram(machine, 0x031d) != 0x10
+			|| fairy_snes_debug_wram(machine, 0x0390) != 0
+			|| !wramEquals(machine, 0x10c0, "PASTEL GREEN")) {
+			std::fputs("the settings plane did not open on the default canvas\n", stderr);
+			return 260;
+		}
+		// Five Downs reach the canvas row; the sixth must not, or the selection
+		// would run off the plane onto the footer hint.
+		for (int row = 0; row < 6; ++row) {
+			if (!fairy_snes_key_event(machine, 0x72, true, true)
+				|| !runFrames(machine, 2)) return 261;
+		}
+		if (fairy_snes_debug_wram(machine, 0x031a) != 5) {
+			std::fputs("settings selection did not stop at the canvas row\n", stderr);
+			return 261;
+		}
+		if (!fairy_snes_key_event(machine, 0x74, true, true)
+			|| !runFrames(machine, 2)
+			// Emitting the value must leave the cursor on the row that emitted
+			// it. commandWrite used to clear this byte as collateral of a
+			// 16-bit STZ on its neighbour.
+			|| fairy_snes_debug_wram(machine, 0x031a) != 5
+			|| fairy_snes_debug_wram(machine, 0x0390) != 1
+			|| !wramEquals(machine, 0x10c0, "MIST BLUE")
+			|| fairy_snes_debug_bus_read(machine, 0x700102) != 0x12
+			|| fairy_snes_debug_bus_read(machine, 0x700104) != 4
+			|| fairy_snes_debug_bus_read(machine, 0x700117) != 1) {
+			std::fputs("the canvas row did not advance the palette and emit it\n", stderr);
+			return 262;
+		}
+		// It wraps at both ends: there is no natural first or last colour to
+		// stick on, unlike an autosave interval where zero is not legal.
+		if (!fairy_snes_key_event(machine, 0x6b, true, true)
+			|| !runFrames(machine, 2)
+			|| fairy_snes_debug_wram(machine, 0x0390) != 0
+			|| !fairy_snes_key_event(machine, 0x6b, true, true)
+			|| !runFrames(machine, 2)
+			|| fairy_snes_debug_wram(machine, 0x0390) != 6
+			|| !wramEquals(machine, 0x10c0, "INK")
+			// A shorter name has to cover the longer one it replaced, or "INK"
+			// would render as "INKTEL GREEN".
+			|| !wramEquals(machine, 0x10c0 + 3, "        ")) {
+			std::fputs("the canvas row did not wrap below the first colour\n", stderr);
+			return 263;
+		}
+		if (!fairy_snes_key_event(machine, 0x74, true, true)
+			|| !runFrames(machine, 2)
+			|| fairy_snes_debug_wram(machine, 0x0390) != 0
+			|| !wramEquals(machine, 0x10c0, "PASTEL GREEN")) {
+			std::fputs("the canvas row did not wrap past the last colour\n", stderr);
+			return 264;
 		}
 		fairy_snes_destroy(machine);
 	}

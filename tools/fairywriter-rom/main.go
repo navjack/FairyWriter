@@ -53,13 +53,16 @@ const (
 	saveFolderTitleOffset = 0x903e // 30
 	filenameOffset        = 0x9080 // 240
 	soundOffset           = 0x9180 // 240
+	// The canvas colour names, canvasNameStride bytes apart. Not a plane: the
+	// settings renderer copies one cell of it into the row it is drawing.
+	canvasNamesOffset = 0x9270 // canvasNameStride * canvasNameCount = 112
 	// Tiles are last because they are the only variable-size blob, so the fixed
 	// pages above keep stable offsets. Capacity here is 0xffb0-tilesOffset =
-	// 28208 bytes = 881 tiles, up from the 554 that exactly filled the old
+	// 28096 bytes = 878 tiles, up from the 554 that exactly filled the old
 	// layout. The hard ceiling beyond that is VRAM, not ROM: BG1 plus OBJ cannot
 	// address more than 1024 4bpp tiles however large the cartridge gets. New
 	// static planes come out of this budget by shifting tilesOffset up.
-	tilesOffset = 0x9270
+	tilesOffset = 0x92e0
 	// bank1Limit is where bank 1's data has to stop: the start of the reserved
 	// header-scoring window at $ffb0. See the reserved-window check in build().
 	bank1Limit = 0xffb0
@@ -738,21 +741,78 @@ func helpPlane() []byte {
 		"  CTRL C X V   COPY CUT PASTE",
 		"  F3 SAVE  F4 FIND  F5 SOUND",
 		"  DRAG THE BAR ABOVE TO SCROLL",
-		"  F1 OR BACK RETURNS",
+		"  F1 OR BACK RETURNS  F11 FULL",
 	)
 }
 
+// Retitled from "SAVE AND RECOVERY": this plane already owned the Markdown view
+// before the canvas colour joined it, so the old title described half of it.
+//
+// textPlane is capped at eight rows by the 8-bit copy loop every static plane
+// shares, and all eight were spoken for, so the two footer hints are one row.
 func settingsPlane() []byte {
 	return textPlane(
-		"       SAVE AND RECOVERY",
+		"     FAIRYWRITER SETTINGS",
 		"  MODE:",
 		"  INTERVAL:       MIN",
 		"  COPIES:",
 		"  RECOVERY HISTORY...",
 		"  MARKDOWN:",
-		"  LEFT RIGHT CHANGE",
-		"  F3 OR BACK RETURNS",
+		"  CANVAS:",
+		"  LEFT RIGHT CHANGE  F3 BACK",
 	)
+}
+
+// The canvas colours, mirroring CanvasPalette::names in src/canvas_palette.h.
+// The cartridge owns only the index; the host owns what the colour is, because
+// the canvas is the part of the window outside the 256x224 screen and no PPU
+// register describes it.
+//
+// The stride is a power of two so the plane finds a name with four ASLs. That
+// is the same reasoning as the build-time slider thresholds in the sound plane:
+// the hardware multiply unit needs settling cycles after its last operand, and
+// reading it too early returns nothing.
+const (
+	canvasNameStride = 16
+	canvasNameCount  = 7
+)
+
+// Addresses are variables rather than constants only because Go checks
+// `byte(x)` on a constant at compile time and rejects the truncation these
+// emitters rely on; every other absolute address in this file reaches the
+// emitters through a struct field or parameter for the same reason.
+var (
+	// The selected index, in the state page well clear of everything else this
+	// file uses there (the highest is the sound plane's frame counter at $0382).
+	// Note the warning above the toolbar upload: WRAM picks in the $1xxx staging
+	// range have collided before, so verify any move against the full ctest run.
+	canvasIndexState uint16 = 0x0390
+	// Where the name is drawn: settings row 6, column 12. The plane is 30 cells
+	// wide and composed at $1000, so 6*30+12.
+	canvasValueCell uint16 = 0x1000 + 6*30 + 12
+)
+
+var canvasNames = []string{
+	"PASTEL GREEN", "MIST BLUE", "BUTTER", "BLUSH", "LILAC", "SLATE", "INK",
+}
+
+// canvasNameTable packs the names into fixed-stride cells, space-padded so a
+// shorter name overwrites the longer one that was drawn before it.
+func canvasNameTable() []byte {
+	if len(canvasNames) != canvasNameCount {
+		panic(fmt.Sprintf("canvasNames has %d entries but the wrap bound is %d", len(canvasNames), canvasNameCount))
+	}
+	table := make([]byte, canvasNameStride*canvasNameCount)
+	for i := range table {
+		table[i] = ' '
+	}
+	for index, name := range canvasNames {
+		if len(name) > canvasNameStride {
+			panic(fmt.Sprintf("canvas name %q is wider than the %d-byte stride", name, canvasNameStride))
+		}
+		copy(table[index*canvasNameStride:], []byte(name))
+	}
+	return table
 }
 
 // The typing-blip voice editor, reached with F5.
@@ -1403,6 +1463,9 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	b(0x9c, 0x1f, 0x03, 0x9c, 0x20, 0x03, 0x9c, 0x31, 0x03)                                     // browser count/selection and filename length
 	b(0x9c, 0x32, 0x03)                                                                         // find query length
 	b(0x9c, 0x6d, 0x03)                                                                         // filename dialog focus: name/save/cancel
+	// The default canvas, so the settings plane can render a real name before
+	// the host's unprompted settings event lands. Reset does not clear WRAM.
+	b(0x9c, byte(canvasIndexState), byte(canvasIndexState>>8))
 	b(0xa9, 128, 0x8d, 0x34, 0x03, 0xa9, 112, 0x8d, 0x35, 0x03, 0x9c, 0x36, 0x03)               // SNES mouse pointer and previous left button
 	b(0xa9, scrollThumbTrackStart, 0x8d, 0x52, 0x03, 0xa9, 0x01, 0x8d, 0x53, 0x03)              // document-position thumb starts dirty at track origin
 	b(0xa9, 0xff, 0x8d, 0x3c, 0x03, 0x8d, 0x3d, 0x03)                                           // no sticky vertical column yet ($033c/$033d)
@@ -3767,10 +3830,15 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	payloadDone := len(p)
 	branch(bcsPayloadDone, payloadDone)
 	branch(braPayloadWrite, payloadWrite)
-	b(0xc2, 0x20, 0x8a, 0x8f, 0x02, 0x00, 0x70, 0x9c, 0x19, 0x03)
-	// The page byte is cleared in 8-bit mode: a 16-bit STZ here would also wipe
-	// the adjacent directory-back depth at $034d.
-	b(0xee, 0x11, 0x03, 0xe2, 0x30, 0x9c, 0x4c, 0x03, 0x60)
+	b(0xc2, 0x20, 0x8a, 0x8f, 0x02, 0x00, 0x70)
+	// The sequence counter at $0311 is two bytes, so its INC stays in 16-bit A.
+	// Both single-byte clears below wait for the SEP -- the flags-high byte at
+	// $0319 used to be cleared up in 16-bit mode, which also wiped $031a, the
+	// settings plane's selected row. Every Left or Right on that plane emits
+	// through here, so changing the autosave interval jumped the cursor back to
+	// the top row. It is the same hazard the page byte at $034c was already
+	// commented for: a 16-bit STZ takes the neighbouring byte with it.
+	b(0xee, 0x11, 0x03, 0xe2, 0x30, 0x9c, 0x19, 0x03, 0x9c, 0x4c, 0x03, 0x60)
 
 	// emitToolbarCommand: A holds a zero-payload DocumentEngine command kind
 	// (bold/italic/underline toggle, alignment). Every one of these commands
@@ -4731,7 +4799,8 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 
 	settingsDown := len(p)
 	jump(settingsDownJump, settingsDown)
-	b(0xad, 0x1a, 0x03, 0xc9, 0x04)
+	// Rows 0-5: mode, interval, copies, recovery history, markdown, canvas.
+	b(0xad, 0x1a, 0x03, 0xc9, 0x05)
 	bcsSettingsDownRender := len(p)
 	b(0xb0, 0)
 	b(0xee, 0x1a, 0x03)
@@ -4778,8 +4847,15 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	settingsIntervalInc := len(p)
 	branch(bneSettingsIntervalInc, settingsIntervalInc)
 	b(0xee, 0x1c, 0x03)
-	bneSettingsEmitConfig1 := len(p)
-	b(0xd0, 0)
+	// Inverted-condition trampoline: the canvas row put settingsEmitConfig more
+	// than 127 bytes away, which is past a relative branch. Branching over a
+	// JMP costs one byte and does not care how far the target moves next.
+	beqSettingsIntervalWrapped := len(p)
+	b(0xf0, 0)
+	settingsEmitConfigJump7 := len(p)
+	b(0x4c, 0, 0)
+	settingsIntervalWrapped := len(p)
+	branch(beqSettingsIntervalWrapped, settingsIntervalWrapped)
 	b(0xee, 0x1c, 0x03) // 255+1 wraps; zero is not a legal interval.
 	settingsEmitConfigJump4 := len(p)
 	b(0x4c, 0, 0)
@@ -4802,13 +4878,46 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	settingsNotCopies := len(p)
 	branch(bneSettingsNotCopies, settingsNotCopies)
 	b(0xc9, 0x04)
-	bneSettingsChangeDone := len(p)
+	bneSettingsNotMarkdown := len(p)
 	b(0xd0, 0)
 	b(0xad, 0x69, 0x03, 0xc9, 0x04)
 	bneSettingsChangeDone2 := len(p)
 	b(0xd0, 0)
 	b(0xad, 0x2e, 0x03, 0x49, 0x01, 0x8d, 0x2e, 0x03)
 	settingsEmitMarkdownJump := len(p)
+	b(0x4c, 0, 0)
+	// Row 5: the canvas colour. Left and Right walk the palette and wrap at both
+	// ends, because there is no meaningful "first" or "last" colour to stop at
+	// -- unlike an interval, where zero is not a legal value.
+	settingsNotMarkdown := len(p)
+	branch(bneSettingsNotMarkdown, settingsNotMarkdown)
+	b(0xc9, 0x05)
+	bneSettingsChangeDone := len(p)
+	b(0xd0, 0)
+	b(0xa5, 0x1b) // direction: 0 = Left, 1 = Right
+	bneCanvasNext := len(p)
+	b(0xd0, 0)
+	b(0xad, byte(canvasIndexState), byte(canvasIndexState>>8))
+	bneCanvasDecrement := len(p)
+	b(0xd0, 0)
+	b(0xa9, canvasNameCount-1, 0x8d, byte(canvasIndexState), byte(canvasIndexState>>8))
+	settingsEmitConfigJump8 := len(p)
+	b(0x4c, 0, 0)
+	canvasDecrement := len(p)
+	branch(bneCanvasDecrement, canvasDecrement)
+	b(0xce, byte(canvasIndexState), byte(canvasIndexState>>8))
+	settingsEmitConfigJump9 := len(p)
+	b(0x4c, 0, 0)
+	canvasNext := len(p)
+	branch(bneCanvasNext, canvasNext)
+	b(0xad, byte(canvasIndexState), byte(canvasIndexState>>8), 0x1a, 0xc9, canvasNameCount)
+	bccCanvasStore := len(p)
+	b(0x90, 0)
+	b(0xa9, 0x00)
+	canvasStore := len(p)
+	branch(bccCanvasStore, canvasStore)
+	b(0x8d, byte(canvasIndexState), byte(canvasIndexState>>8))
+	settingsEmitConfigJump10 := len(p)
 	b(0x4c, 0, 0)
 	settingsChangeDone := len(p)
 	branch(bneSettingsChangeDone, settingsChangeDone)
@@ -4841,15 +4950,20 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	for _, at := range []int{
 		settingsEmitConfigJump1, settingsEmitConfigJump2, settingsEmitConfigJump3,
 		settingsEmitConfigJump4, settingsEmitConfigJump5, settingsEmitConfigJump6,
+		settingsEmitConfigJump7, settingsEmitConfigJump8, settingsEmitConfigJump9,
+		settingsEmitConfigJump10,
 	} {
 		jump(at, settingsEmitConfig)
 	}
-	branch(bneSettingsEmitConfig1, settingsEmitConfig)
 	b(0xad, 0x1b, 0x03, 0x8d, 0x00, 0x18)
 	b(0xad, 0x1c, 0x03, 0x8d, 0x01, 0x18)
 	b(0xad, 0x2b, 0x03, 0x8d, 0x02, 0x18)
+	// The canvas index rides this value rather than a command of its own: it is
+	// edited on the same plane by the same Left/Right, and the host applies the
+	// whole struct at once anyway.
+	b(0xad, byte(canvasIndexState), byte(canvasIndexState>>8), 0x8d, 0x03, 0x18)
 	b(0xa9, 0x12, 0x8d, 0x16, 0x03, 0xa9, 0x01, 0x8d, 0x17, 0x03)
-	b(0xa9, 0x03, 0x8d, 0x15, 0x03, 0x9c, 0x18, 0x03, 0x9c, 0x19, 0x03)
+	b(0xa9, 0x04, 0x8d, 0x15, 0x03, 0x9c, 0x18, 0x03, 0x9c, 0x19, 0x03)
 	jsrTo(commandWrite)
 	emitBrowserRenderCall()
 	b(0x60)
@@ -5512,7 +5626,7 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	b(0xad, 0x24, 0x03)
 	bneSettingsEventInvalid := len(p)
 	b(0xd0, 0)
-	b(0xad, 0x23, 0x03, 0xc9, 0x05)
+	b(0xad, 0x23, 0x03, 0xc9, 0x06)
 	bneSettingsEventInvalid2 := len(p)
 	b(0xd0, 0)
 	eventRead()
@@ -5525,6 +5639,8 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	sta(0x032e)
 	eventRead()
 	sta(0x0369)
+	eventRead()
+	sta(canvasIndexState) // canvas colour index
 	b(0xad, 0x1d, 0x03, 0xc9, 0x10)
 	bneSettingsEventCommit := len(p)
 	b(0xd0, 0)
@@ -6269,6 +6385,23 @@ func emitProgram(tileBytes int, tileUploads []tileUpload) ([]byte, int) {
 	settingsMarkdownTextDone := len(p)
 	jump(settingsMarkdownTextDoneJump1, settingsMarkdownTextDone)
 	jump(settingsMarkdownTextDoneJump2, settingsMarkdownTextDone)
+	// The CANVAS row draws one fixed-stride cell of the ROM name table. The
+	// source offset is index*canvasNameStride, which is four ASLs because the
+	// stride is a power of two -- no multiply unit, and so no settling cycles to
+	// get wrong. The names are space-padded to the full stride, so a short one
+	// covers whatever longer name the previous render left in the row.
+	b(0xad, byte(canvasIndexState), byte(canvasIndexState>>8))
+	b(0x0a, 0x0a, 0x0a, 0x0a) // ASL A x4
+	b(0xaa)                   // TAX -- source index
+	b(0xa0, 0x00)             // LDY #0 -- destination column
+	copyCanvasName := len(p)
+	b(0xbf, byte(loromAddr(canvasNamesOffset)), byte(loromAddr(canvasNamesOffset)>>8),
+		loromBank(canvasNamesOffset))
+	b(0x99, byte(canvasValueCell), byte(canvasValueCell>>8))
+	b(0xe8, 0xc8, 0xc0, canvasNameStride)
+	bneCopyCanvasName := len(p)
+	b(0xd0, 0)
+	branch(bneCopyCanvasName, copyCanvasName)
 	b(0xac, 0x1a, 0x03, 0xc8, 0xa2, 0x00)
 	settingsRowOffset := len(p)
 	b(0x8a, 0x18, 0x69, 30, 0xaa, 0x88)
@@ -7472,6 +7605,7 @@ func build() ([]byte, int) {
 	help := helpPlane()
 	settings := settingsPlane()
 	sound := soundPlane()
+	canvasNameBytes := canvasNameTable()
 	saveFormat := saveFormatPlane()
 	filename := filenamePlane()
 	saveRootTitle := []byte(" CHOOSE A FOLDER FOR NEW FILE ")
@@ -7504,7 +7638,8 @@ func build() ([]byte, int) {
 		{"save root title", saveRootTitleOffset, len(saveRootTitle), saveFolderTitleOffset},
 		{"save folder title", saveFolderTitleOffset, len(saveFolderTitle), filenameOffset},
 		{"filename plane", filenameOffset, len(filename), soundOffset},
-		{"sound plane", soundOffset, len(sound), tilesOffset},
+		{"sound plane", soundOffset, len(sound), canvasNamesOffset},
+		{"canvas names", canvasNamesOffset, len(canvasNameBytes), tilesOffset},
 		{"PPU tiles", tilesOffset, len(tiles), bank1Limit},
 	} {
 		if region.start+region.size > region.limit {
@@ -7526,6 +7661,7 @@ func build() ([]byte, int) {
 	copy(rom[helpOffset:], help)
 	copy(rom[settingsOffset:], settings)
 	copy(rom[soundOffset:], sound)
+	copy(rom[canvasNamesOffset:], canvasNameBytes)
 	copy(rom[saveFormatOffset:], saveFormat)
 	copy(rom[saveRootTitleOffset:], saveRootTitle)
 	copy(rom[saveFolderTitleOffset:], saveFolderTitle)

@@ -1,10 +1,12 @@
 #include "snes_machine.h"
 #include "audio_output.h"
+#include "canvas_palette.h"
 #include "cartridge_image.h"
 #include "document_bridge.h"
 
 #include <QApplication>
 #include <QCloseEvent>
+#include <QColor>
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
@@ -20,6 +22,7 @@
 #include <QPainter>
 #include <QScreen>
 #include <QTemporaryDir>
+#include <QTextBoundaryFinder>
 #include <QTimer>
 #include <QTextStream>
 #include <QStandardPaths>
@@ -428,17 +431,40 @@ protected:
 	void paintGL() override
 	{
 		QPainter painter(this);
-		painter.fillRect(rect(), Qt::black);
+		// The canvas is everything the screen does not cover. It used to be
+		// black, which in full screen is most of the display; it is now the
+		// user's pick, held as an index by the cartridge and turned into a
+		// colour here. See src/canvas_palette.h.
+		painter.fillRect(rect(), canvasColor());
 		if (m_frame.isNull()) return;
-		const int scale = qMax(1, qMin(width() / 256, height() / 224));
-		const QSize size(256 * scale, 224 * scale);
-		painter.drawImage(QRect(QPoint((width()-size.width())/2, (height()-size.height())/2), size), m_frame);
+		painter.drawImage(imageRect(), m_frame);
 	}
 	void keyPressEvent(QKeyEvent* event) override { sendKey(event, true); }
 	void keyReleaseEvent(QKeyEvent* event) override { sendKey(event, false); }
 	void mouseMoveEvent(QMouseEvent* event) override { sendMouse(event); }
 	void mousePressEvent(QMouseEvent* event) override { sendMouse(event); setFocus(); }
 	void mouseReleaseEvent(QMouseEvent* event) override { sendMouse(event); }
+	// Leaving the widget entirely has to restore the arrow, or a pointer that
+	// exits across the screen keeps the desktop cursor hidden over whatever it
+	// lands on next.
+	void leaveEvent(QEvent* event) override
+	{
+		unsetCursor();
+		QOpenGLWidget::leaveEvent(event);
+	}
+	// A resize moves the boundary underneath a pointer that has not moved --
+	// entering full screen is exactly that, and a large one. Re-decide from
+	// where the pointer actually is rather than waiting for the next motion.
+	void resizeEvent(QResizeEvent* event) override
+	{
+		QOpenGLWidget::resizeEvent(event);
+		refreshCursor(mapFromGlobal(QCursor::pos()));
+	}
+	void enterEvent(QEnterEvent* event) override
+	{
+		QOpenGLWidget::enterEvent(event);
+		refreshCursor(event->position().toPoint());
+	}
 
 private:
 	void discoverRecovery()
@@ -648,13 +674,41 @@ private:
 		bool extended;
 	};
 
+	// Where the emulated screen lands in the widget: centred, and scaled by a
+	// whole number so a SNES pixel is always a square block of host pixels.
+	// Anything left over is canvas.
+	QRect imageRect() const
+	{
+		const int scale = qMax(1, qMin(width() / 256, height() / 224));
+		const QSize size(256 * scale, 224 * scale);
+		return QRect(QPoint((width() - size.width()) / 2, (height() - size.height()) / 2), size);
+	}
+
+	QColor canvasColor() const
+	{
+		const SnesColor color = FairyWriter::CanvasPalette::color(
+			m_bridge.persistence().settings().canvas_color);
+		return QColor(color.red8(), color.green8(), color.blue8());
+	}
+
+	// Over the screen the cartridge's own OBJ sprite is the pointer, so a second
+	// desktop arrow on top of it is one cursor too many. Over the canvas there
+	// is no sprite -- the guest clamps its pointer at the screen edge -- so the
+	// desktop arrow has to come back, or the pointer simply vanishes across what
+	// in full screen is most of the display.
+	void refreshCursor(const QPoint& position)
+	{
+		if (imageRect().contains(position)) setCursor(Qt::BlankCursor); else unsetCursor();
+	}
+
 	void sendMouse(QMouseEvent* event)
 	{
 		if (!m_machine || m_frame.isNull()) return;
-		const int scale = qMax(1, qMin(width() / 256, height() / 224));
-		const QSize size(256 * scale, 224 * scale);
-		const QPoint origin((width() - size.width()) / 2, (height() - size.height()) / 2);
-		const QPoint local = event->position().toPoint() - origin;
+		const QRect image = imageRect();
+		const int scale = qMax(1, image.width() / 256);
+		const QPoint position = event->position().toPoint();
+		refreshCursor(position);
+		const QPoint local = position - image.topLeft();
 		const int x = qBound(0, local.x() / scale, 255);
 		const int y = qBound(0, local.y() / scale, 223);
 		const bool left = event->buttons().testFlag(Qt::LeftButton)
@@ -967,6 +1021,74 @@ private:
 		setSramByte(0x0a, m_bridge.viewports().activeIndex());
 	}
 
+	// One clipboard paste, split into records the mailbox wire can describe. A
+	// record's payload length is a 16-bit field, so text past MaxRecordPayload
+	// cannot cross as a single record however large the ring is. A split has to
+	// land on a grapheme boundary, because a chunk ending mid-sequence decodes
+	// to nothing and DocumentEngine rejects the whole record.
+	//
+	// Every realistic paste is one chunk -- 65535 UTF-8 bytes is around eleven
+	// thousand words -- so the split only matters far past that, where the text
+	// lands as more than one undo step. Making those atomic would mean exposing
+	// the beginEditBlock/endEditBlock pairing DocumentEngine::replaceAll uses,
+	// which is a wider engine surface than a paste that size is worth.
+	void pasteClipboard()
+	{
+		const QString clipboard = QApplication::clipboard()->text();
+		if (clipboard.isEmpty()) return;
+		const QStringView text(clipboard);
+
+		constexpr auto widest = static_cast<qsizetype>(FairyWriter::MailboxRing::MaxRecordPayload);
+		QTextBoundaryFinder boundary(QTextBoundaryFinder::Grapheme, clipboard);
+		qsizetype start = 0;
+		bool replaces_selection = true;
+		while (start < text.size()) {
+			qsizetype end = text.size();
+			QByteArray utf8 = text.mid(start).toUtf8();
+			if (utf8.size() > widest) {
+				// Only now is the grapheme walk worth its per-character
+				// encoding: find the last boundary whose UTF-8 still fits.
+				qsizetype bytes = 0;
+				end = start;
+				boundary.setPosition(static_cast<int>(start));
+				for (int next = boundary.toNextBoundary(); next >= 0;
+					next = boundary.toNextBoundary()) {
+					const qsizetype grapheme = text.mid(end, next - end).toUtf8().size();
+					if (bytes + grapheme > widest) break;
+					bytes += grapheme;
+					end = next;
+				}
+				// No grapheme is anywhere near 64 KiB wide, so this cannot
+				// happen. Guard it anyway: an empty chunk would spin forever.
+				if (end == start) return;
+				utf8 = text.mid(start, end - start).toUtf8();
+			}
+
+			FairyWriter::MailboxRecord command;
+			// Only the first record replaces the selection. Later ones continue
+			// from the caret the previous one left behind.
+			command.kind = replaces_selection ? FairyWriter::DocumentEngine::PasteText
+				: FairyWriter::DocumentEngine::InsertText;
+			command.revision = m_bridge.engine().revision();
+			command.payload.assign(reinterpret_cast<const std::uint8_t*>(utf8.constData()),
+				reinterpret_cast<const std::uint8_t*>(utf8.constData() + utf8.size()));
+			// A refused submit is the transport dropping the text, which is
+			// invisible and used to make Ctrl+V look like a dead key. A refused
+			// pump is the document declining the edit -- a read-only document,
+			// say -- which is the same silence every other edit key already
+			// gets, and the cartridge shows that state itself.
+			if (!m_bridge.submit(command)) {
+				QMessageBox::warning(this, QStringLiteral("FairyWriter"),
+					QStringLiteral("FairyWriter could not paste the %1 characters on the clipboard.")
+						.arg(clipboard.size()));
+				return;
+			}
+			if (!m_bridge.pump()) return;
+			start = end;
+			replaces_selection = false;
+		}
+	}
+
 	void sendKey(QKeyEvent* event, bool pressed)
 	{
 		// Qt owns the desktop key-repeat clock, but the repeated make-code still
@@ -985,6 +1107,17 @@ private:
 			return;
 		}
 		if (!event->isAutoRepeat()) {
+			// Borderless full screen, and the one host shortcut that is not a
+			// Ctrl chord. It has to toggle both ways from the same key: Escape
+			// is a cartridge scancode (F1, the menu), so it cannot be the exit
+			// without taking the menu with it.
+			if (event->key() == Qt::Key_F11) {
+				if (pressed) {
+					if (isFullScreen()) showNormal(); else showFullScreen();
+				}
+				event->accept();
+				return;
+			}
 			const Qt::KeyboardModifiers shortcutModifiers = Qt::ControlModifier | Qt::MetaModifier;
 			if (pressed && (event->modifiers() & shortcutModifiers) && (event->key() == Qt::Key_A || event->key() == Qt::Key_B || event->key() == Qt::Key_C || event->key() == Qt::Key_F || event->key() == Qt::Key_I || event->key() == Qt::Key_N || event->key() == Qt::Key_U || event->key() == Qt::Key_X || event->key() == Qt::Key_V || event->key() == Qt::Key_S || event->key() == Qt::Key_Z || event->key() == Qt::Key_Y || event->key() == Qt::Key_BracketLeft || event->key() == Qt::Key_BracketRight || ((event->modifiers() & Qt::ShiftModifier) && (event->key() == Qt::Key_E || event->key() == Qt::Key_L || event->key() == Qt::Key_R)))) {
 				if (event->key() == Qt::Key_A) {
@@ -1031,13 +1164,7 @@ private:
 						m_bridge.pump();
 					}
 				} else if (event->key() == Qt::Key_V) {
-					FairyWriter::MailboxRecord command;
-					command.kind = FairyWriter::DocumentEngine::PasteText;
-					command.revision = m_bridge.engine().revision();
-					const QByteArray text = QApplication::clipboard()->text().toUtf8();
-					command.payload.assign(reinterpret_cast<const std::uint8_t*>(text.constData()), reinterpret_cast<const std::uint8_t*>(text.constData() + text.size()));
-					m_bridge.submit(command);
-					m_bridge.pump();
+					pasteClipboard();
 				} else if (event->key() == Qt::Key_Z || event->key() == Qt::Key_Y) {
 					FairyWriter::MailboxRecord command;
 					command.kind = event->key() == Qt::Key_Z ? FairyWriter::DocumentEngine::Undo : FairyWriter::DocumentEngine::Redo;

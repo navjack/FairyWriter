@@ -100,7 +100,13 @@ private:
 		std::uint8_t source);
 	DocumentEngine m_engine;
 	DocumentPersistence m_persistence;
-	MailboxRing m_commands{MailboxLayout::CommandBytes};
+	// Host-internal, and never mirrored into the 32 KiB SRAM mailbox: every
+	// caller submits and pumps in the same breath, so this ring holds at most
+	// one record at a time. Only the player's own command ring is bound to
+	// MailboxLayout::CommandBytes, because only that one is exported to SRAM.
+	// Sizing this one at the 8 KiB SRAM figure silently capped a paste at 8171
+	// bytes -- the record was refused and the keystroke looked dead.
+	MailboxRing m_commands{MailboxRing::OneRecordCapacity};
 	MailboxRing m_events{MailboxLayout::EventBytes};
 	ViewportSlots m_viewports;
 	std::optional<std::uint32_t> m_viewport_start;

@@ -62,6 +62,11 @@ struct PersistenceSettings final {
 	AutosaveMode mode = AutosaveMode::SaveAndRecovery;
 	std::uint8_t interval_minutes = 1;
 	std::uint8_t recovery_copies = 5;
+	// Index into CanvasPalette, not a colour. It rides this struct because it
+	// rides the settings plane the rest of these fields already own -- see
+	// src/canvas_palette.h for why the host holds the colour and the cartridge
+	// holds only the index.
+	std::uint8_t canvas_color = 0;
 
 	static PersistenceSettings load(QSettings& settings);
 	void save(QSettings& settings) const;

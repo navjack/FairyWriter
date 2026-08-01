@@ -9,7 +9,7 @@
 > because some entries are historical. Move superseded detail into the archive
 > instead of deleting the file.
 
-## Current resume point — 2026-07-31
+## Current resume point — 2026-08-01
 
 ### Product and ownership invariants
 
@@ -48,12 +48,15 @@
 
 ### Active working tree
 
-- Branch: `agent/record-0-3-5-release`, branched from public `origin/main` at
-  `e3d1857`, recording the published release. Documentation only.
-- `origin/main` is at `e3d1857`, tagged `v0.3.5`. PR #9 (render consistency), #10
+- Branch: `agent/canvas-and-paste`, branched from public `origin/main` at
+  `d1a12ef`. Three tester items: the paste ceiling, F11 borderless full screen,
+  and a picked canvas colour. Worktree `worktrees/canvas-and-paste`. 11/11 green
+  and verified live in the built app; not yet opened as a PR.
+- `origin/main` is at `d1a12ef`, tagged `v0.3.5`. PR #9 (render consistency), #10
   (self-recorded showcase video), #11 (documentation hygiene), #12 (Qt UI removal),
-  #13 (showcase retirement), #14 (recorder removal) and #15 (the 0.3.5 cut) all
-  merged on 2026-07-31 with all three platform jobs green.
+  #13 (showcase retirement), #14 (recorder removal), #15 (the 0.3.5 cut) and #16
+  (recording the release) all merged on 2026-07-31 with all three platform jobs
+  green.
 - **This tree now has one build configuration.** There is no
   `FAIRYWRITER_DEVELOPMENT_UI`. `FAIRYWRITER_DEVELOPER_TOOLS` is a different gate
   and still exists — it builds the standalone `fairywriter_snes_player` and
@@ -94,9 +97,10 @@
   the latest public release during ordinary development — development builds are
   identified by their commit and Actions run, not by bumping `VERSION` as a side
   effect of repository state.
-- `CHANGELOG.md` has no **Unreleased** section. Everything that stood in it —
-  the render-consistency fixes, the Qt UI removal, the showcase retirement — went
-  out as 0.3.5. Re-add the heading when the next unreleased entry is written.
+- `CHANGELOG.md` has an **Unreleased** section again, holding the 2026-08-01
+  paste/full-screen/canvas pass. `VERSION` stays at `0.3.5` until that pass is
+  cut; per `VERSIONING.md` it is MINOR scope, because full screen and the picked
+  canvas are new user-visible behaviour.
 
 ### 2026-07-31 — cut the 0.3.5 release
 
@@ -224,6 +228,32 @@ that nothing gated against and that no CI job exercised.
 
 ### Discoveries that constrain future work
 
+- **A 16-bit `STZ` takes the neighbouring byte, and `commandWrite` was doing it.**
+  It cleared the flags-high byte at `$0319` while `REP #$20` was still in force,
+  which also zeroed `$031a` — the settings plane's selected row. Every Left or
+  Right on that plane emits through this routine, so adjusting the autosave
+  interval silently jumped the cursor back to the top row. Nobody had noticed
+  because the only automated exercise of the plane changed the *first* row, where
+  zeroing the selection is a no-op. Both single-byte clears now wait for the
+  `SEP`, and the machine test asserts the row survives an emit. The page byte at
+  `$034c` two lines below already carried a comment warning about exactly this
+  hazard, on the wrong store. **Audit every `STZ`/`STA` to a `$03xx` state byte
+  against the register width in force at that point, not against what it looks
+  like it is doing.**
+- **`MailboxLayout::CommandBytes` describes the SRAM region, not every ring.**
+  `DocumentBridge::m_commands` was sized from it and is never exported to SRAM;
+  the 8 KiB figure just silently capped a paste at 8171 bytes. Only
+  `RecompPlayer::m_commands` is bound to the SRAM figure. Host-internal rings
+  size from `MailboxRing::OneRecordCapacity`.
+- **A refused `submit()` is invisible.** The paste path discarded it, so Ctrl+V
+  read as a dead key rather than as a failure. Anything calling
+  `DocumentBridge::submit` must distinguish a refused submit (transport dropped
+  it — tell the user) from a refused `pump` (the document declined the edit, e.g.
+  read-only, which is the same silence every other edit key gets).
+- **Go rejects `byte(x)` on a typed constant**, so absolute addresses that reach
+  the emitters as `byte(addr)`/`byte(addr>>8)` must be `var`, not `const` — every
+  other address in `tools/fairywriter-rom/main.go` arrives through a struct field
+  or parameter, which is why this had not come up before.
 - **Index registers are 16-bit throughout `renderDocument`** (`REP #$10` at its
   entry, `SEP #$30` at the VBlank handoff), while the accumulator is 8-bit.
   Any `CPX #`/`CPY #`/`LDX #`/`LDY #` immediate in that region must be emitted
@@ -285,6 +315,14 @@ and `docs/SNES_FRONTEND.md` was corrected to match in this pass. Historical
 "10/10 passed" entries in the pass history below are left alone — they were true
 when written.
 
+- 2026-08-01, `agent/canvas-and-paste`, native macOS arm64 Release: **11/11
+  passed**, and verified live in the built bundle rather than only in tests — a
+  12,699-byte paste lands as 2500 words and undoes in one Ctrl+Z, F11 enters and
+  leaves borderless full screen with the canvas painted around a centred
+  integer-scaled screen, the CANVAS row walks and wraps the palette, and the
+  choice survives a restart. Not screenshot-verifiable: whether the desktop
+  cursor is hidden over the screen. macOS screen capture does not composite the
+  system cursor, so a person has to look at that one.
 - 0.3.5 release cut, native macOS arm64 Release from a clean `build/`: **11/11
   passed**. The number reaches the binary, not just the file — `--version` prints
   `FairyWriter 0.3.5` and the bundle's `CFBundleShortVersionString` is `0.3.5`.
@@ -320,8 +358,11 @@ when written.
 
 ### Next actions
 
-Nothing is blocked on a repository step; `v0.3.5` is published. In order:
+Nothing is blocked on a repository step. In order:
 
+0. Open `agent/canvas-and-paste` as a PR and merge it server-side — **without**
+   `--delete-branch`, which switches this checkout to its default branch on its
+   own. Then cut the version: this pass is MINOR scope, not PATCH.
 1. The packaged-app manual smoke on macOS, Linux, and Windows: first Save, format
    picker layout, close/relaunch/open, F3 settings/history, forced-exit recovery,
    Markdown Rendered/Source. Automated process evidence proves persistence
@@ -352,6 +393,44 @@ Newest first. These sections are superseded detail, retained per the
 durable-working-memory contract at the top of this file: the current resume
 point is above, and nothing here is deleted merely because it is historical.
 Each heading carries the date of the pass it records.
+
+### 2026-08-01 — paste ceiling, full screen, coloured canvas
+
+Three tester items against 0.3.5. Root causes and decisions are in *Discoveries*
+above; this records the shape of what shipped.
+
+- The bridge's host-side command ring is `MailboxRing::OneRecordCapacity`, and
+  `RecompPlayer::pasteClipboard` splits anything past the 16-bit payload field on
+  grapheme boundaries: first record `PasteText` (replaces the selection), the
+  rest `InsertText`, revision refreshed per record. One record is one undo step,
+  and 65535 bytes is around eleven thousand words, so real pastes never split.
+- F11 toggles `showFullScreen()`/`showNormal()`. Rejected
+  `Qt::FramelessWindowHint` + screen geometry: changing window flags on a
+  top-level `QOpenGLWidget` recreates the native window and the GL context.
+- The canvas colour is a cartridge-held index into a shared name table and a
+  host-held `SnesColor`. Rejected a new command/event pair: the existing
+  settings pair already round-trips on the same plane under the same Left/Right,
+  so it is one payload byte wider each way (`CommandSetPersistenceSettings` 3→4,
+  `EventPersistenceSettings` 5→6). Rejected offering pure black: `SnesColor`
+  holds the invariant that zero is not a presentation colour, so the darkest
+  entry is the black replacement, named INK.
+- The name table sits at `canvasNamesOffset` with a 16-byte stride so the
+  renderer finds a name with four `ASL`s and never touches the multiply unit —
+  the same reasoning as the sound plane's build-time slider thresholds. Names are
+  space-padded to the stride so a short one covers the long one it replaced;
+  the machine test asserts that, because "INK" over "PASTEL GREEN" would
+  otherwise read "INKTEL GREEN".
+- The settings plane was retitled from "SAVE AND RECOVERY" — it had held the
+  Markdown view for some time already — and its two footer hints merged into one
+  row to free the eighth. `textPlane` is still capped at eight rows.
+- The desktop pointer blanks over the screen and returns over the canvas, driven
+  from `refreshCursor` on mouse move, `enterEvent`, and `resizeEvent`; the resize
+  hook is what makes entering full screen re-decide under a stationary pointer.
+- Live verification, not just tests: 12,699-byte paste → 2500 words → one
+  Ctrl+Z back to zero; F11 in and out; CANVAS walked and wrapped; the colour
+  survived a restart (`Display/CanvasColor` in `settings.ini`). macOS screen
+  capture does not composite the desktop cursor, so the pointer-visibility half
+  is code-verified, not screenshot-verified — worth a human glance.
 
 ### 2026-07-31 — self-recorded showcase video
 

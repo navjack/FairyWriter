@@ -603,6 +603,18 @@ int main(int argc, char** argv) {
 	expect(find_bridge.events().pop(find_event) && find_event.kind == FairyWriter::DocumentBridge::EventFindResult && find_event.payload[0] == 0, "bridge publishes a typed no-match result");
 	MailboxRecord paste_bridge; paste_bridge.kind = DocumentEngine::PasteText; paste_bridge.revision = bridge.engine().revision(); paste_bridge.payload = {'x', 'y'};
 	expect(bridge.submit(paste_bridge) && bridge.pump() && bridge.engine().text() == "oxy", "paste command replaces the selected text through the bridge");
+	// A real passage of prose is tens of kilobytes. The bridge's command ring
+	// used to be sized at the 8 KiB SRAM command region, so anything past 8171
+	// bytes was refused by the transport and the paste silently did nothing.
+	FairyWriter::DocumentBridge wide_paste_bridge;
+	MailboxRecord wide_paste; wide_paste.kind = DocumentEngine::PasteText; wide_paste.revision = 0;
+	wide_paste.payload.resize(FairyWriter::MailboxRing::MaxRecordPayload);
+	for (std::size_t i = 0; i < wide_paste.payload.size(); ++i) wide_paste.payload[i] = static_cast<std::uint8_t>('a' + (i % 26));
+	expect(wide_paste_bridge.submit(wide_paste) && wide_paste_bridge.pump()
+		&& wide_paste_bridge.engine().text().size() == static_cast<qsizetype>(FairyWriter::MailboxRing::MaxRecordPayload),
+		"a paste of the widest record the wire can describe reaches the document");
+	expect(wide_paste_bridge.engine().revision() == 1,
+		"a wide paste commits exactly once, so it undoes in a single step");
 	FairyWriter::DocumentBridge burst_bridge;
 	MailboxRecord burst; burst.kind = DocumentEngine::InsertText; burst.revision = 0; burst.payload.resize(1000);
 	for (std::size_t i = 0; i < burst.payload.size(); ++i) burst.payload[i] = static_cast<std::uint8_t>('a' + (i % 26));

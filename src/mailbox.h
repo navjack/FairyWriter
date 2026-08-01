@@ -134,6 +134,16 @@ private:
 // private: a record becomes visible only when its complete payload is copied.
 class MailboxRing final {
 public:
+	// The record header, and the widest payload the wire can describe. A
+	// record's payload length is a 16-bit field, so 0xffff is a property of the
+	// format rather than a policy choice; a ring that must hold one complete
+	// maximum record therefore needs HeaderSize + MaxRecordPayload + 1 bytes,
+	// the trailing byte being the never-used one that keeps equal indices
+	// meaning empty (see push()).
+	static constexpr std::size_t HeaderSize = 20;
+	static constexpr std::size_t MaxRecordPayload = 0xffff;
+	static constexpr std::size_t OneRecordCapacity = HeaderSize + MaxRecordPayload + 1;
+
 	explicit MailboxRing(std::size_t capacity);
 	bool push(const MailboxRecord& record);
 	bool pop(MailboxRecord& record);
@@ -145,7 +155,6 @@ public:
 	bool exportRaw(std::uint8_t* bytes, std::size_t bytes_size, std::size_t& read, std::size_t& write) const;
 
 private:
-	static constexpr std::size_t HeaderSize = 20;
 	std::vector<std::uint8_t> m_storage;
 	std::size_t m_read = 0;
 	std::size_t m_write = 0;

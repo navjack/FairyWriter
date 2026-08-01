@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+- Pasting a long passage works. Anything from about 8 KB — roughly 1,400 words,
+  which is exactly the length people paste — was refused by the transport before
+  it ever reached the document, and the refusal was silent, so Ctrl+V simply
+  looked like a dead key. The host-side command queue had been sized at the 8 KiB
+  figure that belongs to the SRAM mailbox region, which this queue is never
+  copied into. It now holds one record of the widest payload the wire can
+  describe, and anything past that is split on grapheme boundaries instead of
+  dropped. A paste still undoes in one step.
+- Full screen, on F11. It is borderless on all three platforms and hides the
+  desktop; the screen stays centred at a whole-number scale with square pixels
+  rather than being stretched, so nothing is resampled.
+- The area around the screen is now a colour you pick, defaulting to a pastel
+  green, instead of black. It is the sixth row of the F3 settings plane —
+  Left and Right walk the palette and it wraps at both ends — and it is
+  remembered between runs. The colours are quantised to the SNES's own
+  five-bits-per-channel space, so the surround belongs to the same world as the
+  screen it frames.
+- The desktop mouse pointer is hidden over the screen, where FairyWriter has
+  always drawn its own. It comes back over the surrounding canvas, where the
+  in-world pointer stops at the edge and there would otherwise be no pointer at
+  all.
+- Changing a setting no longer throws the cursor back to the top row of the
+  settings plane. Every Left or Right there emits a value through one shared
+  routine, and that routine cleared a byte in 16-bit mode which took the
+  neighbouring byte — the selected row — with it.
+- The F3 plane is titled "FairyWriter Settings"; it had been called "Save and
+  Recovery" since before it held the Markdown view.
+
 ## 0.3.5 — 2026-07-31 — tester preview
 
 - The retired FocusWriter-derived Qt desktop UI has been removed from the source

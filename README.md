@@ -35,6 +35,46 @@ application.
 The fixed 256x224 virtual screen and cartridge ownership of all visible UI are
 product invariants, not a temporary theme.
 
+## Running a release build
+
+### Linux x86_64
+
+Downloading over HTTP does not preserve the executable bit, so set it once:
+
+```sh
+chmod +x FairyWriter-*-x86_64.AppImage
+./FairyWriter-*-x86_64.AppImage
+```
+
+If your file manager offers to open the download with **Disk Image Writer**,
+**Disk Image Mounter**, or an archive manager, that is the missing executable
+bit and not a damaged file. An AppImage is reported as
+`application/vnd.appimage`, which the shared MIME database declares a subtype of
+`application/vnd.squashfs`, so a file manager that cannot execute the file falls
+back to a disk-image tool instead. Run the `chmod` above, or right-click the
+file and use Properties, Permissions, *Allow executing file as program*.
+
+Once the bit is set, Cinnamon, MATE, and Xfce run the application on
+double-click, and KDE Plasma asks first whether to run or open it. GNOME Files
+does not launch binaries on double-click at all: start the AppImage from a
+terminal there. Its *Run as a Program* right-click action also works, but only
+when GNOME Console is installed, and it fails silently otherwise.
+
+`libfuse2` is not required. The AppImage runtime links FUSE statically and uses
+the `fusermount` already provided by the `fuse3` package on Linux Mint 21 and
+newer, Ubuntu 22.04 and newer, Fedora, and Arch. Where FUSE is genuinely
+unavailable, such as inside a container or under a hardened kernel, run the
+extraction fallback:
+
+```sh
+./FairyWriter-*-x86_64.AppImage --appimage-extract-and-run
+```
+
+### macOS arm64 and Windows x64
+
+Per-platform launch steps, including the Gatekeeper quarantine and SmartScreen
+prompts, are in [TESTING.md](TESTING.md).
+
 ## Build
 
 FairyWriter needs CMake, Ninja, Go, Qt 6.8 or newer, Zlib, and a C/C++ compiler.

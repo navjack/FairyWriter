@@ -226,6 +226,37 @@ that nothing gated against and that no CI job exercised.
   `./mac_deploy.sh` gate — build, tests, Qt deploy, prune, ad-hoc sign, the
   arm64/version/no-Homebrew-leak/no-loose-ROM audits, and a verified DMG.
 
+### 2026-08-01 — Linux AppImage launch documentation
+
+A tester on Linux Mint reported that the 0.3.5 AppImage offered to open with
+**Disk Image Writer**. The artifact is fine; the download had no executable bit.
+Documentation-only change (README), PR #17.
+
+- **Why a disk-image tool.** `xdg-mime query filetype` on the published artifact
+  returns `application/vnd.appimage`, and `shared-mime-info` 2.4 declares that
+  `<sub-class-of type="application/vnd.squashfs"/>`. A file manager that cannot
+  execute the file falls back down that chain. Nemo does this without warning
+  the user that the exec bit is what is missing.
+- **`libfuse2` is not a dependency of this runtime, and the internet will say it
+  is.** The embedded runtime (`type2-runtime` commit `75849dc`) is a static musl
+  binary — no `INTERP` segment — with libfuse 3.15.0 and squashfuse 0.5.2 linked
+  in. It shells out only to `fusermount`, which the `fuse3` package provides as a
+  symlink to `fusermount3` on both jammy (Mint 21) and noble (Mint 22). Verified
+  by self-mounting the artifact in an `ubuntu:24.04` container with `fuse3`
+  installed and no `libfuse2`/`libfuse2t64`.
+- **Rosetta cannot exec our AppImage, so container testing needs QEMU.** Docker
+  Desktop's amd64 emulation on Apple Silicon refuses static-PIE binaries with
+  `Exec format error` while happily running dynamically linked amd64 binaries in
+  the same container. `apt-get install qemu-user-static` and invoke through
+  `qemu-x86_64-static`; FUSE also needs `--device /dev/fuse --cap-add SYS_ADMIN
+  --security-opt apparmor:unconfined`. The `packaging/linux/` Docker build is
+  unaffected — it never execs the finished AppImage on the host.
+- **`TESTING.md` is not attached to the GitHub release.** Release assets are the
+  DMG, the zip, the AppImage and their `.sha256` sidecars only, so the `chmod`
+  line at `TESTING.md:40` was invisible to anyone downloading from the Releases
+  page. Tester-facing launch instructions belong in `README.md`. Check this
+  whenever a fix is filed "in the tester doc".
+
 ### Discoveries that constrain future work
 
 - **A 16-bit `STZ` takes the neighbouring byte, and `commandWrite` was doing it.**

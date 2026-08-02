@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.6 — 2026-08-01 — tester preview
 
 - Pasting a long passage works. Anything from about 8 KB — roughly 1,400 words,
   which is exactly the length people paste — was refused by the transport before
@@ -29,6 +29,12 @@
   neighbouring byte — the selected row — with it.
 - The F3 plane is titled "FairyWriter Settings"; it had been called "Save and
   Recovery" since before it held the Markdown view.
+- The README explains how to launch the Linux AppImage. Downloading over HTTP
+  drops the executable bit, and without it a file manager offers to open the
+  download with a disk-image tool — which looks like a corrupt artifact and is
+  not. `libfuse2` is not required. Those instructions had only ever been in
+  `TESTING.md`, which is not attached to a GitHub release, so nobody downloading
+  from the Releases page could see them.
 
 ## 0.3.5 — 2026-07-31 — tester preview
 

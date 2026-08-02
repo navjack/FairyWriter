@@ -1,20 +1,26 @@
-# FairyWriter Development Status (Synced 2026-07-31)
+# FairyWriter Development Status (Synced 2026-08-01)
 
-`VERSION` is `0.3.5` — the release that made typing look like what the document
-already is: styling, proofing marks and the selection now survive every keystroke,
-Delete removes the character under the cursor, and the machine runs at its true
-60.0988 Hz. It also removes the retired FocusWriter Qt UI from the source tree,
-which changes no shipped byte. Per `VERSIONING.md`, this is a PATCH scope —
-fixes and a source-tree removal, no new user-visible feature. The jump past
-`0.3.1`–`0.3.4` is deliberate; those numbers were never published.
+`VERSION` is `0.3.6` — the release that made a long paste land. Anything past
+about 8 KB used to be refused by the transport and dropped in silence, so Ctrl+V
+read as a dead key on the length of text people actually paste. It also adds
+borderless full screen on F11 and a picked colour for the area around the screen,
+hides the desktop pointer over the screen where the cartridge draws its own, and
+fixes the settings cursor jumping back to the top row on every change. The Linux
+AppImage launch instructions moved into `README.md`, where a tester downloading
+from the Releases page can see them.
 
-`v0.1.0`, `v0.2.0`, `v0.3.0` and `v0.3.5` are all published as prereleases.
-`v0.3.5` is tagged on `e3d1857` and carries the three packages built by that
-commit's own green `main` run. The version stays at the latest public release
-during ordinary development.
+Version numbers here are chosen deliberately, not derived. `VERSIONING.md` would
+call full screen and the picked canvas MINOR scope and put this at `0.4.0`; Jack
+chose `0.3.6`, the same way the jump past `0.3.1`–`0.3.4` was chosen. Neither is
+an error to be corrected later.
+
+`v0.1.0`, `v0.2.0`, `v0.3.0` and `v0.3.5` are published as prereleases. `v0.3.5`
+is tagged on `e3d1857` and carries the three packages built by that commit's own
+green `main` run; `v0.3.6` follows the same rule. The version stays at the latest
+public release during ordinary development.
 
 `CHANGELOG.md` has no **Unreleased** section: everything that was in it has been
-released as 0.3.5.
+released as 0.3.6.
 
 Sections below are newest-first and dated. `SCRATCH.MD` holds the live resume
 point, the discoveries that constrain future work, and the rejected approaches;

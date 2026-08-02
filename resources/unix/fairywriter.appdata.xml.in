@@ -39,6 +39,13 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.3.6" date="2026-08-01">
+      <description>
+        <p>Pasting a long passage works. Anything past about 8 KB was silently dropped before it reached the document.</p>
+        <p>Adds borderless full screen on F11, and a pickable colour for the area around the screen, defaulting to a pastel green.</p>
+        <p>Hides the desktop mouse pointer over the screen, where FairyWriter draws its own, and fixes the settings cursor jumping to the top row on every change.</p>
+      </description>
+    </release>
     <release version="0.3.5" date="2026-07-31">
       <description>
         <p>Typing no longer makes the page flicker: styling, proofing marks and the selection now hold through every keystroke.</p>

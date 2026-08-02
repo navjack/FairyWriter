@@ -9,7 +9,7 @@
 > because some entries are historical. Move superseded detail into the archive
 > instead of deleting the file.
 
-## Current resume point — 2026-08-01
+## Current resume point — 2026-08-01 (0.3.6 cut)
 
 ### Product and ownership invariants
 
@@ -48,15 +48,18 @@
 
 ### Active working tree
 
-- Branch: `agent/canvas-and-paste`, branched from public `origin/main` at
-  `d1a12ef`. Three tester items: the paste ceiling, F11 borderless full screen,
-  and a picked canvas colour. Worktree `worktrees/canvas-and-paste`. 11/11 green
-  and verified live in the built app; not yet opened as a PR.
-- `origin/main` is at `d1a12ef`, tagged `v0.3.5`. PR #9 (render consistency), #10
-  (self-recorded showcase video), #11 (documentation hygiene), #12 (Qt UI removal),
-  #13 (showcase retirement), #14 (recorder removal), #15 (the 0.3.5 cut) and #16
-  (recording the release) all merged on 2026-07-31 with all three platform jobs
-  green.
+- Branch: `agent/cut-0-3-6`, branched from public `origin/main` at `ef5ec99`,
+  cutting the release. `VERSION`, `CHANGELOG.md` and the AppStream history only —
+  nothing under `src/`, `tools/` or `packaging/`, so the product this release
+  ships is byte-for-byte what `main` was already building green.
+- `origin/main` is at `ef5ec99`. PR #18 (paste ceiling, full screen, canvas) and
+  #17 (Linux AppImage launch docs) both merged on 2026-08-01 with all three
+  platform jobs green, on top of #9–#16 from 2026-07-31.
+- Worktrees still on disk: `canvas-and-paste` (holds the built bundle the 0.3.6
+  behaviour was verified in — keep until a tester has looked at it),
+  `release-0-3-6`, plus the now-merged `linux-launch-docs` and the older
+  `release-0-3-5`, both of which can be removed with
+  `git worktree remove <path> --force`.
 - **This tree now has one build configuration.** There is no
   `FAIRYWRITER_DEVELOPMENT_UI`. `FAIRYWRITER_DEVELOPER_TOOLS` is a different gate
   and still exists — it builds the standalone `fairywriter_snes_player` and
@@ -84,23 +87,24 @@
 
 ### Version state
 
-- `VERSION` is `0.3.5`. `CHANGELOG.md` and the AppStream release history carry
-  the same number and date (2026-07-31). `VERSIONING.md` is the authority on how
-  the number moves: MINOR before 1.0 for new user-visible behavior or substantial
-  cartridge/runtime change, PATCH for fixes and packaging corrections. 0.3.5 is a
-  PATCH scope — render and editing fixes plus a source-tree removal that changes
-  no shipped byte. **The jump past `0.3.1`–`0.3.4` is deliberate, not an error:
-  Jack chose the number, and those versions were never published.** Do not
-  "correct" it to 0.3.1 later.
+- `VERSION` is `0.3.6`. `CHANGELOG.md` and the AppStream release history carry
+  the same number and date (2026-08-01). It ships PR #18 (the paste ceiling,
+  F11 full screen, the picked canvas colour, the hidden desktop pointer, and the
+  `commandWrite` selection-clobber fix) and PR #17 (the Linux AppImage launch
+  instructions in `README.md`).
+- **`VERSION` numbers are Jack's call, and 0.3.6 is one of them.** The proposal
+  on the table was `0.4.0`, because full screen and a picked canvas colour are
+  new user-visible behaviour and `VERSIONING.md` calls that MINOR. Jack chose
+  `0.3.6`. This is the same kind of deliberate pick as **the jump past
+  `0.3.1`–`0.3.4`, which is not an error either: those numbers were never
+  published.** Do not "correct" either one later.
 - Releases published, all flagged prerelease: `v0.1.0` (2026-07-29), `v0.2.0`
   (2026-07-30), `v0.3.0` (2026-07-31), `v0.3.5` (2026-07-31). The version stays at
   the latest public release during ordinary development — development builds are
   identified by their commit and Actions run, not by bumping `VERSION` as a side
   effect of repository state.
-- `CHANGELOG.md` has an **Unreleased** section again, holding the 2026-08-01
-  paste/full-screen/canvas pass. `VERSION` stays at `0.3.5` until that pass is
-  cut; per `VERSIONING.md` it is MINOR scope, because full screen and the picked
-  canvas are new user-visible behaviour.
+- `CHANGELOG.md` has no **Unreleased** section: the 2026-08-01 pass went out as
+  0.3.6. Re-add the heading when the next unreleased entry is written.
 
 ### 2026-07-31 — cut the 0.3.5 release
 
@@ -391,9 +395,11 @@ when written.
 
 Nothing is blocked on a repository step. In order:
 
-0. Open `agent/canvas-and-paste` as a PR and merge it server-side — **without**
-   `--delete-branch`, which switches this checkout to its default branch on its
-   own. Then cut the version: this pass is MINOR scope, not PATCH.
+0. Publish `v0.3.6`: merge the cut, then take the DMG, AppImage, ZIP and
+   checksum sidecars from **one** green post-merge `main` run, tag that exact
+   commit, and publish the prerelease. Never rebuild an asset by hand for a
+   release. Merge server-side **without** `--delete-branch` — that flag switches
+   the parent checkout to its default branch on its own.
 1. The packaged-app manual smoke on macOS, Linux, and Windows: first Save, format
    picker layout, close/relaunch/open, F3 settings/history, forced-exit recovery,
    Markdown Rendered/Source. Automated process evidence proves persistence
